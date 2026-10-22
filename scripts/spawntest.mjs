@@ -1,0 +1,12 @@
+import { chromium } from 'playwright-core';
+const team = process.argv[2] ?? 'us', out = process.argv[3] ?? 'spawn.png';
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, env: { ...process.env, DRI_PRIME: '1' }, args: ['--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const p = await b.newPage({ viewport: { width: 960, height: 540 } });
+p.on('pageerror', (e) => console.log('pageerror', e.message));
+await p.goto(`http://localhost:5173/?mode=test&auto=${team}&q=low`);
+await p.waitForFunction(() => window.__ready === true, null, { timeout: 240000 });
+const info = () => p.evaluate(() => { const g = window.__game, m = g.mode; return `us=${m.zone('us').map((v) => v.toFixed(1))} ins=${m.zone('ins').map((v) => v.toFixed(1))} | ` + g.soldiers.map((s) => `${s.isPlayer ? 'ME' : s.team}:${s.state[0]}${Math.round(s.health)}@${s.pos[0].toFixed(0)},${s.pos[2].toFixed(0)}`).join(' '); });
+console.log('t0', await info());
+await p.waitForTimeout(1500); await p.screenshot({ path: out });
+await p.waitForTimeout(8000); console.log('t10', await info());
+await b.close();

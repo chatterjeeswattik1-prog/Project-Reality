@@ -1,0 +1,9 @@
+{
+ "desc": "This is the synthesized sound of a walkie-talkie roger beep followed by the sound of a radio transmission being cut.\nI once had a walkie-talkie that made this noise when an incoming transmission dropped; this is the same sound, made with Audacity.\nThe roger beep is a 2KHz sine wave.\n\nGENERATING:\nFile > New\nGenerate > Tone (Waveform: Sine, Frequency: 2000, Amplitude: 0.8, Duration: 0.1s)\nSelect from 0s to 0.02s\nEffects > Cross Fade-In\nSelect from 0.08s to 0.1s\nEffects > Cross Fade-Out\nCursor at 0.1s\nGenerate > Noise (Type: White, Amplitude: 0.4, Duration: 0.05s)\nEffects > Low-Pass Filter (Rolloff: 36 dB, Cutoff: 4000)\nSelect from 0.1s to 0.12s\nEffects > Cross Fade-In\nSelect from 0.13s to 0.15s\nEffects > Cross Fade-Out\nCursor at 0.15s\nGenerate > Silence (Duration: 0.5s)\n",
+ "id": 321906,
+ "title": "Walkie Talkie - Roger Beep",
+ "author": "bruce965",
+ "url": "https://freesound.org/s/321906/",
+ "license": "CC0 1.0",
+ "mp3": "https://cdn.freesound.org/previews/321/321906_1755779-hq.mp3"
+}

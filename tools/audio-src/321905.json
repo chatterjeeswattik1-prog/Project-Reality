@@ -1,0 +1,9 @@
+{
+ "desc": "This is the synthesized sound of a walkie-talkie beginning to transmit.\nI once had a walkie-talkie that made this sound as a feedback; this is the same sound, made with Audacity.\n\nGENERATING:\nFile > New\nGenerate > Noise (Type: White, Amplitude: 0.4, Duration: 0.05s)\nEffects > Low-Pass Filter (Rolloff: 36 dB, Cutoff: 4000)\nSelect from 0.0s to 0.02s\nEffects > Cross Fade-In\nSelect from 0.03s to 0.05s\nEffects > Cross Fade-Out\nCursor at 0.05s\nGenerate > Silence (Duration: 0.5s)\n",
+ "id": 321905,
+ "title": "Walkie Talkie - Transmission Start",
+ "author": "bruce965",
+ "url": "https://freesound.org/s/321905/",
+ "license": "CC0 1.0",
+ "mp3": "https://cdn.freesound.org/previews/321/321905_1755779-hq.mp3"
+}

@@ -1,0 +1,963 @@
+{
+ "m4_shot_1.ogg": {
+  "sources": [
+   854230
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m4_shot_2.ogg": {
+  "sources": [
+   854228
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m4_shot_3.ogg": {
+  "sources": [
+   854233
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m249_shot_1.ogg": {
+  "sources": [
+   704511
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m249_shot_2.ogg": {
+  "sources": [
+   693546
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m249_shot_3.ogg": {
+  "sources": [
+   693856
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m240_shot_1.ogg": {
+  "sources": [
+   854641
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m240_shot_2.ogg": {
+  "sources": [
+   854637
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m240_shot_3.ogg": {
+  "sources": [
+   725798
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m24_shot_1.ogg": {
+  "sources": [
+   855606
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m24_shot_2.ogg": {
+  "sources": [
+   855607
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m24_shot_3.ogg": {
+  "sources": [
+   855608
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m9_shot_1.ogg": {
+  "sources": [
+   711549
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m9_shot_2.ogg": {
+  "sources": [
+   828786
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m9_shot_3.ogg": {
+  "sources": [
+   427592
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "ak_shot_1.ogg": {
+  "sources": [
+   698984
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "ak_shot_2.ogg": {
+  "sources": [
+   698984
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "ak_shot_3.ogg": {
+  "sources": [
+   855843
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "pkm_shot_1.ogg": {
+  "sources": [
+   693547
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "pkm_shot_2.ogg": {
+  "sources": [
+   712577
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "pkm_shot_3.ogg": {
+  "sources": [
+   693547
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "svd_shot_1.ogg": {
+  "sources": [
+   696023
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "svd_shot_2.ogg": {
+  "sources": [
+   702225
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "svd_shot_3.ogg": {
+  "sources": [
+   855604
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "makarov_shot_1.ogg": {
+  "sources": [
+   712087
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "makarov_shot_2.ogg": {
+  "sources": [
+   734061
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "makarov_shot_3.ogg": {
+  "sources": [
+   712085
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m2_shot_1.ogg": {
+  "sources": [
+   160355
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "m2_shot_2.ogg": {
+  "sources": [
+   239138
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "m2_shot_3.ogg": {
+  "sources": [
+   239138
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "dshk_shot_1.ogg": {
+  "sources": [
+   668071
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "dshk_shot_2.ogg": {
+  "sources": [
+   160355
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "dshk_shot_3.ogg": {
+  "sources": [
+   239138
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "low-end thump layer"
+  ]
+ },
+ "m203_launch_1.ogg": {
+  "sources": [
+   162402
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "m203_launch_2.ogg": {
+  "sources": [
+   162401
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "rpg_launch_1.ogg": {
+  "sources": [
+   249298
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "rpg_launch_2.ogg": {
+  "sources": [
+   249298
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "rpg_launch_3.ogg": {
+  "sources": [
+   249298
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "at4_launch_1.ogg": {
+  "sources": [
+   184274
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "at4_launch_2.ogg": {
+  "sources": [
+   184274
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "spg9_launch.ogg": {
+  "sources": [
+   249298,
+   675612
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "grenade_pin.ogg": {
+  "sources": [
+   156179,
+   827946
+  ],
+  "synth": []
+ },
+ "grenade_throw.ogg": {
+  "sources": [
+   346373,
+   641387
+  ],
+  "synth": []
+ },
+ "rifle_far_1.ogg": {
+  "sources": [
+   172397
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)"
+  ]
+ },
+ "rifle_far_2.ogg": {
+  "sources": [
+   172397
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)"
+  ]
+ },
+ "rifle_far_3.ogg": {
+  "sources": [
+   172397
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)"
+  ]
+ },
+ "mg_far_1.ogg": {
+  "sources": [
+   854641
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)"
+  ]
+ },
+ "mg_far_2.ogg": {
+  "sources": [
+   693547
+  ],
+  "synth": [
+   "synthetic tail (reverb grown from the shot head)",
+   "distance processing (low-pass, slapback, reverb)"
+  ]
+ },
+ "heavy_far.ogg": {
+  "sources": [
+   160355
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)"
+  ]
+ },
+ "explosion_far_1.ogg": {
+  "sources": [
+   162363
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)",
+   "low-end thump layer"
+  ]
+ },
+ "explosion_far_2.ogg": {
+  "sources": [
+   855245
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)",
+   "low-end thump layer"
+  ]
+ },
+ "explosion_near_1.ogg": {
+  "sources": [
+   67472,
+   569736
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "explosion_near_2.ogg": {
+  "sources": [
+   67474,
+   569736
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "explosion_near_3.ogg": {
+  "sources": [
+   569736,
+   855798
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "explosion_big.ogg": {
+  "sources": [
+   550342,
+   591999,
+   855247
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "debris_fall.ogg": {
+  "sources": [
+   550342
+  ],
+  "synth": []
+ },
+ "crack_supersonic_1.ogg": {
+  "sources": [
+   789225
+  ],
+  "synth": [
+   "supersonic N-wave crack"
+  ]
+ },
+ "crack_supersonic_2.ogg": {
+  "sources": [
+   789225
+  ],
+  "synth": [
+   "supersonic N-wave crack"
+  ]
+ },
+ "crack_supersonic_3.ogg": {
+  "sources": [
+   789225
+  ],
+  "synth": [
+   "supersonic N-wave crack"
+  ]
+ },
+ "crack_supersonic_4.ogg": {
+  "sources": [
+   789225
+  ],
+  "synth": [
+   "supersonic N-wave crack"
+  ]
+ },
+ "whiz_1.ogg": {
+  "sources": [
+   789222
+  ],
+  "synth": []
+ },
+ "whiz_2.ogg": {
+  "sources": [
+   789221
+  ],
+  "synth": []
+ },
+ "whiz_3.ogg": {
+  "sources": [
+   505238
+  ],
+  "synth": []
+ },
+ "impact_concrete_1.ogg": {
+  "sources": [
+   569497
+  ],
+  "synth": [
+   "transient snap",
+   "low-end thump layer"
+  ]
+ },
+ "impact_concrete_2.ogg": {
+  "sources": [
+   569502
+  ],
+  "synth": [
+   "transient snap",
+   "low-end thump layer"
+  ]
+ },
+ "impact_concrete_3.ogg": {
+  "sources": [
+   569508
+  ],
+  "synth": [
+   "transient snap",
+   "low-end thump layer"
+  ]
+ },
+ "impact_dirt_1.ogg": {
+  "sources": [
+   789388
+  ],
+  "synth": []
+ },
+ "impact_dirt_2.ogg": {
+  "sources": [
+   319222
+  ],
+  "synth": [
+   "low-end thump layer",
+   "transient snap"
+  ]
+ },
+ "impact_dirt_3.ogg": {
+  "sources": [
+   319229
+  ],
+  "synth": [
+   "low-end thump layer",
+   "transient snap"
+  ]
+ },
+ "impact_metal_1.ogg": {
+  "sources": [
+   381608
+  ],
+  "synth": [
+   "transient snap"
+  ]
+ },
+ "impact_metal_2.ogg": {
+  "sources": [
+   381603
+  ],
+  "synth": [
+   "transient snap"
+  ]
+ },
+ "impact_metal_3.ogg": {
+  "sources": [
+   381619
+  ],
+  "synth": [
+   "transient snap"
+  ]
+ },
+ "impact_flesh_1.ogg": {
+  "sources": [
+   423301,
+   629977
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "impact_flesh_2.ogg": {
+  "sources": [
+   423301,
+   629977
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "ricochet_1.ogg": {
+  "sources": [
+   675955
+  ],
+  "synth": []
+ },
+ "ricochet_2.ogg": {
+  "sources": [
+   675955
+  ],
+  "synth": []
+ },
+ "ricochet_3.ogg": {
+  "sources": [
+   675955
+  ],
+  "synth": []
+ },
+ "glass_break.ogg": {
+  "sources": [
+   203375
+  ],
+  "synth": []
+ },
+ "mag_out.ogg": {
+  "sources": [
+   725397
+  ],
+  "synth": []
+ },
+ "mag_in.ogg": {
+  "sources": [
+   725397
+  ],
+  "synth": []
+ },
+ "bolt_release.ogg": {
+  "sources": [
+   725397
+  ],
+  "synth": []
+ },
+ "charging_handle_ak.ogg": {
+  "sources": [
+   675008
+  ],
+  "synth": []
+ },
+ "bolt_action_cycle.ogg": {
+  "sources": [
+   370345
+  ],
+  "synth": []
+ },
+ "belt_box_open_close.ogg": {
+  "sources": [
+   240329
+  ],
+  "synth": []
+ },
+ "dry_fire.ogg": {
+  "sources": [
+   725402
+  ],
+  "synth": []
+ },
+ "casing_drop_1.ogg": {
+  "sources": [
+   210102
+  ],
+  "synth": []
+ },
+ "casing_drop_2.ogg": {
+  "sources": [
+   210102
+  ],
+  "synth": []
+ },
+ "casing_drop_3.ogg": {
+  "sources": [
+   210102
+  ],
+  "synth": []
+ },
+ "shell_link.ogg": {
+  "sources": [
+   210102,
+   460859
+  ],
+  "synth": []
+ },
+ "rpg_load.ogg": {
+  "sources": [
+   725401
+  ],
+  "synth": []
+ },
+ "switch_fire_mode.ogg": {
+  "sources": [
+   589843
+  ],
+  "synth": []
+ },
+ "aim_cloth.ogg": {
+  "sources": [
+   19291
+  ],
+  "synth": []
+ },
+ "step_concrete_1.ogg": {
+  "sources": [
+   166509
+  ],
+  "synth": []
+ },
+ "step_concrete_2.ogg": {
+  "sources": [
+   166507
+  ],
+  "synth": []
+ },
+ "step_concrete_3.ogg": {
+  "sources": [
+   166506
+  ],
+  "synth": []
+ },
+ "step_concrete_4.ogg": {
+  "sources": [
+   166508
+  ],
+  "synth": []
+ },
+ "step_dirt_1.ogg": {
+  "sources": [
+   166510
+  ],
+  "synth": []
+ },
+ "step_dirt_2.ogg": {
+  "sources": [
+   166511
+  ],
+  "synth": []
+ },
+ "step_dirt_3.ogg": {
+  "sources": [
+   223154
+  ],
+  "synth": []
+ },
+ "step_dirt_4.ogg": {
+  "sources": [
+   750794
+  ],
+  "synth": []
+ },
+ "step_gravel_1.ogg": {
+  "sources": [
+   384871
+  ],
+  "synth": []
+ },
+ "step_gravel_2.ogg": {
+  "sources": [
+   384875
+  ],
+  "synth": []
+ },
+ "step_gravel_3.ogg": {
+  "sources": [
+   384877
+  ],
+  "synth": []
+ },
+ "land_jump.ogg": {
+  "sources": [
+   166507,
+   646661
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "prone_down.ogg": {
+  "sources": [
+   19291,
+   346695
+  ],
+  "synth": []
+ },
+ "crawl_cloth_loop.ogg": {
+  "sources": [
+   510214
+  ],
+  "synth": []
+ },
+ "breath_heavy_loop.ogg": {
+  "sources": [
+   386573
+  ],
+  "synth": []
+ },
+ "heartbeat_loop.ogg": {
+  "sources": [
+   332808
+  ],
+  "synth": []
+ },
+ "body_fall.ogg": {
+  "sources": [
+   504626
+  ],
+  "synth": []
+ },
+ "bandage.ogg": {
+  "sources": [
+   718668,
+   800275
+  ],
+  "synth": []
+ },
+ "zip_tie.ogg": {
+  "sources": [
+   827501
+  ],
+  "synth": []
+ },
+ "humvee_idle_loop.ogg": {
+  "sources": [
+   453989
+  ],
+  "synth": []
+ },
+ "humvee_drive_loop.ogg": {
+  "sources": [
+   160357
+  ],
+  "synth": []
+ },
+ "pickup_idle_loop.ogg": {
+  "sources": [
+   450222
+  ],
+  "synth": []
+ },
+ "pickup_drive_loop.ogg": {
+  "sources": [
+   668554
+  ],
+  "synth": []
+ },
+ "car_door.ogg": {
+  "sources": [
+   778418
+  ],
+  "synth": []
+ },
+ "tyre_skid.ogg": {
+  "sources": [
+   104026
+  ],
+  "synth": []
+ },
+ "vehicle_impact.ogg": {
+  "sources": [
+   592388,
+   675466
+  ],
+  "synth": [
+   "low-end thump layer"
+  ]
+ },
+ "amb_city_wind.ogg": {
+  "sources": [
+   146914,
+   406546
+  ],
+  "synth": []
+ },
+ "amb_birds_dry.ogg": {
+  "sources": [
+   387207,
+   512805
+  ],
+  "synth": []
+ },
+ "amb_dogs_distant.ogg": {
+  "sources": [
+   548339
+  ],
+  "synth": []
+ },
+ "amb_adhan_far.ogg": {
+  "sources": [
+   345029
+  ],
+  "synth": [
+   "distance processing (low-pass, reverb)"
+  ]
+ },
+ "amb_distant_battle.ogg": {
+  "sources": [
+   162406,
+   675609
+  ],
+  "synth": [
+   "distance processing (low-pass, slapback, reverb)",
+   "pseudo-stereo widening"
+  ]
+ },
+ "amb_flies.ogg": {
+  "sources": [
+   567732
+  ],
+  "synth": []
+ },
+ "radio_squelch_1.ogg": {
+  "sources": [
+   524205
+  ],
+  "synth": []
+ },
+ "radio_squelch_2.ogg": {
+  "sources": [
+   760245
+  ],
+  "synth": []
+ },
+ "radio_chatter_loop.ogg": {
+  "sources": [
+   855900
+  ],
+  "synth": [
+   "grain reversal, band-limiting, radio distortion and hiss"
+  ]
+ },
+ "ui_click.ogg": {
+  "sources": [
+   448086
+  ],
+  "synth": []
+ },
+ "ui_select.ogg": {
+  "sources": [
+   546974
+  ],
+  "synth": []
+ },
+ "tinnitus.ogg": {
+  "sources": [],
+  "synth": [
+   "tinnitus tone"
+  ]
+ }
+}

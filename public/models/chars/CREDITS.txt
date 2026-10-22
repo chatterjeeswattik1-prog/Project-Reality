@@ -1,0 +1,10 @@
+Characters and animations in this folder are built by tools/blender/characters.py from:
+
+- Universal Base Characters (Superhero_Male_FullBody, hairstyles Hair_Buzzed, Hair_Beard, eyebrows) by Quaternius
+  https://quaternius.com  License: CC0 1.0 (public domain)
+- Universal Animation Library 1 and 2 (UAL1_Standard, UAL2_Standard) by Quaternius
+  https://quaternius.com  License: CC0 1.0 (public domain)
+
+Clothing, gear, camouflage (UCP), shemagh/ghutra and fabric textures are generated procedurally by the build
+script. Authored clips (Prone_*, Stand_To_Prone, Prone_To_Stand, Wounded_Loop, Death02, Death03, Walk_Bwd_Loop,
+Strafe_L/R_Loop, Crouch_Bwd_Loop) are keyframed procedurally in the same script. No other third-party assets.

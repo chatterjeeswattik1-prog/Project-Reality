@@ -1,0 +1,8 @@
+node_modules
+dist
+tools/blender/src-assets
+tools/blender/__pycache__
+*.blend1
+__pycache__/
+tools/blender/previews/
+*.log

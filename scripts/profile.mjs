@@ -1,0 +1,24 @@
+// CPU profile of the running game: node scripts/profile.mjs "<query>" [seconds]
+import { chromium } from 'playwright-core';
+const [q = 'auto=us&q=low', secs = '8'] = process.argv.slice(2);
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, env: { ...process.env, DRI_PRIME: '1' }, args: ['--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const p = await b.newPage({ viewport: { width: 1280, height: 720 } });
+await p.goto(`http://localhost:5173/?${q}`);
+await p.waitForFunction(() => window.__ready === true, null, { timeout: 240000 });
+await p.waitForTimeout(4000);
+const cdp = await p.context().newCDPSession(p);
+await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start');
+await p.waitForTimeout(Number(secs) * 1000);
+const { profile } = await cdp.send('Profiler.stop');
+const nodes = new Map(profile.nodes.map((n) => [n.id, n])), self = new Map();
+profile.samples.forEach((s, i) => { const n = nodes.get(s), f = n.callFrame, k = `${f.functionName || '(anon)'} ${f.url.split('/').pop()}:${f.lineNumber + 1}`; self.set(k, (self.get(k) ?? 0) + (profile.timeDeltas[i] ?? 0)); });
+const parent = new Map(); for (const n of profile.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
+const incl = new Map();
+profile.samples.forEach((s, i) => { const seen = new Set(); let id = s; while (id !== undefined) { const f = nodes.get(id).callFrame; if (f.url.includes('/src/')) { const k = `${f.functionName || '(anon)'} ${f.url.split('/src/').pop().split('?')[0]}:${f.lineNumber + 1}`; if (!seen.has(k)) { seen.add(k); incl.set(k, (incl.get(k) ?? 0) + (profile.timeDeltas[i] ?? 0)); } } id = parent.get(id); } });
+const total0 = profile.timeDeltas.reduce((a, v) => a + v, 0);
+console.log('--- inclusive (src) ---'); for (const [k, v] of [...incl.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30)) console.log(`${(v / total0 * 100).toFixed(1).padStart(5)}%  ${k}`);
+console.log('--- self ---');
+const total = [...self.values()].reduce((a, v) => a + v, 0);
+for (const [k, v] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) console.log(`${(v / total * 100).toFixed(1).padStart(5)}%  ${k}`);
+console.log(await p.evaluate(() => `${window.__fps} | ${window.__prof}`));
+await b.close();

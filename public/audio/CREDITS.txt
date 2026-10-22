@@ -1,0 +1,135 @@
+Sound credits for public/audio. Every source recording is from Freesound and is licensed
+Creative Commons 0 (CC0 1.0, public domain dedication). Files were cut, filtered, layered and
+normalised by scripts/build-audio.py; synthesised layers are our own work, also CC0.
+Format: <file>: <source title> by <author> <url> CC0 1.0 [; more sources] [; synthesised parts]
+
+aim_cloth.ogg: "foley cloth rustle.wav" by martian https://freesound.org/s/19291/ CC0 1.0
+ak_shot_1.ogg: "Izhmash Saiga MK Ver. 030" by areniporgen https://freesound.org/s/698984/ CC0 1.0; synthesised (CC0): low-end thump layer
+ak_shot_2.ogg: "Izhmash Saiga MK Ver. 030" by areniporgen https://freesound.org/s/698984/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+ak_shot_3.ogg: "An AK-47 being shot // has distinctive metallic kalashnikov-esque report // punchy sounding w/ distant trailing reverb" by serøutōnin--deprivəd https://freesound.org/s/855843/ CC0 1.0; synthesised (CC0): low-end thump layer
+amb_adhan_far.ogg: "evening call to prayer" by 3bagbrew https://freesound.org/s/345029/ CC0 1.0; synthesised (CC0): distance processing (low-pass, reverb)
+amb_birds_dry.ogg: "feral pigeons.wav" by BeeProductive https://freesound.org/s/387207/ CC0 1.0; "House sparrows" by deleted_user_11205508 https://freesound.org/s/512805/ CC0 1.0
+amb_city_wind.ogg: "Strong wind blowing and howling in the middle of the desert of Atacama, in the "moon valley" (Chile)" by felix.blume https://freesound.org/s/146914/ CC0 1.0; "skyline Middle East distant traffic horn honks and city haze12 Gaza 2016.wav" by kyles https://freesound.org/s/406546/ CC0 1.0
+amb_distant_battle.ogg: "River Fire Fight" by qubodup https://freesound.org/s/162406/ CC0 1.0; "S16-31 Bombardment with distant explosions; Good.wav" by craigsmith https://freesound.org/s/675609/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb), pseudo-stereo widening
+amb_dogs_distant.ogg: "city night with dogs barking from distance" by thegreatbelow https://freesound.org/s/548339/ CC0 1.0
+amb_flies.ogg: "200614 Flies, close buzzing, periodic, wide stereo 7am.flac" by TRP https://freesound.org/s/567732/ CC0 1.0
+at4_launch_1.ogg: "Launching Anti-Tank Missiles.flac" by qubodup https://freesound.org/s/184274/ CC0 1.0; synthesised (CC0): low-end thump layer
+at4_launch_2.ogg: "Launching Anti-Tank Missiles.flac" by qubodup https://freesound.org/s/184274/ CC0 1.0; synthesised (CC0): low-end thump layer
+bandage.ogg: "Wrapping cloth" by ChuckleNutsDev https://freesound.org/s/718668/ CC0 1.0; "Tape Bandages Rip" by SecureSubset https://freesound.org/s/800275/ CC0 1.0
+belt_box_open_close.ogg: "Ammo Box.wav" by hotdogtornados https://freesound.org/s/240329/ CC0 1.0
+body_fall.ogg: "BODY FALL - V HVY - DIRT" by leonelmail https://freesound.org/s/504626/ CC0 1.0
+bolt_action_cycle.ogg: "Mosin Nagant Bolt Action Cycle" by Zott820 https://freesound.org/s/370345/ CC0 1.0
+bolt_release.ogg: "An M16 Rifle being reloaded while empty; full sequence" by serøutōnin--deprivəd https://freesound.org/s/725397/ CC0 1.0
+breath_heavy_loop.ogg: "heavy_breathing_1.wav" by ShaneF91 https://freesound.org/s/386573/ CC0 1.0
+car_door.ogg: "Car_Door_Closing_Dull_01" by BlondPanda https://freesound.org/s/778418/ CC0 1.0
+casing_drop_1.ogg: "Brass bullet shell casing drop onto concrete, multiple takes" by GrayJoy https://freesound.org/s/210102/ CC0 1.0
+casing_drop_2.ogg: "Brass bullet shell casing drop onto concrete, multiple takes" by GrayJoy https://freesound.org/s/210102/ CC0 1.0
+casing_drop_3.ogg: "Brass bullet shell casing drop onto concrete, multiple takes" by GrayJoy https://freesound.org/s/210102/ CC0 1.0
+charging_handle_ak.ogg: "AK-47 assault rifle being cocked 3x" by serøutōnin--deprivəd https://freesound.org/s/675008/ CC0 1.0
+crack_supersonic_1.ogg: "Bulletcrack chaos" by modusmogulus https://freesound.org/s/789225/ CC0 1.0; synthesised (CC0): supersonic N-wave crack
+crack_supersonic_2.ogg: "Bulletcrack chaos" by modusmogulus https://freesound.org/s/789225/ CC0 1.0; synthesised (CC0): supersonic N-wave crack
+crack_supersonic_3.ogg: "Bulletcrack chaos" by modusmogulus https://freesound.org/s/789225/ CC0 1.0; synthesised (CC0): supersonic N-wave crack
+crack_supersonic_4.ogg: "Bulletcrack chaos" by modusmogulus https://freesound.org/s/789225/ CC0 1.0; synthesised (CC0): supersonic N-wave crack
+crawl_cloth_loop.ogg: "Crawling 1" by heavenly-roads https://freesound.org/s/510214/ CC0 1.0
+debris_fall.ogg: "Foley_Stones_Falls_Debris_Stereo_DR05.wav" by Nox_Sound https://freesound.org/s/550342/ CC0 1.0
+dry_fire.ogg: "A rifle being dry fired once" by serøutōnin--deprivəd https://freesound.org/s/725402/ CC0 1.0
+dshk_shot_1.ogg: "50 cal shot.wav" by ajhartman42295 https://freesound.org/s/668071/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+dshk_shot_2.ogg: "Air Defense Artillery Avenger Training .50cal (tH4YBTw8vk8).flac" by qubodup https://freesound.org/s/160355/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+dshk_shot_3.ogg: "50 Cal MG" by qubodup https://freesound.org/s/239138/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+explosion_big.ogg: "Foley_Stones_Falls_Debris_Stereo_DR05.wav" by Nox_Sound https://freesound.org/s/550342/ CC0 1.0; "Huge big explosion" by SamsterBirdies https://freesound.org/s/591999/ CC0 1.0; "Explosion and Shockwave 2" by qubodup https://freesound.org/s/855247/ CC0 1.0; synthesised (CC0): low-end thump layer
+explosion_far_1.ogg: "Distant Explosion of Propelled Grenade" by qubodup https://freesound.org/s/162363/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb), low-end thump layer
+explosion_far_2.ogg: "Explosion and Shockwave 1" by qubodup https://freesound.org/s/855245/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb), low-end thump layer
+explosion_near_1.ogg: "M67 Fragmentation Grenade Explosion 3" by qubodup https://freesound.org/s/67472/ CC0 1.0; "Gravel Stone Dirt Debris Falling Small 1 3" by Sheyvan https://freesound.org/s/569736/ CC0 1.0; synthesised (CC0): low-end thump layer
+explosion_near_2.ogg: "m67_fragmentation_grenade_explosion_4.flac" by qubodup https://freesound.org/s/67474/ CC0 1.0; "Gravel Stone Dirt Debris Falling Small 1 3" by Sheyvan https://freesound.org/s/569736/ CC0 1.0; synthesised (CC0): low-end thump layer
+explosion_near_3.ogg: "Gravel Stone Dirt Debris Falling Small 1 3" by Sheyvan https://freesound.org/s/569736/ CC0 1.0; "EOD Explosion" by qubodup https://freesound.org/s/855798/ CC0 1.0; synthesised (CC0): low-end thump layer
+glass_break.ogg: "glass-shattering_01.ogg" by C_Rogers https://freesound.org/s/203375/ CC0 1.0
+grenade_pin.ogg: "keys_2-single.wav" by JL_barrett https://freesound.org/s/156179/ CC0 1.0; "Springfield Armory 1911 Slide Release" by areniporgen https://freesound.org/s/827946/ CC0 1.0
+grenade_throw.ogg: "Throwing / Whip Effect" by denao270 https://freesound.org/s/346373/ CC0 1.0; "Clothing Ruffle 04.wav" by WhiteFire43 https://freesound.org/s/641387/ CC0 1.0
+heartbeat_loop.ogg: "heartbeat-100bpm.wav" by loudernoises https://freesound.org/s/332808/ CC0 1.0
+heavy_far.ogg: "Air Defense Artillery Avenger Training .50cal (tH4YBTw8vk8).flac" by qubodup https://freesound.org/s/160355/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb)
+humvee_drive_loop.ogg: "Humvee - Truck Driving Inside Convoy Assault Ops (P1U5o3hkt1o)" by qubodup https://freesound.org/s/160357/ CC0 1.0
+humvee_idle_loop.ogg: "engine idle van diesel CBC microwave truck1 winter with heater noise +rev start.flac" by kyles https://freesound.org/s/453989/ CC0 1.0
+impact_concrete_1.ogg: "Stone Impact Rubble Debris 1" by Sheyvan https://freesound.org/s/569497/ CC0 1.0; synthesised (CC0): transient snap, low-end thump layer
+impact_concrete_2.ogg: "Stone Impact Rubble Debris 6" by Sheyvan https://freesound.org/s/569502/ CC0 1.0; synthesised (CC0): transient snap, low-end thump layer
+impact_concrete_3.ogg: "Stone Impact Rubble Debris 12" by Sheyvan https://freesound.org/s/569508/ CC0 1.0; synthesised (CC0): transient snap, low-end thump layer
+impact_dirt_1.ogg: "Bullet impact ground (subsonic) SFX" by modusmogulus https://freesound.org/s/789388/ CC0 1.0
+impact_dirt_2.ogg: "Single Rock hit Dirt.wav" by worthahep88 https://freesound.org/s/319222/ CC0 1.0; synthesised (CC0): low-end thump layer, transient snap
+impact_dirt_3.ogg: "Single Rock hit dirt 2.wav" by worthahep88 https://freesound.org/s/319229/ CC0 1.0; synthesised (CC0): low-end thump layer, transient snap
+impact_flesh_1.ogg: "VisceralBulletImpacts.wav" by u1769092 https://freesound.org/s/423301/ CC0 1.0; "Clothed Body Hit 1 .wav" by Flem0527 https://freesound.org/s/629977/ CC0 1.0; synthesised (CC0): low-end thump layer
+impact_flesh_2.ogg: "VisceralBulletImpacts.wav" by u1769092 https://freesound.org/s/423301/ CC0 1.0; "Clothed Body Hit 1 .wav" by Flem0527 https://freesound.org/s/629977/ CC0 1.0; synthesised (CC0): low-end thump layer
+impact_metal_1.ogg: "snd_ImpactMediumMetal01.wav" by dorian.mastin https://freesound.org/s/381608/ CC0 1.0; synthesised (CC0): transient snap
+impact_metal_2.ogg: "snd_ImpactSmallMetal01.wav" by dorian.mastin https://freesound.org/s/381603/ CC0 1.0; synthesised (CC0): transient snap
+impact_metal_3.ogg: "snd_ImpactSmallMetal05.wav" by dorian.mastin https://freesound.org/s/381619/ CC0 1.0; synthesised (CC0): transient snap
+land_jump.ogg: "concrete footstep 3" by Yoyodaman234 https://freesound.org/s/166507/ CC0 1.0; "Landing On The Ground [1]" by SoundDesignForYou https://freesound.org/s/646661/ CC0 1.0; synthesised (CC0): low-end thump layer
+m203_launch_1.ogg: "M203 Grenade Launcher 1.flac" by qubodup https://freesound.org/s/162402/ CC0 1.0; synthesised (CC0): low-end thump layer
+m203_launch_2.ogg: "M203 Grenade Launcher 2.flac" by qubodup https://freesound.org/s/162401/ CC0 1.0; synthesised (CC0): low-end thump layer
+m240_shot_1.ogg: "M240 Machine Gun Single Shot" by qubodup https://freesound.org/s/854641/ CC0 1.0; synthesised (CC0): low-end thump layer
+m240_shot_2.ogg: "M240 Machine Gun Burst 1" by qubodup https://freesound.org/s/854637/ CC0 1.0; synthesised (CC0): low-end thump layer
+m240_shot_3.ogg: "IWI Negev NG-7" by areniporgen https://freesound.org/s/725798/ CC0 1.0; synthesised (CC0): low-end thump layer
+m249_shot_1.ogg: "Colt Model 733, Exterior close" by areniporgen https://freesound.org/s/704511/ CC0 1.0; synthesised (CC0): low-end thump layer
+m249_shot_2.ogg: "Colt M16A1.wav" by areniporgen https://freesound.org/s/693546/ CC0 1.0; synthesised (CC0): low-end thump layer
+m249_shot_3.ogg: "KAC LAMG.wav" by areniporgen https://freesound.org/s/693856/ CC0 1.0; synthesised (CC0): low-end thump layer
+m24_shot_1.ogg: "Sniper Shot in Field 1 (M2010 Enhanced Sniper Rifle ESR)" by qubodup https://freesound.org/s/855606/ CC0 1.0; synthesised (CC0): low-end thump layer
+m24_shot_2.ogg: "Sniper Shot in Field 2 (M2010 Enhanced Sniper Rifle ESR)" by qubodup https://freesound.org/s/855607/ CC0 1.0; synthesised (CC0): low-end thump layer
+m24_shot_3.ogg: "Sniper Shot in Field 3 (M2010 Enhanced Sniper Rifle ESR)" by qubodup https://freesound.org/s/855608/ CC0 1.0; synthesised (CC0): low-end thump layer
+m2_shot_1.ogg: "Air Defense Artillery Avenger Training .50cal (tH4YBTw8vk8).flac" by qubodup https://freesound.org/s/160355/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+m2_shot_2.ogg: "50 Cal MG" by qubodup https://freesound.org/s/239138/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+m2_shot_3.ogg: "50 Cal MG" by qubodup https://freesound.org/s/239138/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+m4_shot_1.ogg: "M4A1 Rifle Shot 9" by qubodup https://freesound.org/s/854230/ CC0 1.0; synthesised (CC0): low-end thump layer
+m4_shot_2.ogg: "M4A1 Rifle Shot 7" by qubodup https://freesound.org/s/854228/ CC0 1.0; synthesised (CC0): low-end thump layer
+m4_shot_3.ogg: "M4A1 Rifle Shot 12" by qubodup https://freesound.org/s/854233/ CC0 1.0; synthesised (CC0): low-end thump layer
+m9_shot_1.ogg: "SIG Sauer P226 Legion Exterior Close" by areniporgen https://freesound.org/s/711549/ CC0 1.0; synthesised (CC0): low-end thump layer
+m9_shot_2.ogg: "Glock 19X" by areniporgen https://freesound.org/s/828786/ CC0 1.0; synthesised (CC0): low-end thump layer
+m9_shot_3.ogg: "9mm pistol shot" by michorvath https://freesound.org/s/427592/ CC0 1.0; synthesised (CC0): low-end thump layer
+mag_in.ogg: "An M16 Rifle being reloaded while empty; full sequence" by serøutōnin--deprivəd https://freesound.org/s/725397/ CC0 1.0
+mag_out.ogg: "An M16 Rifle being reloaded while empty; full sequence" by serøutōnin--deprivəd https://freesound.org/s/725397/ CC0 1.0
+makarov_shot_1.ogg: "Vektor CP1" by areniporgen https://freesound.org/s/712087/ CC0 1.0; synthesised (CC0): low-end thump layer
+makarov_shot_2.ogg: "ASP Pistol" by areniporgen https://freesound.org/s/734061/ CC0 1.0; synthesised (CC0): low-end thump layer
+makarov_shot_3.ogg: "SIG Sauer P220 exterior" by areniporgen https://freesound.org/s/712085/ CC0 1.0; synthesised (CC0): low-end thump layer
+mg_far_1.ogg: "M240 Machine Gun Single Shot" by qubodup https://freesound.org/s/854641/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb)
+mg_far_2.ogg: "HK51.wav" by areniporgen https://freesound.org/s/693547/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), distance processing (low-pass, slapback, reverb)
+pickup_drive_loop.ogg: "Car driving slow from interior with open window, Toyota Landcruiser 4x4, moving motor on dirt road, voices sometimes" by felix.blume https://freesound.org/s/668554/ CC0 1.0
+pickup_idle_loop.ogg: "truck pickup idle smoky and drive off far, then pull up long and stop on gravel and atv pass.flac" by kyles https://freesound.org/s/450222/ CC0 1.0
+pkm_shot_1.ogg: "HK51.wav" by areniporgen https://freesound.org/s/693547/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+pkm_shot_2.ogg: "Heckler & Koch G3" by areniporgen https://freesound.org/s/712577/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+pkm_shot_3.ogg: "HK51.wav" by areniporgen https://freesound.org/s/693547/ CC0 1.0; synthesised (CC0): synthetic tail (reverb grown from the shot head), low-end thump layer
+prone_down.ogg: "foley cloth rustle.wav" by martian https://freesound.org/s/19291/ CC0 1.0; "Body fall_01.wav" by deleted_user_2104797 https://freesound.org/s/346695/ CC0 1.0
+radio_chatter_loop.ogg: "Military Air Strike Radio Chatter" by qubodup https://freesound.org/s/855900/ CC0 1.0; synthesised (CC0): grain reversal, band-limiting, radio distortion and hiss
+radio_squelch_1.ogg: "Radio Sign Off / Squelch" by JovianSounds https://freesound.org/s/524205/ CC0 1.0
+radio_squelch_2.ogg: "Walkie-talkie end of transmission" by LukaCafuka https://freesound.org/s/760245/ CC0 1.0
+ricochet_1.ogg: "S20-02 Rifle ricochets.wav" by craigsmith https://freesound.org/s/675955/ CC0 1.0
+ricochet_2.ogg: "S20-02 Rifle ricochets.wav" by craigsmith https://freesound.org/s/675955/ CC0 1.0
+ricochet_3.ogg: "S20-02 Rifle ricochets.wav" by craigsmith https://freesound.org/s/675955/ CC0 1.0
+rifle_far_1.ogg: "Rifle Bullet Shots in Afghanistan [RHdOtB0cTus]" by qubodup https://freesound.org/s/172397/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb)
+rifle_far_2.ogg: "Rifle Bullet Shots in Afghanistan [RHdOtB0cTus]" by qubodup https://freesound.org/s/172397/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb)
+rifle_far_3.ogg: "Rifle Bullet Shots in Afghanistan [RHdOtB0cTus]" by qubodup https://freesound.org/s/172397/ CC0 1.0; synthesised (CC0): distance processing (low-pass, slapback, reverb)
+rpg_launch_1.ogg: "rpg launcher  three shots.wav" by klangfabrik https://freesound.org/s/249298/ CC0 1.0; synthesised (CC0): low-end thump layer
+rpg_launch_2.ogg: "rpg launcher  three shots.wav" by klangfabrik https://freesound.org/s/249298/ CC0 1.0; synthesised (CC0): low-end thump layer
+rpg_launch_3.ogg: "rpg launcher  three shots.wav" by klangfabrik https://freesound.org/s/249298/ CC0 1.0; synthesised (CC0): low-end thump layer
+rpg_load.ogg: "Inserting a rocket into an RPG-7 rocket launcher; full sequence" by serøutōnin--deprivəd https://freesound.org/s/725401/ CC0 1.0
+shell_link.ogg: "Brass bullet shell casing drop onto concrete, multiple takes" by GrayJoy https://freesound.org/s/210102/ CC0 1.0; "BLLTShel_30CAL BULLET DROP_MP.wav" by MPierluissi https://freesound.org/s/460859/ CC0 1.0
+spg9_launch.ogg: "rpg launcher  three shots.wav" by klangfabrik https://freesound.org/s/249298/ CC0 1.0; "S21-02 Cannon shot.wav" by craigsmith https://freesound.org/s/675612/ CC0 1.0; synthesised (CC0): low-end thump layer
+step_concrete_1.ogg: "concrete footstep 1" by Yoyodaman234 https://freesound.org/s/166509/ CC0 1.0
+step_concrete_2.ogg: "concrete footstep 3" by Yoyodaman234 https://freesound.org/s/166507/ CC0 1.0
+step_concrete_3.ogg: "concrete footstep 4" by Yoyodaman234 https://freesound.org/s/166506/ CC0 1.0
+step_concrete_4.ogg: "concrete footstep 2" by Yoyodaman234 https://freesound.org/s/166508/ CC0 1.0
+step_dirt_1.ogg: "dirt/gravel footstep 2" by Yoyodaman234 https://freesound.org/s/166510/ CC0 1.0
+step_dirt_2.ogg: "dirt/gravel footstep 1" by Yoyodaman234 https://freesound.org/s/166511/ CC0 1.0
+step_dirt_3.ogg: "dirt/gravel footstep 3" by Yoyodaman234 https://freesound.org/s/223154/ CC0 1.0
+step_dirt_4.ogg: "Dirt Footsteps 1" by simonjeffery13 https://freesound.org/s/750794/ CC0 1.0
+step_gravel_1.ogg: "Left Gravel Footstep 2" by Ali_6868 https://freesound.org/s/384871/ CC0 1.0
+step_gravel_2.ogg: "Left Gravel Footstep 4" by Ali_6868 https://freesound.org/s/384875/ CC0 1.0
+step_gravel_3.ogg: "Right Gravel Footstep 1" by Ali_6868 https://freesound.org/s/384877/ CC0 1.0
+svd_shot_1.ogg: "Izhmash Saiga MK-106.wav" by areniporgen https://freesound.org/s/696023/ CC0 1.0; synthesised (CC0): low-end thump layer
+svd_shot_2.ogg: "FN SCAR-H" by areniporgen https://freesound.org/s/702225/ CC0 1.0; synthesised (CC0): low-end thump layer
+svd_shot_3.ogg: "Sniper Shot from Wood and Metal Post 3" by qubodup https://freesound.org/s/855604/ CC0 1.0; synthesised (CC0): low-end thump layer
+switch_fire_mode.ogg: "Taurus G2c Safety Switch" by NoonerBear https://freesound.org/s/589843/ CC0 1.0
+tinnitus.ogg: synthesised (CC0): tinnitus tone
+tyre_skid.ogg: "Tires Squeaking.aif" by RutgerMuller https://freesound.org/s/104026/ CC0 1.0
+ui_click.ogg: "Normal click" by Breviceps https://freesound.org/s/448086/ CC0 1.0
+ui_select.ogg: "UI_Click.wav" by finix473 https://freesound.org/s/546974/ CC0 1.0
+vehicle_impact.ogg: "Car Crash (with Glass)" by magnuswaker https://freesound.org/s/592388/ CC0 1.0; "S37-14 Two cars crash foley; good metallic bump.wav" by craigsmith https://freesound.org/s/675466/ CC0 1.0; synthesised (CC0): low-end thump layer
+whiz_1.ogg: "Fly-by whiz SFX (subsonic)" by modusmogulus https://freesound.org/s/789222/ CC0 1.0
+whiz_2.ogg: "Small projectile whiz/pew" by modusmogulus https://freesound.org/s/789221/ CC0 1.0
+whiz_3.ogg: "Whizzby" by Daleonfire https://freesound.org/s/505238/ CC0 1.0
+zip_tie.ogg: "ziptie" by joliestarr https://freesound.org/s/827501/ CC0 1.0

@@ -1,0 +1,570 @@
+{
+ "m4_shot": {
+  "files": [
+   "m4_shot_1.ogg",
+   "m4_shot_2.ogg",
+   "m4_shot_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "m249_shot": {
+  "files": [
+   "m249_shot_1.ogg",
+   "m249_shot_2.ogg",
+   "m249_shot_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "m240_shot": {
+  "files": [
+   "m240_shot_1.ogg",
+   "m240_shot_2.ogg",
+   "m240_shot_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "m24_shot": {
+  "files": [
+   "m24_shot_1.ogg",
+   "m24_shot_2.ogg",
+   "m24_shot_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "m9_shot": {
+  "files": [
+   "m9_shot_1.ogg",
+   "m9_shot_2.ogg",
+   "m9_shot_3.ogg"
+  ],
+  "gain": 0.845,
+  "loop": false
+ },
+ "ak_shot": {
+  "files": [
+   "ak_shot_1.ogg",
+   "ak_shot_2.ogg",
+   "ak_shot_3.ogg"
+  ],
+  "gain": 0.98,
+  "loop": false
+ },
+ "pkm_shot": {
+  "files": [
+   "pkm_shot_1.ogg",
+   "pkm_shot_2.ogg",
+   "pkm_shot_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "svd_shot": {
+  "files": [
+   "svd_shot_1.ogg",
+   "svd_shot_2.ogg",
+   "svd_shot_3.ogg"
+  ],
+  "gain": 0.874,
+  "loop": false
+ },
+ "makarov_shot": {
+  "files": [
+   "makarov_shot_1.ogg",
+   "makarov_shot_2.ogg",
+   "makarov_shot_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "m2_shot": {
+  "files": [
+   "m2_shot_1.ogg",
+   "m2_shot_2.ogg",
+   "m2_shot_3.ogg"
+  ],
+  "gain": 0.994,
+  "loop": false
+ },
+ "dshk_shot": {
+  "files": [
+   "dshk_shot_1.ogg",
+   "dshk_shot_2.ogg",
+   "dshk_shot_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "m203_launch": {
+  "files": [
+   "m203_launch_1.ogg",
+   "m203_launch_2.ogg"
+  ],
+  "gain": 0.963,
+  "loop": false
+ },
+ "rpg_launch": {
+  "files": [
+   "rpg_launch_1.ogg",
+   "rpg_launch_2.ogg",
+   "rpg_launch_3.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "at4_launch": {
+  "files": [
+   "at4_launch_1.ogg",
+   "at4_launch_2.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "spg9_launch": {
+  "files": [
+   "spg9_launch.ogg"
+  ],
+  "gain": 0.951,
+  "loop": false
+ },
+ "grenade_pin": {
+  "files": [
+   "grenade_pin.ogg"
+  ],
+  "gain": 0.342,
+  "loop": false
+ },
+ "grenade_throw": {
+  "files": [
+   "grenade_throw.ogg"
+  ],
+  "gain": 0.264,
+  "loop": false
+ },
+ "rifle_far": {
+  "files": [
+   "rifle_far_1.ogg",
+   "rifle_far_2.ogg",
+   "rifle_far_3.ogg"
+  ],
+  "gain": 0.423,
+  "loop": false
+ },
+ "mg_far": {
+  "files": [
+   "mg_far_1.ogg",
+   "mg_far_2.ogg"
+  ],
+  "gain": 0.318,
+  "loop": false
+ },
+ "heavy_far": {
+  "files": [
+   "heavy_far.ogg"
+  ],
+  "gain": 0.392,
+  "loop": false
+ },
+ "explosion_far": {
+  "files": [
+   "explosion_far_1.ogg",
+   "explosion_far_2.ogg"
+  ],
+  "gain": 0.49,
+  "loop": false
+ },
+ "explosion_near": {
+  "files": [
+   "explosion_near_1.ogg",
+   "explosion_near_2.ogg",
+   "explosion_near_3.ogg"
+  ],
+  "gain": 0.818,
+  "loop": false
+ },
+ "explosion_big": {
+  "files": [
+   "explosion_big.ogg"
+  ],
+  "gain": 0.673,
+  "loop": false
+ },
+ "debris_fall": {
+  "files": [
+   "debris_fall.ogg"
+  ],
+  "gain": 0.432,
+  "loop": false
+ },
+ "crack_supersonic": {
+  "files": [
+   "crack_supersonic_1.ogg",
+   "crack_supersonic_2.ogg",
+   "crack_supersonic_3.ogg",
+   "crack_supersonic_4.ogg"
+  ],
+  "gain": 1.0,
+  "loop": false
+ },
+ "whiz": {
+  "files": [
+   "whiz_1.ogg",
+   "whiz_2.ogg",
+   "whiz_3.ogg"
+  ],
+  "gain": 0.674,
+  "loop": false
+ },
+ "impact_concrete": {
+  "files": [
+   "impact_concrete_1.ogg",
+   "impact_concrete_2.ogg",
+   "impact_concrete_3.ogg"
+  ],
+  "gain": 0.88,
+  "loop": false
+ },
+ "impact_dirt": {
+  "files": [
+   "impact_dirt_1.ogg",
+   "impact_dirt_2.ogg",
+   "impact_dirt_3.ogg"
+  ],
+  "gain": 0.822,
+  "loop": false
+ },
+ "impact_metal": {
+  "files": [
+   "impact_metal_1.ogg",
+   "impact_metal_2.ogg",
+   "impact_metal_3.ogg"
+  ],
+  "gain": 0.907,
+  "loop": false
+ },
+ "impact_flesh": {
+  "files": [
+   "impact_flesh_1.ogg",
+   "impact_flesh_2.ogg"
+  ],
+  "gain": 0.632,
+  "loop": false
+ },
+ "ricochet": {
+  "files": [
+   "ricochet_1.ogg",
+   "ricochet_2.ogg",
+   "ricochet_3.ogg"
+  ],
+  "gain": 0.244,
+  "loop": false
+ },
+ "glass_break": {
+  "files": [
+   "glass_break.ogg"
+  ],
+  "gain": 0.521,
+  "loop": false
+ },
+ "mag_out": {
+  "files": [
+   "mag_out.ogg"
+  ],
+  "gain": 0.529,
+  "loop": false
+ },
+ "mag_in": {
+  "files": [
+   "mag_in.ogg"
+  ],
+  "gain": 0.314,
+  "loop": false
+ },
+ "bolt_release": {
+  "files": [
+   "bolt_release.ogg"
+  ],
+  "gain": 0.937,
+  "loop": false
+ },
+ "charging_handle_ak": {
+  "files": [
+   "charging_handle_ak.ogg"
+  ],
+  "gain": 0.315,
+  "loop": false
+ },
+ "bolt_action_cycle": {
+  "files": [
+   "bolt_action_cycle.ogg"
+  ],
+  "gain": 0.438,
+  "loop": false
+ },
+ "belt_box_open_close": {
+  "files": [
+   "belt_box_open_close.ogg"
+  ],
+  "gain": 0.425,
+  "loop": false
+ },
+ "dry_fire": {
+  "files": [
+   "dry_fire.ogg"
+  ],
+  "gain": 0.278,
+  "loop": false
+ },
+ "casing_drop": {
+  "files": [
+   "casing_drop_1.ogg",
+   "casing_drop_2.ogg",
+   "casing_drop_3.ogg"
+  ],
+  "gain": 0.366,
+  "loop": false
+ },
+ "shell_link": {
+  "files": [
+   "shell_link.ogg"
+  ],
+  "gain": 0.315,
+  "loop": false
+ },
+ "rpg_load": {
+  "files": [
+   "rpg_load.ogg"
+  ],
+  "gain": 0.247,
+  "loop": false
+ },
+ "switch_fire_mode": {
+  "files": [
+   "switch_fire_mode.ogg"
+  ],
+  "gain": 0.591,
+  "loop": false
+ },
+ "aim_cloth": {
+  "files": [
+   "aim_cloth.ogg"
+  ],
+  "gain": 0.201,
+  "loop": false
+ },
+ "step_concrete": {
+  "files": [
+   "step_concrete_1.ogg",
+   "step_concrete_2.ogg",
+   "step_concrete_3.ogg",
+   "step_concrete_4.ogg"
+  ],
+  "gain": 0.451,
+  "loop": false
+ },
+ "step_dirt": {
+  "files": [
+   "step_dirt_1.ogg",
+   "step_dirt_2.ogg",
+   "step_dirt_3.ogg",
+   "step_dirt_4.ogg"
+  ],
+  "gain": 0.734,
+  "loop": false
+ },
+ "step_gravel": {
+  "files": [
+   "step_gravel_1.ogg",
+   "step_gravel_2.ogg",
+   "step_gravel_3.ogg"
+  ],
+  "gain": 0.489,
+  "loop": false
+ },
+ "land_jump": {
+  "files": [
+   "land_jump.ogg"
+  ],
+  "gain": 0.63,
+  "loop": false
+ },
+ "prone_down": {
+  "files": [
+   "prone_down.ogg"
+  ],
+  "gain": 0.404,
+  "loop": false
+ },
+ "crawl_cloth_loop": {
+  "files": [
+   "crawl_cloth_loop.ogg"
+  ],
+  "gain": 0.38,
+  "loop": true
+ },
+ "breath_heavy_loop": {
+  "files": [
+   "breath_heavy_loop.ogg"
+  ],
+  "gain": 0.398,
+  "loop": true
+ },
+ "heartbeat_loop": {
+  "files": [
+   "heartbeat_loop.ogg"
+  ],
+  "gain": 0.473,
+  "loop": true
+ },
+ "body_fall": {
+  "files": [
+   "body_fall.ogg"
+  ],
+  "gain": 0.687,
+  "loop": false
+ },
+ "bandage": {
+  "files": [
+   "bandage.ogg"
+  ],
+  "gain": 0.427,
+  "loop": false
+ },
+ "zip_tie": {
+  "files": [
+   "zip_tie.ogg"
+  ],
+  "gain": 0.437,
+  "loop": false
+ },
+ "humvee_idle_loop": {
+  "files": [
+   "humvee_idle_loop.ogg"
+  ],
+  "gain": 0.398,
+  "loop": true
+ },
+ "humvee_drive_loop": {
+  "files": [
+   "humvee_drive_loop.ogg"
+  ],
+  "gain": 0.631,
+  "loop": true
+ },
+ "pickup_idle_loop": {
+  "files": [
+   "pickup_idle_loop.ogg"
+  ],
+  "gain": 0.355,
+  "loop": true
+ },
+ "pickup_drive_loop": {
+  "files": [
+   "pickup_drive_loop.ogg"
+  ],
+  "gain": 0.574,
+  "loop": true
+ },
+ "car_door": {
+  "files": [
+   "car_door.ogg"
+  ],
+  "gain": 0.379,
+  "loop": false
+ },
+ "tyre_skid": {
+  "files": [
+   "tyre_skid.ogg"
+  ],
+  "gain": 0.316,
+  "loop": false
+ },
+ "vehicle_impact": {
+  "files": [
+   "vehicle_impact.ogg"
+  ],
+  "gain": 0.587,
+  "loop": false
+ },
+ "amb_city_wind": {
+  "files": [
+   "amb_city_wind.ogg"
+  ],
+  "gain": 0.335,
+  "loop": true
+ },
+ "amb_birds_dry": {
+  "files": [
+   "amb_birds_dry.ogg"
+  ],
+  "gain": 0.345,
+  "loop": true
+ },
+ "amb_dogs_distant": {
+  "files": [
+   "amb_dogs_distant.ogg"
+  ],
+  "gain": 0.34,
+  "loop": true
+ },
+ "amb_adhan_far": {
+  "files": [
+   "amb_adhan_far.ogg"
+  ],
+  "gain": 0.441,
+  "loop": false
+ },
+ "amb_distant_battle": {
+  "files": [
+   "amb_distant_battle.ogg"
+  ],
+  "gain": 0.407,
+  "loop": true
+ },
+ "amb_flies": {
+  "files": [
+   "amb_flies.ogg"
+  ],
+  "gain": 0.395,
+  "loop": true
+ },
+ "radio_squelch": {
+  "files": [
+   "radio_squelch_1.ogg",
+   "radio_squelch_2.ogg"
+  ],
+  "gain": 0.483,
+  "loop": false
+ },
+ "radio_chatter_loop": {
+  "files": [
+   "radio_chatter_loop.ogg"
+  ],
+  "gain": 0.447,
+  "loop": true
+ },
+ "ui_click": {
+  "files": [
+   "ui_click.ogg"
+  ],
+  "gain": 0.933,
+  "loop": false
+ },
+ "ui_select": {
+  "files": [
+   "ui_select.ogg"
+  ],
+  "gain": 0.374,
+  "loop": false
+ },
+ "tinnitus": {
+  "files": [
+   "tinnitus.ogg"
+  ],
+  "gain": 0.15,
+  "loop": false
+ }
+}

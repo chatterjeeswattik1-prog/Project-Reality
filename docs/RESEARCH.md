@@ -559,6 +559,58 @@ Asset loadouts:
 
 ---
 
+## 8. Squad and Six Days in Fallujah (2026-10-22)
+
+The user asked for gameplay closer to **Squad** and **Six Days in Fallujah** (SDIF), and for weapon handling like the Squad
+AKM reference video (frames in `tools/blender/src-assets/ref/video/`). Published numbers are scarce; values marked ~ are tuning.
+
+**Aiming (Squad v6 Infantry Combat Overhaul onwards).** No PR settle cone: the round leaves along the barrel with a small
+mechanical dispersion. Difficulty is visible: the sights sway (slow breathing figure-of-eight ~0.3 Hz plus a faster
+tremor), more standing than crouched or prone, much more when moving, out of breath (x2.5-3 when empty) or suppressed;
+hold breath steadies the sights for a few seconds (not under suppression). Recoil climbs; the shooter pulls down; part of
+each kick recovers. ADS time per weapon (~0.25 s carbine to ~0.7 s MMG). Implemented in `game/soldier.ts`
+(`swayTarget`, `recoil`, `devTarget` = mechanical `acc` when aimed, hip cone otherwise).
+
+**Reloads (AKM, from the video, ~4.5 s).** 0-0.75 s rifle lifted, muzzle up ~40 deg, rolled ~30-45 deg clockwise, support hand
+to the magazine; ~1 s magazine rocked forward off its front lug and taken away; the rifle waits canted while the hand
+fetches a fresh one; ~2.5-3.25 s the new magazine is hooked on the lug and rocked back; ~3.5 s seated; back to ready by
+~4.5 s. Empty reloads add the charging handle (reach over the top on the AK). Squad keeps partly used magazines.
+Implemented as keyframed choreography in `player/handling.ts` (AK, AR, belt, bolt, pistol, RPG).
+
+**Bipods and rests.** Squad/RO2/Insurgency: deploy on the ground (prone) or on a horizontal surface just below the sights
+(window sill, wall top, sandbags, car bonnet) ~0-0.6 m under the eye and within ~0.75 m ahead; deploy ~0.5 s; sway
+x0.1-0.25, recoil x0.3-0.5; traverse limited (~+-30-45 deg yaw, -10..+15 deg pitch); moving or a stance change folds it.
+Insurgency default: bipod -70 % recoil, -75 % sway. Weapons without a bipod get a smaller "rest" bonus (sway x0.4).
+Players complain when detection is fussy - keep it forgiving. Implemented in `Soldier.supportSpot/toggleBipod` (G).
+
+**Suppression.** Squad: stronger rounds suppress more and longer; the view desaturates and blurs at the edges and sway
+grows; explosions suppress everyone. ~Radii 2 m pistol, 3 m 5.56, 4 m 7.62, 5 m MG; decay starts after ~1-1.5 s.
+
+**Hit feedback / lethality.** Squad v6 made players "more likely to be wounded or suppressed, less likely to be killed
+outright"; SDIF is very lethal at close range. Every hit must visibly interrupt the target (players complain about AI
+"running, jumping and shooting after direct hits"): flinch/stagger, aim knocked off, a short reaction delay. Impacts must
+read at range: dust jet and hanging puff, chips, sparks, persistent holes, tracers every 4th-5th round on MGs.
+
+**SDIF enemy AI** (Highwire devlogs): insurgents constantly move against the player, set ambushes outdoors and in houses,
+lure into traps, "stalk, flank and ambush", grenade, lay suppressive fire, notice flashlights and muzzle flashes; they
+must not see through walls, should lose accuracy with range and have a short acquisition delay; never respawn into
+cleared rooms. Procedural Architecture reshuffles interiors so routes cannot be learned.
+
+**SDIF friendly fireteam.** Player = team leader; context "GO" command: move, watch a sector, suppress (tap while
+aiming), form up, stack up / breach a door, plant C4, mark IED. While moving, members trail and cover the rear.
+
+**Doctrine encoded in `ai/team.ts`** (FM 3-21.8, FM 3-06.11). Fireteam wedge (AR left rear, grenadier right rear,
+~3-5 m in town), file in narrow streets/indoors. Contact drill: react (return fire, cover, ~3 s) -> report -> base of fire
+(AR + 1) keeps the enemy suppressed while the maneuver element flanks 45-90 deg off the line of fire -> shift/lift fire as
+the maneuver nears the objective -> assault (grenade, then in) -> consolidate/search. Insurgent cell (2-5 men, RPK/PKM,
+RPG): hide at windows and roofs, spring the ambush when the enemy is in the kill zone, shoot and scoot (never stay at one
+window more than a few bursts), stalk the flank, fall back house to house, hunt when it hears nothing.
+
+Sources: joinsquad.com/archive/revisiting-the-infantry-combat-overhaul-c0926, joinsquad.com/archive/squad-update-6-0-release-notes-eb2b4,
+patched.gg/games/squad/squad-104-patch-notes, insurgency.fandom.com/wiki/Bipod, forums.sixdays.com (DEVLOG July 2024 enemy AI;
+SITREP Fireteam AI Breaching; Autumn 2025 update notes), dualshockers.com/six-days-in-fallujah-how-to-command-your-team,
+en.wikipedia.org/wiki/Six_Days_in_Fallujah, US Army FM 3-21.8 and FM 3-06.11.
+
 ## Sources
 - PR Manual: Game Modes: https://www.realitymod.org/manual/en/game_modes.html
 - PR Manual: The Basics (spawns, respawn, tickets, medical, grid, supply): https://www.realitymod.org/manual/en/the_basics.html

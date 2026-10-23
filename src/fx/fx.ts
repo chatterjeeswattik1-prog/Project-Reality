@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import type { Surface } from '../world/sink';
 
 type V3 = [number, number, number];
-const MAX_P = 6000, MAX_DECALS = 1500, MAX_TRACERS = 300;
+const MAX_P = 6000, MAX_DECALS = 1500, MAX_TRACERS = 300, MAX_CASES = 160;
 
 function softDot(): THREE.Texture {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -69,11 +69,11 @@ const PARTICLE_VS = `
 attribute float size; attribute float alpha; attribute vec3 tint; attribute float rot;
 varying float vA; varying vec3 vT; varying float vR;
 #include <fog_pars_vertex>
-uniform float uScale;
+uniform float uScale; uniform float uMin;
 void main() {
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mvPosition;
-  gl_PointSize = size * uScale / max(0.1, -mvPosition.z);
+  gl_PointSize = max(size * uScale / max(0.1, -mvPosition.z), uMin);
   vA = alpha; vT = tint; vR = rot;
   #include <fog_vertex>
 }`;
@@ -106,7 +106,7 @@ class ParticleSet {
     g.setAttribute('rot', new THREE.BufferAttribute(this.rot, 1).setUsage(THREE.DynamicDrawUsage));
     g.setDrawRange(0, 0);
     const m = new THREE.ShaderMaterial({
-      uniforms: { map: { value: tex }, uScale: { value: 600 }, ...THREE.UniformsLib.fog }, vertexShader: PARTICLE_VS, fragmentShader: PARTICLE_FS,
+      uniforms: { map: { value: tex }, uScale: { value: 600 }, uMin: { value: additive ? 2.0 : 0.0 }, ...THREE.UniformsLib.fog }, vertexShader: PARTICLE_VS, fragmentShader: PARTICLE_FS,
       transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending, fog: true,
     });
     this.points = new THREE.Points(g, m); this.points.frustumCulled = false; this.points.renderOrder = additive ? 11 : 10;
@@ -152,6 +152,13 @@ export class FX {
   splats: THREE.InstancedMesh; private bloodN = 0;
   pools: THREE.InstancedMesh; private poolN = 0; private growing: { i: number; p: V3; r: number; max: number; rot: number }[] = [];
   private bodies = new Map<number, THREE.Object3D>();
+  /** Ejected cases: brass (rifles, pistols) or belt links, flying, bouncing once or twice and lying for a while. */
+  private cases: THREE.InstancedMesh; private caseN = 0;
+  private cs: { p: THREE.Vector3; v: THREE.Vector3; q: THREE.Quaternion; w: THREE.Vector3; floor: number; t: number; rest: boolean }[] = [];
+  /** Ground height below a point (set by the game; null = no ground found). */
+  floorAt: (p: V3) => number | null = () => null;
+  /** Sound when a case lands (set by the game). */
+  onCaseLand: (p: V3) => void = () => undefined;
   private rings: { m: THREE.Mesh; t: number; r: number }[] = [];
   private m4 = new THREE.Matrix4(); private q = new THREE.Quaternion(); private up = new THREE.Vector3(0, 0, 1);
   constructor(public scene: THREE.Scene) {
@@ -176,6 +183,9 @@ export class FX {
     for (let i = 0; i < 3; i++) { const l = new THREE.PointLight(0xffb060, 0, 14, 2); this.lights.push(l); this.lightT.push(0); scene.add(l); }
     const fm = new THREE.SpriteMaterial({ map: softDot(), color: 0xffc070, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
     for (let i = 0; i < 8; i++) { const s = new THREE.Sprite(fm); s.visible = false; this.flashes.push(s); this.flashT.push(0); scene.add(s); }
+    const cg = new THREE.CylinderGeometry(0.0055, 0.0055, 0.04, 7).rotateX(Math.PI / 2);
+    this.cases = new THREE.InstancedMesh(cg, new THREE.MeshStandardMaterial({ color: 0xc8a050, metalness: 0.85, roughness: 0.32 }), MAX_CASES);
+    this.cases.count = 0; this.cases.frustumCulled = false; this.cases.castShadow = false; scene.add(this.cases);
     const rg = new THREE.RingGeometry(0.85, 1, 48).rotateX(-Math.PI / 2);
     for (let i = 0; i < 4; i++) {
       const m = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({ color: 0xd8c8a8, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
@@ -197,24 +207,44 @@ export class FX {
     this.light(p, 6 * big, 0.05);
     for (let i = 0; i < 3; i++) this.smoke.spawn([p[0] + dir[0] * 0.2, p[1] + dir[1] * 0.2, p[2] + dir[2] * 0.2], [dir[0] * 1.5 + (Math.random() - 0.5) * 0.5, dir[1] * 1.5 + 0.3, dir[2] * 1.5 + (Math.random() - 0.5) * 0.5], 0.15 * big, 0.6, 0.8, 0.18, [0.8, 0.78, 0.74], 2.5, -0.2);
   }
+  /** Throw out a spent case from the ejection port with velocity v (m/s). */
+  casing(p: V3, v: V3, link = false) {
+    const i = this.caseN % MAX_CASES; this.caseN++;
+    const pos = new THREE.Vector3(...p), f = this.floorAt(p);
+    this.cs[i] = { p: pos, v: new THREE.Vector3(...v), q: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, 0)), w: new THREE.Vector3((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30), floor: f ?? p[1] - 1.6, t: 0, rest: false };
+    this.cases.count = Math.min(MAX_CASES, this.caseN);
+    void link;
+  }
   tracer(a: V3, b: V3, col: V3 = [1.0, 0.45, 0.2]) {
     const i = this.trN; this.trN = (this.trN + 1) % MAX_TRACERS;
-    this.tr.set([...a, ...b], i * 6); this.trc.set([col[0] * 0.3, col[1] * 0.3, col[2] * 0.3, ...col], i * 6); this.trLife[i] = 0.05;
+    this.tr.set([...a, ...b], i * 6); this.trc.set([col[0] * 0.3, col[1] * 0.3, col[2] * 0.3, ...col], i * 6); this.trLife[i] = 0.06;
+    // The burning compound as a chain of glowing dots along this step: a streak that reads at any range.
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), n = Math.min(24, Math.ceil(L / 2.5));
+    for (let k = 1; k <= n; k++) { const t = k / n; this.glow.spawn([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], [0, 0, 0], 0.16 * (0.5 + t * 0.5), 0, 0.045, 0.9, col); }
   }
   impact(p: V3, n: V3, surf: Surface, big = 1) {
     const c = DUST[surf] ?? DUST.concrete;
     if (surf === 'water') { for (let i = 0; i < 6; i++) this.smoke.spawn(p, [(Math.random() - 0.5) * 1.5, 3 + Math.random() * 3, (Math.random() - 0.5) * 1.5], 0.3, 0.6, 0.7, 0.5, c, 1, 9.8); return; }
-    const k = surf === 'dirt' || surf === 'sandbag' ? 7 : 4;
-    for (let i = 0; i < k * big; i++) this.smoke.spawn([p[0] + n[0] * 0.05, p[1] + n[1] * 0.05, p[2] + n[2] * 0.05], [n[0] * (1 + Math.random() * 2) + (Math.random() - 0.5), n[1] * (1 + Math.random() * 2) + Math.random() * 0.8, n[2] * (1 + Math.random() * 2) + (Math.random() - 0.5)], 0.18 * big, 0.9 * big, 0.7 + Math.random() * 0.8, 0.55, c, 3, 0.4);
+    // Every hit must read from 50–100 m away: a fast jet of dust straight out of the hole, a billowing puff that
+    // hangs and drifts, chips flying on ballistic arcs, sparks off metal and hard masonry, and a hole that stays.
+    const soft = surf === 'dirt' || surf === 'sandbag', o: V3 = [p[0] + n[0] * 0.05, p[1] + n[1] * 0.05, p[2] + n[2] * 0.05];
+    const R = () => Math.random() - 0.5;
+    for (let i = 0; i < (soft ? 5 : 3) * big; i++) { const s = 4 + Math.random() * 5; this.smoke.spawn(o, [n[0] * s + R() * 1.5, n[1] * s + (soft ? 2 + Math.random() * 3 : Math.random()), n[2] * s + R() * 1.5], 0.1 * big, 0.9 * big, 0.35 + Math.random() * 0.3, 0.8, c, 5, soft ? 6 : 1); }
+    for (let i = 0; i < (soft ? 7 : 5) * big; i++) this.smoke.spawn(o, [n[0] * (0.6 + Math.random() * 1.6) + R() * 0.8, n[1] * (0.6 + Math.random() * 1.6) + Math.random() * 0.6, n[2] * (0.6 + Math.random() * 1.6) + R() * 0.8], (0.22 + Math.random() * 0.15) * big, 0.7 * big, 1.4 + Math.random() * 1.6, 0.6, c, 2.2, -0.05, [c[0] * 1.08, c[1] * 1.08, c[2] * 1.08]);
     // Chips/debris (small, falling).
-    for (let i = 0; i < 3; i++) this.smoke.spawn(p, [n[0] * 3 + (Math.random() - 0.5) * 3, n[1] * 3 + Math.random() * 2, n[2] * 3 + (Math.random() - 0.5) * 3], 0.035, 0, 0.6, 0.9, [c[0] * 0.6, c[1] * 0.6, c[2] * 0.6], 0.5, 9.8);
-    if (surf === 'metal' || surf === 'concrete') for (let i = 0; i < (surf === 'metal' ? 5 : 2); i++) this.glow.spawn(p, [n[0] * 4 + (Math.random() - 0.5) * 6, n[1] * 4 + Math.random() * 3, n[2] * 4 + (Math.random() - 0.5) * 6], 0.05, 0, 0.18, 1, [1, 0.75, 0.4], 0.5, 9.8);
-    if (surf !== 'flesh' && surf !== 'glass') this.decal(p, n, 0.07 + Math.random() * 0.04);
+    const chip: V3 = surf === 'wood' ? [0.62, 0.48, 0.3] : [c[0] * 0.55, c[1] * 0.55, c[2] * 0.55];
+    for (let i = 0; i < 7 * big; i++) this.smoke.spawn(o, [n[0] * (2 + Math.random() * 4) + R() * 4, n[1] * 3 + Math.random() * 3, n[2] * (2 + Math.random() * 4) + R() * 4], 0.03 + Math.random() * 0.03, 0, 0.7 + Math.random() * 0.5, 1, chip, 0.3, 9.8);
+    const sparks = surf === 'metal' ? 9 : surf === 'concrete' || surf === 'masonry' ? (Math.random() < 0.5 ? 3 : 0) : 0;
+    for (let i = 0; i < sparks * big; i++) this.glow.spawn(o, [n[0] * 5 + R() * 9, n[1] * 5 + Math.random() * 4, n[2] * 5 + R() * 9], 0.06, 0, 0.12 + Math.random() * 0.15, 1, [1, 0.72, 0.35], 0.4, 9.8);
+    if (surf === 'metal') this.glow.spawn(o, [0, 0, 0], 0.35 * big, 0, 0.05, 1, [1, 0.8, 0.5]);
+    if (surf !== 'flesh' && surf !== 'glass') this.decal(p, n, (0.09 + Math.random() * 0.05) * (big > 1 ? 1.6 : 1));
   }
   /** Bullet hit on a body: a mist puff, a spray of droplets thrown along the bullet's path, and a few that fall. */
   blood(p: V3, dir: V3, big = 1) {
-    for (let i = 0; i < 10 * big; i++) this.smoke.spawn(p, [dir[0] * (0.8 + Math.random() * 1.6) + (Math.random() - 0.5) * 0.8, dir[1] * 1.2 + (Math.random() - 0.3) * 0.8, dir[2] * (0.8 + Math.random() * 1.6) + (Math.random() - 0.5) * 0.8], 0.18, 0.9, 0.35 + Math.random() * 0.25, 0.85, [0.42, 0.02, 0.02], 4, 1.5);
-    for (let i = 0; i < 14 * big; i++) this.smoke.spawn(p, [dir[0] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2, dir[1] * 2 + Math.random() * 1.5, dir[2] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2], 0.025 + Math.random() * 0.02, 0, 0.5 + Math.random() * 0.4, 1, [0.32, 0.01, 0.01], 0.4, 9.8);
+    // Entry puff (towards the shooter), the exit mist along the bullet's path, and droplets.
+    for (let i = 0; i < 5 * big; i++) this.smoke.spawn(p, [-dir[0] * (0.5 + Math.random()) + (Math.random() - 0.5) * 0.6, 0.3 + Math.random() * 0.5, -dir[2] * (0.5 + Math.random()) + (Math.random() - 0.5) * 0.6], 0.2, 0.8, 0.3 + Math.random() * 0.2, 0.8, [0.5, 0.06, 0.05], 5, 1);
+    for (let i = 0; i < 14 * big; i++) this.smoke.spawn(p, [dir[0] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1, dir[1] * 1.2 + (Math.random() - 0.3) * 0.8, dir[2] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1], 0.24, 1.3, 0.45 + Math.random() * 0.35, 0.9, [0.45, 0.03, 0.03], 3.5, 1.2, [0.3, 0.05, 0.04]);
+    for (let i = 0; i < 18 * big; i++) this.smoke.spawn(p, [dir[0] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2, dir[1] * 2 + Math.random() * 1.5, dir[2] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2], 0.025 + Math.random() * 0.02, 0, 0.5 + Math.random() * 0.4, 1, [0.32, 0.01, 0.01], 0.4, 9.8);
   }
   /** Splatter on a surface (wall behind the victim, the ground below). */
   bloodDecal(p: V3, n: V3, size: number) {
@@ -329,6 +359,21 @@ export class FX {
       this.m4.compose(new THREE.Vector3(g.p[0], g.p[1] + 0.015, g.p[2]), this.q, new THREE.Vector3(g.r * 2, g.r * 2, 1));
       this.pools.setMatrixAt(g.i, this.m4); this.pools.instanceMatrix.needsUpdate = true;
     }
+    let moved = false;
+    for (let i = 0; i < this.cs.length; i++) {
+      const c = this.cs[i]; if (!c || c.rest) continue;
+      moved = true; c.t += dt;
+      c.v.y -= 9.81 * dt; c.p.addScaledVector(c.v, dt);
+      c.q.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(c.w.x * dt, c.w.y * dt, c.w.z * dt)));
+      if (c.p.y < c.floor + 0.006) {
+        c.p.y = c.floor + 0.006;
+        if (Math.abs(c.v.y) > 0.8) this.onCaseLand([c.p.x, c.p.y, c.p.z]);
+        c.v.y = -c.v.y * 0.35; c.v.x *= 0.5; c.v.z *= 0.5; c.w.multiplyScalar(0.5);
+        if (Math.abs(c.v.y) < 0.4) { c.rest = true; c.q.setFromEuler(new THREE.Euler(0, Math.random() * 6.28, 0)).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0)); }
+      }
+      this.m4.compose(c.p, c.q, new THREE.Vector3(1, 1, 1)); this.cases.setMatrixAt(i, this.m4);
+    }
+    if (moved) this.cases.instanceMatrix.needsUpdate = true;
     this.smoke.update(dt, this.wind); this.glow.update(dt, [0, 0, 0]);
   }
   setScale(h: number) { for (const s of [this.smoke, this.glow]) (s.points.material as THREE.ShaderMaterial).uniforms.uScale.value = h * 0.9; }

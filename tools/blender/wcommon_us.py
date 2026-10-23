@@ -987,6 +987,9 @@ def bake_weapon(gid, objs, size=1024, samples=6, ao_dist=0.012, edge_r=0.0012, l
         mtl[sel] = np.clip(f['metal'] * (1 - wear) + f['worn_metal'] * wear - 0.3 * d, 0, 1)
     imc = _image(gid + '_basecolor', _srgb(col), 'sRGB')
     imr = _image(gid + '_metalrough', np.stack([np.zeros_like(rgh), rgh, mtl], -1), 'Non-Color')
+    if size > 1024:
+        imr.scale(1024, 1024)
+        imr.pack()
     N_ = np.array(nrm.pixels[:], np.float32).reshape(size, size, 4)[..., :3]
     imn = _image(gid + '_normal', N_, 'Non-Color')
     fm = bpy.data.materials.new(gid + '_finish')

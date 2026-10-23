@@ -1,5 +1,6 @@
 """Extra helpers for the insurgent weapon builder (tools/blender/weapons_ins.py).
-Procedural textures (wood grain, worn steel, bakelite, olive paint) generated with numpy and packed into the GLB,
+Procedural Cycles materials (worn steel, laminated / solid wood, bakelite, paint) baked per weapon into base colour,
+metallic-roughness and tangent-space normal maps packed into the GLB, stamped markings,
 loft / lathe / path-loft mesh builders, grouping of parts into the animated child meshes, box-projected UVs,
 and preview renders. Builds on tools/blender/common.py (not modified)."""
 import math, os, tempfile
@@ -10,10 +11,16 @@ from mathutils import Vector, Matrix
 from common import reset, mat, clear_mats, empty
 
 # ------------------------------------------------------------------ materials (procedural, baked per weapon)
-# Every part material is a Cycles node network whose base colour / roughness / metallic end in reroute nodes named
-# OUT_BASE / OUT_ROUGH / OUT_METAL. bake_weapon() unwraps all meshes of a weapon into one UV atlas and bakes those outputs
-# (edge wear from a Bevel-node curvature mask, cavity grime from AO, wood grain, paint chips) into a base-colour texture and
-# a glTF metallic-roughness texture, then swaps in one plain Principled material per weapon.
+# Every part material is a Cycles node network whose base colour / roughness / metallic / micro-height end in reroute
+# nodes named OUT_BASE / OUT_ROUGH / OUT_METAL / OUT_HEIGHT. bake_weapon() unwraps all meshes of a weapon into one UV
+# atlas and bakes
+#   - a tangent-space normal map: OUT_HEIGHT (metres: wood pores and grain, checkering, scratches, pitting, stamped
+#     markings) through a Bump node on top of a Bevel-node normal (rounded edges on the low-poly mesh),
+#   - base colour: edge wear from a Bevel-node curvature mask gated by AO (only exposed convex edges go silver),
+#     handling polish on broad convex areas, scratches, cavity grime, wood grain / laminate plies, bakelite marbling,
+#   - glTF metallic-roughness (G = roughness, B = metallic),
+# then swaps in one plain Principled material per weapon (base colour + metal/rough + normal map).
+# All noise is procedural (deterministic for a given mesh); per-material variety comes from fixed seeds.
 TEXSCALE = {}
 
 
@@ -24,6 +31,7 @@ class _NT:
         self.N = self.nt.nodes
         self.L = self.nt.links
         self.y = 0
+        self._co = None
 
     def node(self, kind, **kw):
         n = self.N.new(kind)
@@ -54,6 +62,14 @@ class _NT:
         self.val(a, n.inputs[0]); self.val(k, n.inputs[1]); self.val(c, n.inputs[2])
         return n.outputs[0]
 
+    def mrange(self, x, a, b, c=0.0, d=1.0, smooth=True):
+        """Map x from [a, b] to [c, d], clamped (smoothstep by default)."""
+        n = self.node('ShaderNodeMapRange', interpolation_type='SMOOTHSTEP' if smooth else 'LINEAR', clamp=True)
+        self.val(x, n.inputs[0])
+        for i, v in zip((1, 2, 3, 4), (a, b, c, d)):
+            n.inputs[i].default_value = v
+        return n.outputs[0]
+
     def mix(self, fac, a, b):
         n = self.node('ShaderNodeMix', data_type='RGBA', clamp_factor=True)
         self.val(fac, n.inputs[0]); self.val(a, n.inputs[6]); self.val(b, n.inputs[7])
@@ -70,39 +86,72 @@ class _NT:
         self.val(fac, n.inputs[0])
         return n.outputs[0]
 
-    def coord(self, scale=(1, 1, 1)):
+    def coord(self, scale=(1, 1, 1), rot=(0, 0, 0), loc=(0, 0, 0)):
+        """Object coordinates, rotated (degrees, before scaling) then scaled and offset."""
         tc = self.node('ShaderNodeTexCoord')
-        if scale == (1, 1, 1):
-            return tc.outputs['Object']
-        mp = self.node('ShaderNodeMapping')
-        mp.inputs['Scale'].default_value = scale
-        self.link(tc.outputs['Object'], mp.inputs['Vector'])
-        return mp.outputs[0]
+        v = tc.outputs['Object']
+        if rot != (0, 0, 0):
+            mr = self.node('ShaderNodeMapping')
+            mr.inputs['Rotation'].default_value = tuple(math.radians(a) for a in rot)
+            self.link(v, mr.inputs['Vector'])
+            v = mr.outputs[0]
+        if scale != (1, 1, 1) or loc != (0, 0, 0):
+            mp = self.node('ShaderNodeMapping')
+            mp.inputs['Scale'].default_value = scale
+            mp.inputs['Location'].default_value = loc
+            self.link(v, mp.inputs['Vector'])
+            v = mp.outputs[0]
+        return v
 
-    def noise(self, scale, detail=3.0, rough=0.55, vec=None, out='Fac'):
+    def noise(self, scale, detail=3.0, rough=0.55, vec=None, out='Fac', distort=0.0):
         n = self.node('ShaderNodeTexNoise')
         n.inputs['Scale'].default_value = scale
         n.inputs['Detail'].default_value = detail
         n.inputs['Roughness'].default_value = rough
+        n.inputs['Distortion'].default_value = distort
         self.link(vec if vec is not None else self.coord(), n.inputs['Vector'])
         return n.outputs[out]
 
     def edge(self, radius=0.0018, gain=4.0):
-        bev = self.node('ShaderNodeBevel', samples=6)
+        """Curvature from the Bevel node: 0 on flat areas, -> 1 on sharp edges (convex and concave)."""
+        bev = self.node('ShaderNodeBevel', samples=8)
         bev.inputs['Radius'].default_value = radius
         geo = self.node('ShaderNodeNewGeometry')
         d = self.node('ShaderNodeVectorMath', operation='DOT_PRODUCT')
         self.link(bev.outputs['Normal'], d.inputs[0]); self.link(geo.outputs['Normal'], d.inputs[1])
         return self.math('MULTIPLY', self.math('SUBTRACT', 1.0, d.outputs['Value']), gain, True)
 
-    def cavity(self, dist=0.006, gain=1.6):
-        ao = self.node('ShaderNodeAmbientOcclusion', samples=6, only_local=False)
-        ao.inputs['Distance'].default_value = dist
-        return self.math('MULTIPLY', self.math('SUBTRACT', 1.0, ao.outputs['AO']), gain, True)
+    def ao(self, dist=0.006):
+        n = self.node('ShaderNodeAmbientOcclusion', samples=8, only_local=True)
+        n.inputs['Distance'].default_value = dist
+        return n.outputs['AO']
 
-    def finish(self, base, rough, metal):
+    def cavity(self, dist=0.006, gain=1.6):
+        return self.math('MULTIPLY', self.math('SUBTRACT', 1.0, self.ao(dist)), gain, True)
+
+    def scratches(self, scale, width=0.012, density=0.45, seed=0.0, rot=(0, 0, 0), stretch=0.06):
+        """Thin straight scratches: edges of a Voronoi cell field stretched along the (rotated) Y axis, so cells become
+        long needles whose long edges are the scratch lines; only some cells (random cell colour) and patches (noise)
+        are kept. scale = cells per metre across the scratch, width in cell units. Returns 0..1."""
+        v = self.coord((scale, scale * stretch, scale), rot, (seed * 1.37, seed * 2.11, seed * 0.73))
+        ve = self.node('ShaderNodeTexVoronoi', voronoi_dimensions='3D', feature='DISTANCE_TO_EDGE')
+        ve.inputs['Scale'].default_value = 1.0
+        self.link(v, ve.inputs['Vector'])
+        vc = self.node('ShaderNodeTexVoronoi', voronoi_dimensions='3D', feature='F1')
+        vc.inputs['Scale'].default_value = 1.0
+        self.link(v, vc.inputs['Vector'])
+        sx = self.node('ShaderNodeSeparateColor')
+        self.link(vc.outputs['Color'], sx.inputs[0])
+        line = self.mrange(ve.outputs['Distance'], width, width * 0.25)
+        pick = self.mrange(sx.outputs[0], 1 - density, 1 - density + 0.05)
+        # Fine patch mask breaks the lines into short segments (and hides most of the short cell-end edges).
+        dens = self.mrange(self.noise(scale * 0.3, 2, 0.5, self.coord(loc=(seed * 3.1, seed, -seed))), 0.5, 0.6)
+        dens = self.math('MULTIPLY', dens, self.mrange(self.noise(scale * 0.05, 2, 0.5, self.coord(loc=(-seed, seed * 2, seed))), 0.35, 0.55))
+        return self.math('MULTIPLY', self.math('MULTIPLY', line, pick), dens)
+
+    def finish(self, base, rough, metal, height=0.0):
         outs = []
-        for name, sock in (('OUT_BASE', base), ('OUT_ROUGH', rough), ('OUT_METAL', metal)):
+        for name, sock in (('OUT_BASE', base), ('OUT_ROUGH', rough), ('OUT_METAL', metal), ('OUT_HEIGHT', height)):
             r = self.node('NodeReroute', name=name)
             if isinstance(sock, (int, float)):
                 v = self.node('ShaderNodeValue'); v.outputs[0].default_value = sock; sock = v.outputs[0]
@@ -117,140 +166,203 @@ def _lin(c):
     return tuple(((x + 0.055) / 1.055) ** 2.4 if x > 0.04045 else x / 12.92 for x in c)
 
 
-def m_steel(name, base=(0.11, 0.115, 0.125), worn=(0.5, 0.5, 0.5), wear=1.0, rough=0.42, metal=0.8, seed=0.0):
-    """Blued / phosphated steel: mottled finish, bright polished edges, dark oily cavities, fine scratches."""
+def _sc(c, k, add=0.0):
+    return tuple(min(1.0, x * k + add) for x in c)
+
+
+def m_steel(name, base=(0.18, 0.18, 0.175), worn=(0.6, 0.6, 0.59), wear=1.0, rough=0.45, metal=0.7, seed=0.0, pit=1.0):
+    """Worn blued / phosphated steel (colours sRGB): neutral grey-black mottled finish, silver wear on exposed sharp
+    edges (Bevel curvature gated by AO, broken up by noise), broad handling polish on convex areas, fine scratches in
+    several directions, dark oily grime and a little rust in cavities, pitting in the normal map."""
     m = bpy.data.materials.new(name); t = _NT(m)
-    co = t.coord()
-    n_big = t.noise(9.0, 3, 0.5, co)
-    n_mid = t.noise(70.0, 4, 0.6, co)
-    scr = t.noise(160.0, 2, 0.5, t.coord((3, 0.15, 3)))
-    e = t.edge(0.0016, 5.0)
-    wearm = t.math('MULTIPLY', t.mad(t.math('SUBTRACT', n_mid, 0.5), 1.1, t.math('SUBTRACT', e, 0.22)), 2.0 * wear, True)
-    cav = t.cavity(0.007, 1.8)
-    c0 = t.mix(n_big, _lin(base), _lin(tuple(min(1, x * 1.35) for x in base)))
-    c1 = t.mix(t.math('MULTIPLY', t.math('GREATER_THAN', scr, 0.74), 0.18 * wear), c0, _lin(tuple(x * 0.6 for x in worn)))
-    c2 = t.mix(wearm, c1, _lin(worn))
-    c3 = t.mix(t.math('MULTIPLY', cav, 0.75), c2, _lin((0.03, 0.028, 0.025)))
-    r = t.mad(t.math('SUBTRACT', n_big, 0.5), 0.18, t.mad(wearm, -0.16, t.mad(cav, 0.2, rough)))
-    mt = t.mad(wearm, 1.0 - metal, metal)
-    t.finish(c3, r, mt)
+    m['bevel'] = 0.0007
+    co = t.coord(loc=(seed, seed * 0.5, -seed))
+    n_big = t.noise(7.0, 3, 0.5, co)
+    n_mid = t.noise(55.0, 4, 0.62, co)
+    n_fine = t.noise(420.0, 2, 0.5, co)
+    open_ = t.mrange(t.ao(0.008), 0.55, 0.95)                    # 1 where nothing is close (exposed)
+    e = t.edge(0.0009, 7.0)
+    e_conv = t.math('MULTIPLY', e, open_)
+    # Wear: exposed edges, broken by mid noise, grows with `wear`.
+    wearm = t.mrange(t.mad(t.math('SUBTRACT', n_mid, 0.5), 0.8, t.math('MULTIPLY', e_conv, 1.3)), 0.36 - 0.12 * wear, 0.5 - 0.12 * wear)
+    wearm = t.math('MULTIPLY', wearm, min(1.0, wear * 1.2))
+    # Handling polish: broad convex regions (big bevel radius) lighten and get smoother.
+    pol = t.math('MULTIPLY', t.mrange(t.edge(0.004, 2.2), 0.15, 0.6), t.mrange(n_big, 0.3, 0.7, 0.2, 0.7))
+    pol = t.math('MULTIPLY', pol, open_)
+    sc = t.math('MAXIMUM', t.math('MAXIMUM', t.scratches(150.0, 0.02, 0.22, seed + 1, (0, 0, 0), 0.16),
+                                       t.scratches(120.0, 0.018, 0.16, seed + 2, (24, 0, 0), 0.2)),
+                t.math('MAXIMUM', t.scratches(130.0, 0.016, 0.12, seed + 3, (-33, 0, 12), 0.22),
+                       t.scratches(90.0, 0.016, 0.1, seed + 4, (75, 20, 0), 0.25)))
+    sc = t.math('MULTIPLY', sc, 0.6 * wear)
+    cav = t.cavity(0.007, 1.7)
+    pitm = t.math('MULTIPLY', t.mrange(n_fine, 0.66, 0.74), pit)
+    c0 = t.mix(n_big, _lin(_sc(base, 0.82)), _lin(_sc(base, 1.18)))
+    c0 = t.mix(t.math('MULTIPLY', t.mrange(n_mid, 0.35, 0.7), 0.25), c0, _lin(_sc(base, 0.8)))         # bluing variation
+    c1 = t.mix(t.math('MULTIPLY', pol, 0.3), c0, _lin(_sc(base, 1.45)))
+    c2 = t.mix(t.math('MULTIPLY', sc, 0.9), c1, _lin(_sc(worn, 0.85)))
+    c3 = t.mix(wearm, c2, _lin(worn))
+    rust = t.math('MULTIPLY', t.mrange(t.noise(30.0, 3, 0.6, co), 0.62, 0.75), t.math('MULTIPLY', cav, 0.6))
+    c4 = t.mix(t.math('MULTIPLY', cav, 0.7), c3, _lin((0.05, 0.045, 0.04)))
+    c5 = t.mix(rust, c4, _lin((0.2, 0.1, 0.05)))
+    c6 = t.mix(t.math('MULTIPLY', pitm, 0.5), c5, _lin(_sc(base, 0.55)))
+    r = t.mad(t.math('SUBTRACT', n_big, 0.5), 0.14, rough)
+    r = t.mad(pol, -0.12, r)
+    r = t.mad(wearm, -0.2, t.mad(sc, -0.08, t.mad(cav, 0.22, t.mad(rust, 0.3, r))))
+    mt = t.mad(wearm, 1.0 - metal, t.mad(cav, -0.25, t.mad(rust, -0.5, metal)))
+    h = t.mad(sc, -4e-5, t.mad(pitm, -3e-5, t.math('MULTIPLY', t.math('SUBTRACT', n_fine, 0.5), 1.2e-5)))
+    t.finish(c6, r, mt, h)
     return m
 
 
 def m_paint(name, base, chip=(0.32, 0.31, 0.3), dirt=(0.22, 0.19, 0.14), rough=0.62, chips=1.0):
-    """Painted metal: slight tonal variation, chipped edges showing steel, dust in cavities."""
+    """Painted metal: slight tonal variation, chipped edges showing steel, dust in cavities, scuffs."""
     m = bpy.data.materials.new(name); t = _NT(m)
+    m['bevel'] = 0.0008
     co = t.coord()
     n_big = t.noise(6.0, 3, 0.5, co)
     n_c = t.noise(90.0, 4, 0.65, co)
-    e = t.edge(0.002, 4.0)
-    chipm = t.math('GREATER_THAN', t.mad(e, 0.8, t.math('MULTIPLY', n_c, 0.6)), 1.0 - 0.38 * chips)
+    e = t.math('MULTIPLY', t.edge(0.0016, 4.0), t.mrange(t.ao(0.008), 0.55, 0.95))
+    chipm = t.mrange(t.mad(e, 0.8, t.math('MULTIPLY', n_c, 0.6)), 1.0 - 0.38 * chips, 1.04 - 0.38 * chips)
+    sc = t.math('MULTIPLY', t.scratches(120.0, 0.018, 0.15, 5, (20, 0, 0), 0.2), 0.6)
     cav = t.cavity(0.01, 1.5)
-    c0 = t.mix(n_big, _lin(tuple(x * 0.9 for x in base)), _lin(tuple(min(1, x * 1.1) for x in base)))
+    c0 = t.mix(n_big, _lin(_sc(base, 0.88)), _lin(_sc(base, 1.12)))
     c1 = t.mix(t.math('MULTIPLY', cav, 0.6), c0, _lin(dirt))
+    c1 = t.mix(sc, c1, _lin(_sc(base, 1.35)))
     c2 = t.mix(chipm, c1, _lin(chip))
-    r = t.mad(chipm, -0.25, t.mad(t.math('SUBTRACT', n_big, 0.5), 0.12, rough))
+    r = t.mad(chipm, -0.25, t.mad(t.math('SUBTRACT', n_big, 0.5), 0.12, t.mad(sc, 0.1, rough)))
     mt = t.math('MULTIPLY', chipm, 0.8)
-    t.finish(c2, r, mt)
+    h = t.mad(chipm, -4e-5, t.mad(sc, -1e-5, t.math('MULTIPLY', t.math('SUBTRACT', n_c, 0.5), 6e-6)))
+    t.finish(c2, r, mt, h)
     return m
 
 
-def m_wood(name, light, dark, laminate=False, rough=0.36, ring_scale=95.0, seed=0.0):
-    """Varnished wood: rings around the length axis (grain runs along +Y), fibre streaks, pores, worn bare edges,
-    dents and grime. laminate=True adds the stacked plies of AKM birch laminate."""
+def m_wood(name, light, dark, laminate=False, rough=0.3, ring_scale=95.0, seed=0.0, lacquer=1.0):
+    """Lacquered wood (sRGB colours): growth rings around the length axis (grain runs along +Y), fibre streaks, open
+    pores, laminate plies (AKM birch laminate: vertical veneers, so stripes show on curved and top / bottom faces),
+    dents, lacquer worn through to lighter raw wood on exposed edges, dirt in corners. Grain, pores and dents also go
+    into the height (normal map)."""
     m = bpy.data.materials.new(name); t = _NT(m)
-    co = t.coord()
+    m['bevel'] = 0.0012
+    co = t.coord(loc=(seed, -seed * 0.7, seed * 0.3))
     wave = t.node('ShaderNodeTexWave', wave_type='RINGS', rings_direction='Y', wave_profile='SAW')
     wave.inputs['Scale'].default_value = ring_scale
-    wave.inputs['Distortion'].default_value = 7.0
+    wave.inputs['Distortion'].default_value = 2.5
     wave.inputs['Detail'].default_value = 2.0
     wave.inputs['Detail Scale'].default_value = 1.2
-    t.link(co, wave.inputs['Vector'])
-    fib = t.noise(260.0, 2, 0.6, t.coord((1, 0.04, 1)))
-    pores = t.noise(900.0, 1, 0.5, t.coord((1, 0.25, 1)))
-    big = t.noise(4.0, 2, 0.5, co)
-    g = t.mad(wave.outputs['Fac'], 0.55, t.math('MULTIPLY', fib, 0.45))
+    t.link(t.coord((1.0, 0.08, 1.0), loc=(seed, 0, -seed)), wave.inputs['Vector'])
+    fib = t.noise(160.0, 3, 0.6, t.coord((1, 0.02, 1), loc=(seed, 0, seed)))
+    streak = t.mrange(t.noise(45.0, 2, 0.5, t.coord((1, 0.03, 1), loc=(-seed, 0, seed))), 0.45, 0.65)
+    pores = t.noise(700.0, 1, 0.5, t.coord((1, 0.12, 1)))
+    big = t.noise(3.0, 2, 0.5, co)
+    late = t.mrange(wave.outputs['Fac'], 0.55, 0.95)                    # dark late-wood band of each ring
+    g = t.mad(late, 0.35, t.mad(streak, 0.3, t.math('MULTIPLY', fib, 0.5)))
+    ply = None
     if laminate:
-        ply = t.node('ShaderNodeTexWave', wave_type='BANDS', bands_direction='X', wave_profile='SIN')
-        ply.inputs['Scale'].default_value = 34.0
-        ply.inputs['Distortion'].default_value = 1.5
-        ply.inputs['Detail'].default_value = 1.0
-        t.link(co, ply.inputs['Vector'])
-        g = t.mad(t.math('POWER', ply.outputs['Fac'], 6.0), 0.55, t.math('MULTIPLY', g, 0.75))
-    col = t.ramp(g, [(0.0, _lin(light)), (0.55, _lin(tuple((a + b) / 2 for a, b in zip(light, dark)))), (1.0, _lin(dark))])
-    col = t.mix(t.math('MULTIPLY', t.math('GREATER_THAN', pores, 0.66), 0.5), col, _lin(tuple(x * 0.55 for x in dark)))
-    col = t.mix(t.math('MULTIPLY', big, 0.35), col, _lin(tuple(x * 0.7 for x in dark)))
-    dents = t.math('GREATER_THAN', t.noise(35.0, 2, 0.5, co), 0.72)
-    col = t.mix(t.math('MULTIPLY', dents, 0.25), col, _lin(tuple(x * 0.5 for x in dark)))
-    e = t.edge(0.003, 3.0)
-    wearm = t.math('MULTIPLY', t.mad(t.math('SUBTRACT', t.noise(40.0, 3, 0.6, co), 0.5), 1.2, t.math('SUBTRACT', e, 0.2)), 1.8, True)
-    col = t.mix(t.math('MULTIPLY', wearm, 0.7), col, _lin(tuple(min(1, x * 1.45 + 0.04) for x in light)))
-    cav = t.cavity(0.008, 1.5)
-    col = t.mix(t.math('MULTIPLY', cav, 0.7), col, _lin((0.05, 0.03, 0.02)))
-    r = t.mad(wearm, 0.3, t.mad(t.math('SUBTRACT', big, 0.5), 0.15, t.mad(dents, 0.1, rough)))
-    t.finish(col, r, 0.0)
+        pw = t.node('ShaderNodeTexWave', wave_type='BANDS', bands_direction='X', wave_profile='SIN')
+        pw.inputs['Scale'].default_value = 90.0
+        pw.inputs['Distortion'].default_value = 0.6
+        pw.inputs['Detail'].default_value = 1.0
+        t.link(co, pw.inputs['Vector'])
+        ply = t.mrange(pw.outputs['Fac'], 0.82, 0.98)
+        g = t.mad(ply, 0.22, t.math('MULTIPLY', g, 0.9))
+    mid = tuple((a + b) / 2 for a, b in zip(light, dark))
+    col = t.ramp(t.mrange(g, 0.25, 0.8, 0.0, 1.0, False), [(0.0, _lin(light)), (0.4, _lin(mid)), (1.0, _lin(dark))])
+    col = t.mix(t.mrange(big, 0.3, 0.75, 0.0, 0.45), col, _lin(_sc(dark, 0.85)))                     # board-to-board tone
+    porem = t.mrange(pores, 0.64, 0.7)
+    col = t.mix(t.math('MULTIPLY', porem, 0.45), col, _lin(_sc(dark, 0.5)))
+    dents = t.mrange(t.noise(28.0, 2, 0.5, co), 0.7, 0.78)
+    col = t.mix(t.math('MULTIPLY', dents, 0.3), col, _lin(_sc(dark, 0.6)))
+    open_ = t.mrange(t.ao(0.01), 0.55, 0.95)
+    e = t.math('MULTIPLY', t.edge(0.003, 3.0), open_)
+    wearm = t.mrange(t.mad(t.math('SUBTRACT', t.noise(30.0, 3, 0.6, co), 0.5), 1.1, e), 0.45, 0.7)
+    col = t.mix(t.math('MULTIPLY', wearm, 0.75), col, _lin(_sc(light, 1.18, 0.05)))
+    sc = t.math('MAXIMUM', t.scratches(110.0, 0.018, 0.15, seed + 7, (25, 0, 0), 0.2), t.scratches(80.0, 0.016, 0.12, seed + 8, (-50, 0, 0), 0.2))
+    col = t.mix(t.math('MULTIPLY', sc, 0.5), col, _lin(_sc(light, 1.25, 0.04)))
+    cav = t.cavity(0.009, 1.6)
+    col = t.mix(t.math('MULTIPLY', cav, 0.75), col, _lin((0.06, 0.035, 0.02)))
+    grime = t.math('MULTIPLY', t.mrange(t.noise(12.0, 3, 0.6, co), 0.5, 0.8), 0.25)
+    col = t.mix(grime, col, _lin(_sc(dark, 0.55)))
+    r = t.mad(t.math('SUBTRACT', big, 0.5), 0.12, rough)
+    r = t.mad(wearm, 0.35 * lacquer, t.mad(sc, 0.15, t.mad(porem, 0.1, t.mad(cav, 0.15, t.mad(grime, 0.2, r)))))
+    h = t.mad(porem, -5e-5, t.mad(late, -2e-5, t.mad(fib, -2e-5, t.mad(dents, -8e-5, t.math('MULTIPLY', sc, -3e-5)))))
+    if ply is not None:
+        h = t.mad(ply, -6e-6, h)
+    t.finish(col, r, 0.0, h)
     return m
 
 
-def m_bakelite(name, a, b, rough=0.4, checker=False):
-    """Phenolic / polymer furniture: soft mottling, slightly glossy, lighter rubbed edges, grime in grooves.
-    checker=True adds the diamond checkering of AK / Makarov grip panels (pattern in the YZ plane)."""
+def m_bakelite(name, a, b, rough=0.38, checker=False, marble=1.0):
+    """Phenolic (bakelite) / polymer furniture (sRGB): swirled marbling, slightly glossy, rubbed lighter edges, scuffs,
+    grime in grooves. checker=True adds the diamond checkering of AK / Makarov grip panels (pattern in the YZ plane,
+    side faces only) to colour and height."""
     m = bpy.data.materials.new(name); t = _NT(m)
+    m['bevel'] = 0.0009
     co = t.coord()
-    n1 = t.noise(25.0, 4, 0.55, co)
-    n2 = t.noise(220.0, 2, 0.5, co)
-    col = t.mix(t.mad(n1, 0.8, t.math('MULTIPLY', n2, 0.2)), _lin(a), _lin(b))
+    n1 = t.noise(18.0, 4, 0.6, co, distort=1.6)
+    n2 = t.noise(160.0, 2, 0.5, co)
+    swirl = t.mrange(t.noise(9.0, 3, 0.55, t.coord((1, 0.4, 1)), distort=3.0), 0.35, 0.75)
+    col = t.mix(t.mad(n1, 0.7, t.math('MULTIPLY', n2, 0.3)), _lin(a), _lin(b))
+    col = t.mix(t.math('MULTIPLY', swirl, 0.35 * marble), col, _lin(_sc(b, 0.75)))
+    h = t.math('MULTIPLY', t.math('SUBTRACT', n2, 0.5), 4e-6)
+    side = None
     if checker:
         grooves = None
         for ang in (45.0, -45.0):
-            tc = t.node('ShaderNodeTexCoord'); mp = t.node('ShaderNodeMapping')
-            mp.inputs['Rotation'].default_value = (math.radians(ang), 0, 0)
-            t.link(tc.outputs['Object'], mp.inputs['Vector'])
             w = t.node('ShaderNodeTexWave', wave_type='BANDS', bands_direction='Z', wave_profile='SIN')
-            w.inputs['Scale'].default_value = 75.0
+            w.inputs['Scale'].default_value = 100.0
             w.inputs['Distortion'].default_value = 0.0
-            t.link(mp.outputs[0], w.inputs['Vector'])
-            g = t.math('GREATER_THAN', w.outputs['Fac'], 0.8)
+            t.link(t.coord(rot=(ang, 0, 0)), w.inputs['Vector'])
+            g = t.mrange(w.outputs['Fac'], 0.62, 0.9)
             grooves = g if grooves is None else t.math('MAXIMUM', grooves, g)
         geo = t.node('ShaderNodeNewGeometry'); sx = t.node('ShaderNodeSeparateXYZ')
         t.link(geo.outputs['Normal'], sx.inputs[0])
-        side = t.math('GREATER_THAN', t.math('ABSOLUTE', sx.outputs['X']), 0.8)
-        col = t.mix(t.math('MULTIPLY', t.math('MULTIPLY', grooves, side), 0.6), col, _lin(tuple(x * 0.45 for x in b)))
-    e = t.edge(0.0016, 4.0)
-    col = t.mix(t.math('MULTIPLY', e, 0.45), col, _lin(tuple(min(1, x * 1.35) for x in a)))
+        side = t.mrange(t.math('ABSOLUTE', sx.outputs['X']), 0.7, 0.85)
+        gm = t.math('MULTIPLY', grooves, side)
+        col = t.mix(t.math('MULTIPLY', gm, 0.55), col, _lin(_sc(b, 0.45)))
+        h = t.mad(gm, -2.2e-4, h)
+    open_ = t.mrange(t.ao(0.008), 0.55, 0.95)
+    e = t.math('MULTIPLY', t.edge(0.0016, 4.0), open_)
+    col = t.mix(t.math('MULTIPLY', e, 0.5), col, _lin(_sc(a, 1.3, 0.03)))
+    sc = t.math('MAXIMUM', t.scratches(130.0, 0.018, 0.2, 11, (15, 0, 0), 0.18), t.scratches(90.0, 0.016, 0.15, 12, (-40, 0, 0), 0.2))
+    col = t.mix(t.math('MULTIPLY', sc, 0.55), col, _lin(_sc(a, 1.35, 0.05)))
     cav = t.cavity(0.006, 1.6)
-    col = t.mix(t.math('MULTIPLY', cav, 0.7), col, _lin((0.04, 0.025, 0.02)))
-    t.finish(col, t.mad(e, -0.1, t.mad(cav, 0.2, rough)), 0.0)
+    col = t.mix(t.math('MULTIPLY', cav, 0.7), col, _lin((0.05, 0.03, 0.02)))
+    dust = t.math('MULTIPLY', t.mrange(t.noise(10.0, 3, 0.6, co), 0.55, 0.8), 0.18)
+    col = t.mix(dust, col, _lin((0.45, 0.38, 0.3)))
+    r = t.mad(e, -0.08, t.mad(cav, 0.2, t.mad(sc, 0.18, t.mad(dust, 0.3, rough))))
+    h = t.mad(sc, -3e-5, h)
+    t.finish(col, r, 0.0, h)
     return m
 
 
 def m_flat(name, rgb, rough=0.5, metal=0.0, var=0.08):
     m = bpy.data.materials.new(name); t = _NT(m)
     n = t.noise(40.0, 3, 0.5, t.coord())
-    col = t.mix(n, _lin(tuple(x * (1 - var) for x in rgb)), _lin(tuple(min(1, x * (1 + var)) for x in rgb)))
+    col = t.mix(n, _lin(_sc(rgb, 1 - var)), _lin(_sc(rgb, 1 + var)))
     cav = t.cavity(0.006, 1.2)
-    col = t.mix(t.math('MULTIPLY', cav, 0.5), col, _lin(tuple(x * 0.4 for x in rgb)))
-    t.finish(col, t.mad(t.math('SUBTRACT', n, 0.5), 0.1, rough), metal)
+    col = t.mix(t.math('MULTIPLY', cav, 0.5), col, _lin(_sc(rgb, 0.4)))
+    t.finish(col, t.mad(t.math('SUBTRACT', n, 0.5), 0.1, rough), metal, t.math('MULTIPLY', t.math('SUBTRACT', n, 0.5), 3e-6))
     return m
 
 
 def palette():
     """Part materials (sRGB colours). Keys are used by the builders."""
     P = {}
-    P['steel'] = m_steel('blued_steel', (0.105, 0.11, 0.125), (0.52, 0.52, 0.53))
-    P['steel2'] = m_steel('black_steel', (0.085, 0.085, 0.09), (0.45, 0.45, 0.45), 0.8, 0.5, 0.7)
-    P['mag_steel'] = m_steel('mag_steel', (0.2, 0.21, 0.23), (0.55, 0.56, 0.58), 0.8, 0.45, 0.75)
-    P['bright'] = m_steel('bright_steel', (0.36, 0.36, 0.37), (0.62, 0.62, 0.62), 0.6, 0.3, 0.9)
-    P['phos'] = m_steel('phosphate', (0.075, 0.075, 0.08), (0.3, 0.3, 0.3), 0.4, 0.6, 0.5)
-    P['plum'] = m_wood('wood_plum', (0.5, 0.2, 0.1), (0.2, 0.06, 0.035), laminate=True)
-    P['wood_dark'] = m_wood('wood_dark', (0.36, 0.17, 0.08), (0.12, 0.05, 0.025))
-    P['wood'] = m_wood('wood_red', (0.55, 0.27, 0.12), (0.26, 0.1, 0.045))
-    P['wood_light'] = m_wood('wood_light', (0.6, 0.3, 0.14), (0.33, 0.13, 0.06))
-    P['wood_rpg'] = m_wood('wood_rpg', (0.5, 0.17, 0.08), (0.28, 0.07, 0.035), rough=0.3, ring_scale=60.0)
-    P['bakelite'] = m_bakelite('bakelite', (0.5, 0.2, 0.08), (0.34, 0.11, 0.045))
-    P['plum_poly'] = m_bakelite('plum_polymer', (0.34, 0.12, 0.075), (0.22, 0.065, 0.045), 0.45)
-    P['grip_ak'] = m_bakelite('grip_bakelite', (0.5, 0.2, 0.08), (0.36, 0.12, 0.05), 0.36, checker=True)
-    P['grip_pm'] = m_bakelite('grip_pm', (0.2, 0.09, 0.05), (0.12, 0.05, 0.03), 0.45, checker=True)
+    P['steel'] = m_steel('blued_steel', (0.18, 0.18, 0.176), (0.62, 0.62, 0.6), 1.0, 0.45, 0.7, 0.0)
+    P['steel2'] = m_steel('black_steel', (0.16, 0.16, 0.158), (0.55, 0.55, 0.54), 0.8, 0.5, 0.65, 3.0)
+    P['mag_steel'] = m_steel('mag_steel', (0.2, 0.2, 0.2), (0.6, 0.6, 0.6), 0.9, 0.45, 0.7, 6.0)
+    P['bright'] = m_steel('bright_steel', (0.42, 0.42, 0.41), (0.68, 0.68, 0.67), 0.6, 0.32, 0.9, 9.0, 0.5)
+    P['phos'] = m_steel('phosphate', (0.15, 0.15, 0.148), (0.4, 0.4, 0.39), 0.4, 0.58, 0.5, 12.0)
+    # AKM laminated birch, orange-red lacquer; Type 56 darker solid birch; RPG heat guard; generic red wood.
+    P['plum'] = m_wood('wood_laminate', (0.62, 0.21, 0.06), (0.3, 0.07, 0.022), laminate=True, rough=0.28)
+    P['wood_dark'] = m_wood('wood_dark', (0.45, 0.22, 0.1), (0.17, 0.07, 0.03), rough=0.34, seed=4.0)
+    P['wood'] = m_wood('wood_red', (0.58, 0.28, 0.12), (0.26, 0.1, 0.045), seed=2.0)
+    P['wood_light'] = m_wood('wood_light', (0.62, 0.32, 0.15), (0.33, 0.13, 0.06), seed=3.0)
+    P['wood_rpg'] = m_wood('wood_rpg', (0.52, 0.19, 0.08), (0.28, 0.07, 0.035), rough=0.3, ring_scale=60.0, seed=5.0)
+    P['bakelite'] = m_bakelite('bakelite', (0.6, 0.21, 0.065), (0.44, 0.12, 0.04))
+    P['plum_poly'] = m_bakelite('plum_polymer', (0.36, 0.13, 0.08), (0.23, 0.07, 0.045), 0.45)
+    P['grip_ak'] = m_bakelite('grip_bakelite', (0.52, 0.17, 0.055), (0.34, 0.09, 0.035), 0.36, checker=True)
+    P['grip_pm'] = m_bakelite('grip_pm', (0.2, 0.09, 0.05), (0.12, 0.05, 0.03), 0.45, checker=True, marble=0.5)
     P['olive'] = m_paint('olive_paint', (0.3, 0.32, 0.19))
     P['olive_dk'] = m_paint('olive_dark', (0.19, 0.21, 0.13))
     P['grey_paint'] = m_paint('grey_paint', (0.36, 0.36, 0.34))
@@ -258,9 +370,9 @@ def palette():
     P['brass'] = m_flat('brass', (0.72, 0.52, 0.22), 0.3, 1.0)
     P['steel_case'] = m_flat('lacquered_case', (0.42, 0.34, 0.2), 0.35, 0.8)
     P['copper'] = m_flat('copper', (0.72, 0.4, 0.24), 0.32, 1.0)
-    P['rubber'] = m_flat('rubber', (0.05, 0.05, 0.05), 0.85, 0.0, 0.05)
+    P['rubber'] = m_flat('rubber', (0.06, 0.06, 0.06), 0.85, 0.0, 0.05)
     P['glass'] = m_flat('lens', (0.05, 0.08, 0.12), 0.05, 0.5, 0.0)
-    P['shadow'] = m_flat('shadow', (0.02, 0.02, 0.02), 0.9, 0.0, 0.0)
+    P['shadow'] = m_flat('shadow', (0.025, 0.025, 0.025), 0.9, 0.0, 0.0)
     P['yellow'] = m_paint('yellow_paint', (0.72, 0.6, 0.1), chips=0.5)
     P['red'] = m_flat('red_plastic', (0.6, 0.06, 0.05), 0.5)
     P['wire_y'] = m_flat('wire_yellow', (0.75, 0.62, 0.08), 0.45)
@@ -273,36 +385,257 @@ def palette():
     return P
 
 
-def _bake_setup(objs, img, mode):
-    mats = set()
+# ------------------------------------------------------------------ stamped markings (height + darker fill)
+_GLYPHS = {
+    'A': '01110100011000111111100011000110001', 'B': '11110100011000111110100011000111110',
+    'C': '01110100011000010000100001000101110', 'D': '11110100011000110001100011000111110',
+    'E': '11111100001000011110100001000011111', 'H': '10001100011000111111100011000110001',
+    'K': '10001100101010011000101001001010001', 'M': '10001110111010110101100011000110001',
+    'O': '01110100011000110001100011000101110', 'P': '11110100011000111110100001000010000',
+    'T': '11111001000010000100001000010000100', 'X': '10001100010101000100010101000110001',
+    'Y': '10001100010101000100001000010000100', 'C': '01110100011000010000100001000101110',
+    'S': '01111100001000001110000010000111110', 'N': '10001100011100110101100111000110001',
+    'Д': '00110010100101001010010101111110001', 'Ж': '10101101010111000100011101010110101',
+    'И': '10001100011001110101110011000110001', 'Л': '00111010010100101001010010100110001',
+    'П': '11111100011000110001100011000110001', 'Б': '11111100001000011110100011000111110',
+    'Г': '11111100001000010000100001000010000', 'Ф': '00100011101010110101011100010000100',
+    '0': '01110100011001110101110011000101110', '1': '00100011000010000100001000010001110',
+    '2': '01110100010000100010001000100011111', '3': '11111000100010000010000011000101110',
+    '4': '00010001100101010010111110001000010', '5': '11111100001111000001000011000101110',
+    '6': '00110010001000011110100011000101110', '7': '11111000010001000100010000100001000',
+    '8': '01110100011000101110100011000101110', '9': '01110100011000101111000010001001100',
+    '.': '00000000000000000000000000110001100', '-': '00000000000000011111000000000000000',
+    '*': '00100001001111101110011100110110001', '^': '00100001000101001010100011111100000',
+    ' ': '0' * 35, '#': '1' * 35, '=': '11111000001111100000111110000011111',
+}
+
+
+_GLYPHS.update({'А': _GLYPHS['A'], 'В': _GLYPHS['B'], 'Е': _GLYPHS['E'], 'О': _GLYPHS['O'], 'С': _GLYPHS['C'],
+                'Р': _GLYPHS['P'], 'Т': _GLYPHS['T'], 'Х': _GLYPHS['X'], 'Н': _GLYPHS['H'], 'К': _GLYPHS['K'],
+                'М': _GLYPHS['M'], 'З': _GLYPHS['3']})
+
+
+def _text_mask(text, px):
+    """Rasterise text (lines separated by \\n) with a 5x7 stamp font (Latin, digits, some Cyrillic), px pixels per
+    font cell. Returns an (h, w) array, row 0 at the top."""
+    lines = text.split('\n')
+    W = max(len(l) for l in lines) * 6 - 1
+    H = len(lines) * 9 - 2
+    g = np.zeros((H, W), np.float32)
+    for li, line in enumerate(lines):
+        for ci, ch in enumerate(line.upper()):
+            bits = _GLYPHS.get(ch, _GLYPHS[' '])
+            for r in range(7):
+                for c in range(5):
+                    if bits[r * 5 + c] == '1':
+                        g[li * 9 + r, ci * 6 + c] = 1
+    return np.kron(g, np.ones((px, px), np.float32))
+
+
+def add_stamps(root, stamps, ppm=12000.0, depth=1.2e-4):
+    """Stamped / engraved markings on the body mesh: each stamp dict(text, y, z, h, side) is placed in root space
+    (metres, text centred on (y, z), letter height h, side +1 = right face, -1 = left face) and projected along X onto
+    faces of the body whose normal points that way. Adds the mask to every body material: height -depth, base colour
+    darker (oil in the recess). Must run before bake_weapon()."""
+    body = next(o for o in root.children if o.type == 'MESH' and o.name.endswith('_body'))
+    body.pass_index = 1
+    for side in (1, -1):
+        ss = [d for d in stamps if d['side'] == side]
+        if not ss:
+            continue
+        rast = []
+        for d in ss:
+            px = max(1, int(round(d['h'] / 7.0 * ppm)))
+            rast.append((d, _text_mask(d['text'], px)))
+        y0 = min(d['y'] - m.shape[1] / ppm / 2 for d, m in rast) - 0.002
+        y1 = max(d['y'] + m.shape[1] / ppm / 2 for d, m in rast) + 0.002
+        z0 = min(d['z'] - m.shape[0] / ppm / 2 for d, m in rast) - 0.002
+        z1 = max(d['z'] + m.shape[0] / ppm / 2 for d, m in rast) + 0.002
+        Wp, Hp = int((y1 - y0) * ppm) + 1, int((z1 - z0) * ppm) + 1
+        R = np.zeros((Hp, Wp), np.float32)
+        for d, mk in rast:
+            mh, mw = mk.shape
+            cu = (d['y'] - y0) * ppm if side > 0 else (y1 - d['y']) * ppm
+            cv = (d['z'] - z0) * ppm
+            c0, r0 = int(cu - mw / 2), int(cv - mh / 2)
+            R[r0:r0 + mh, c0:c0 + mw] = np.maximum(R[r0:r0 + mh, c0:c0 + mw], mk[::-1, :])
+        # Soften (stamp edges are rounded) then store.
+        Rb = R.copy()
+        for ax in (0, 1):
+            Rb = (np.roll(Rb, 1, ax) + Rb * 2 + np.roll(Rb, -1, ax)) / 4
+        img = bpy.data.images.new(f'{root.name}_stamps_{side}', Wp, Hp, alpha=False, float_buffer=True)
+        img.colorspace_settings.name = 'Non-Color'
+        px = np.ones((Hp, Wp, 4), np.float32); px[..., 0] = Rb; px[..., 1] = Rb; px[..., 2] = Rb
+        img.pixels.foreach_set(px.ravel())
+        print(f'  stamps side {side:+d}: {len(ss)} marks, {Wp}x{Hp} px, y {y0:.4f}..{y1:.4f} z {z0:.4f}..{z1:.4f}, ink {float(R.mean()):.3f}')
+        mats = {s.material for s in body.material_slots if s.material and 'OUT_HEIGHT' in s.material.node_tree.nodes}
+        for m in mats:
+            nt = m.node_tree
+            N, L = nt.nodes, nt.links
+            tc = N.new('ShaderNodeTexCoord'); sep = N.new('ShaderNodeSeparateXYZ'); L.new(tc.outputs['Object'], sep.inputs[0])
+            mu = N.new('ShaderNodeMath'); mu.operation = 'MULTIPLY_ADD'; L.new(sep.outputs['Y'], mu.inputs[0])
+            mu.inputs[1].default_value = side / (y1 - y0)
+            mu.inputs[2].default_value = -y0 / (y1 - y0) if side > 0 else y1 / (y1 - y0)
+            mv = N.new('ShaderNodeMath'); mv.operation = 'MULTIPLY_ADD'; L.new(sep.outputs['Z'], mv.inputs[0])
+            mv.inputs[1].default_value = 1.0 / (z1 - z0); mv.inputs[2].default_value = -z0 / (z1 - z0)
+            cb = N.new('ShaderNodeCombineXYZ'); L.new(mu.outputs[0], cb.inputs['X']); L.new(mv.outputs[0], cb.inputs['Y'])
+            ti = N.new('ShaderNodeTexImage'); ti.image = img; ti.extension = 'CLIP'; ti.interpolation = 'Cubic'
+            L.new(cb.outputs[0], ti.inputs['Vector'])
+            geo = N.new('ShaderNodeNewGeometry'); sn = N.new('ShaderNodeSeparateXYZ'); L.new(geo.outputs['Normal'], sn.inputs[0])
+            fx = N.new('ShaderNodeMath'); fx.operation = 'GREATER_THAN' if side > 0 else 'LESS_THAN'
+            fx.inputs[1].default_value = 0.6 * side; L.new(sn.outputs['X'], fx.inputs[0])
+            oi = N.new('ShaderNodeObjectInfo')
+            cmp_ = N.new('ShaderNodeMath'); cmp_.operation = 'COMPARE'; cmp_.inputs[1].default_value = 1.0; cmp_.inputs[2].default_value = 0.2
+            L.new(oi.outputs['Object Index'], cmp_.inputs[0])
+            k1 = N.new('ShaderNodeMath'); k1.operation = 'MULTIPLY'; L.new(fx.outputs[0], k1.inputs[0]); L.new(cmp_.outputs[0], k1.inputs[1])
+            k2 = N.new('ShaderNodeMath'); k2.operation = 'MULTIPLY'; L.new(k1.outputs[0], k2.inputs[0]); L.new(ti.outputs['Color'], k2.inputs[1])
+            mask = k2.outputs[0]
+            # Height: insert before OUT_HEIGHT.
+            for name, kind in (('OUT_HEIGHT', 'h'), ('OUT_BASE', 'c'), ('OUT_ROUGH', 'r')):
+                rr = N[name]
+                src = rr.inputs[0].links[0].from_socket
+                if kind == 'h':
+                    n = N.new('ShaderNodeMath'); n.operation = 'MULTIPLY_ADD'; L.new(mask, n.inputs[0]); n.inputs[1].default_value = -depth
+                    L.new(src, n.inputs[2]); out = n.outputs[0]
+                elif kind == 'c':
+                    k = N.new('ShaderNodeMath'); k.operation = 'MULTIPLY'; L.new(mask, k.inputs[0]); k.inputs[1].default_value = 0.85
+                    n = N.new('ShaderNodeMix'); n.data_type = 'RGBA'; n.clamp_factor = True
+                    L.new(k.outputs[0], n.inputs[0]); L.new(src, n.inputs[6]); n.inputs[7].default_value = (0.012, 0.011, 0.01, 1)
+                    out = n.outputs[2]
+                else:
+                    n = N.new('ShaderNodeMath'); n.operation = 'MULTIPLY_ADD'; L.new(mask, n.inputs[0]); n.inputs[1].default_value = 0.15
+                    L.new(src, n.inputs[2]); out = n.outputs[0]
+                L.new(out, rr.inputs[0])
+
+
+# ------------------------------------------------------------------ texel density
+# Linear texel-density factor per part name (prefix match): the large visible faces seen at first-person distance get
+# more of the atlas, hidden cores / internals less. Stored per face ('uvw') in Build.finish, applied per UV island.
+UVW = [('rcv_core', 0.35), ('carrier_cut', 0.5), ('bolt_carrier', 0.7), ('rcv_skin', 1.7), ('dust_cover', 1.6),
+       ('cut_floor', 1.2), ('guide_tab', 1.3), ('rs_', 1.5), ('notch_plate', 1.6), ('selector', 1.5), ('feed_cover', 1.5),
+       ('cover_hump', 1.4), ('rcv_top_rear', 1.5), ('trunnion', 1.2), ('hg_retainer', 1.3), ('mag_body', 1.25),
+       ('mag_rib', 1.1), ('upper_handguard', 1.15), ('lower_handguard', 1.15), ('handguard', 1.15), ('slide', 1.5),
+       ('serration', 0.8), ('grip', 1.1), ('stock', 0.95), ('scope', 1.2), ('eyepiece', 1.3), ('turret', 1.2),
+       ('fluted', 0.9), ('cyl', 1.0), ('ammo_box', 0.9), ('box_skin', 0.9), ('rivet', 1.0), ('tick', 0.6)]
+
+
+def uv_weight(name):
+    n = name.split('.')[0]
+    for k, w in UVW:
+        if n.startswith(k):
+            return w
+    return 1.0
+
+
+def _scale_islands(o):
+    """Scale each UV island about its centre by the mean 'uvw' of its faces (pack_islands keeps relative scale)."""
+    me = o.data
+    if 'uvw' not in me.attributes:
+        return
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    uv = bm.loops.layers.uv.active
+    wl = bm.faces.layers.float.get('uvw')
+    if uv is None or wl is None:
+        bm.free()
+        return
+    bm.faces.ensure_lookup_table()
+    parent = list(range(len(bm.faces)))
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for e in bm.edges:
+        if len(e.link_faces) != 2:
+            continue
+        f1, f2 = e.link_faces
+        def uvs(f):
+            d = {}
+            for lp in f.loops:
+                d[lp.vert.index] = lp[uv].uv.copy()
+            return d
+        a, b_ = uvs(f1), uvs(f2)
+        if all((a[v.index] - b_[v.index]).length < 1e-6 for v in e.verts):
+            ra, rb = find(f1.index), find(f2.index)
+            if ra != rb:
+                parent[ra] = rb
+    isl = {}
+    for f in bm.faces:
+        isl.setdefault(find(f.index), []).append(f)
+    for fs in isl.values():
+        w = sum(f[wl] for f in fs) / len(fs)
+        if abs(w - 1.0) < 1e-3:
+            continue
+        c = Vector((0.0, 0.0)); n = 0
+        for f in fs:
+            for lp in f.loops:
+                c += lp[uv].uv; n += 1
+        c /= n
+        done = set()
+        for f in fs:
+            for lp in f.loops:
+                if id(lp) in done:
+                    continue
+                lp[uv].uv = c + (lp[uv].uv - c) * w
+    bm.to_mesh(me)
+    bm.free()
+
+
+# ------------------------------------------------------------------ bake
+def _materials(objs):
+    mats = []
     for o in objs:
         for s in o.material_slots:
-            if s.material:
-                mats.add(s.material)
-    for m in mats:
+            if s.material and s.material not in mats:
+                mats.append(s.material)
+    return mats
+
+
+def _clear_bake_nodes(m):
+    N = m.node_tree.nodes
+    for n in [n for n in N if n.name.startswith('BAKE_')]:
+        N.remove(n)
+
+
+def _bake_setup(objs, img, mode):
+    for m in _materials(objs):
         nt = m.node_tree
         N, L = nt.nodes, nt.links
-        for n in [n for n in N if n.name.startswith('BAKE_')]:
-            N.remove(n)
+        _clear_bake_nodes(m)
         im = N.new('ShaderNodeTexImage'); im.name = 'BAKE_IMG'; im.image = img
-        em = N.new('ShaderNodeEmission'); em.name = 'BAKE_EM'
         out = N['Material Output']
-        if mode == 'base':
-            L.new(N['OUT_BASE'].outputs[0], em.inputs['Color'])
+        bsdf = N['Principled BSDF']
+        if mode == 'normal':
+            bev = N.new('ShaderNodeBevel'); bev.name = 'BAKE_BEV'; bev.samples = 8
+            bev.inputs['Radius'].default_value = m.get('bevel', 0.0008)
+            bump = N.new('ShaderNodeBump'); bump.name = 'BAKE_BUMP'
+            bump.inputs['Strength'].default_value = 1.0
+            bump.inputs['Distance'].default_value = 1.0
+            L.new(N['OUT_HEIGHT'].outputs[0], bump.inputs['Height'])
+            L.new(bev.outputs['Normal'], bump.inputs['Normal'])
+            L.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
+            L.new(bsdf.outputs[0], out.inputs['Surface'])
         else:
-            cc = N.new('ShaderNodeCombineColor'); cc.name = 'BAKE_CC'
-            cc.inputs[0].default_value = 1.0
-            L.new(N['OUT_ROUGH'].outputs[0], cc.inputs[1])
-            L.new(N['OUT_METAL'].outputs[0], cc.inputs[2])
-            L.new(cc.outputs[0], em.inputs['Color'])
-        L.new(em.outputs[0], out.inputs['Surface'])
+            for l in list(bsdf.inputs['Normal'].links):
+                L.remove(l)
+            em = N.new('ShaderNodeEmission'); em.name = 'BAKE_EM'
+            if mode == 'base':
+                L.new(N['OUT_BASE'].outputs[0], em.inputs['Color'])
+            else:
+                cc = N.new('ShaderNodeCombineColor'); cc.name = 'BAKE_CC'
+                cc.inputs[0].default_value = 1.0
+                L.new(N['OUT_ROUGH'].outputs[0], cc.inputs[1])
+                L.new(N['OUT_METAL'].outputs[0], cc.inputs[2])
+                L.new(cc.outputs[0], em.inputs['Color'])
+            L.new(em.outputs[0], out.inputs['Surface'])
         for n in N:
             n.select = False
         im.select = True
         N.active = im
 
 
-def _save_pack(img, name):
+def _save_pack(img, name, fmt='PNG'):
     d = os.path.join(tempfile.gettempdir(), f'wins_{os.getpid()}')
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, f'{name}.png')
@@ -318,7 +651,7 @@ def _save_pack(img, name):
     return out
 
 
-def _soften(img, size):
+def _soften(img, size, centre=2.0):
     """Light 3x3 blur to remove bake sampling noise."""
     a = np.empty(size * size * 4, np.float32)
     img.pixels.foreach_get(a)
@@ -327,22 +660,46 @@ def _soften(img, size):
     acc = np.zeros_like(a[..., :3])
     for dy in (-1, 0, 1):
         for dx in (-1, 0, 1):
-            acc += np.roll(np.roll(a[..., :3], dy, 0), dx, 1) * (2.0 if dx == 0 and dy == 0 else 1.0)
-    b[..., :3] = acc / 10.0
+            acc += np.roll(np.roll(a[..., :3], dy, 0), dx, 1) * (centre if dx == 0 and dy == 0 else 1.0)
+    b[..., :3] = acc / (8.0 + centre)
     img.pixels.foreach_set(b.ravel())
 
 
-def bake_weapon(root, size=1024, samples=8, margin=3):
-    """Unwrap all meshes under root into one atlas, bake base colour + metallic/roughness, assign one glTF material."""
+def _renorm(img, size):
+    a = np.empty(size * size * 4, np.float32)
+    img.pixels.foreach_get(a)
+    a = a.reshape(size, size, 4)
+    v = a[..., :3] * 2 - 1
+    n = np.linalg.norm(v, axis=-1, keepdims=True)
+    v = np.where(n > 1e-4, v / np.maximum(n, 1e-4), np.array((0, 0, 1), np.float32))
+    a[..., :3] = v * 0.5 + 0.5
+    img.pixels.foreach_set(a.ravel())
+
+
+def bake_weapon(root, size=1024, samples=12, margin=None, orm_size=None, log=print):
+    """Unwrap all meshes under root into one atlas, bake normal + base colour + metallic/roughness, assign one glTF
+    material. size = base colour / normal resolution, orm_size = metallic-roughness resolution (default = size, capped
+    at 1024)."""
+    import time
+    t0 = time.time()
     objs = [o for o in root.children_recursive if o.type == 'MESH']
     s = bpy.context.scene
     s.render.engine = 'CYCLES'
     s.cycles.device = 'CPU'
     s.cycles.samples = samples
+    s.cycles.use_denoising = False
+    margin = margin if margin is not None else max(4, size // 256)
     s.render.bake.margin = margin
     s.render.bake.margin_type = 'EXTEND'
     for o in objs:
         me = o.data
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        ng = [f for f in bm.faces if len(f.verts) > 4]
+        if ng:
+            bmesh.ops.triangulate(bm, faces=ng, quad_method='BEAUTY', ngon_method='BEAUTY')
+        bm.to_mesh(me)
+        bm.free()
         while me.uv_layers:
             me.uv_layers.remove(me.uv_layers[0])
         me.uv_layers.new(name='UVMap')
@@ -352,34 +709,58 @@ def bake_weapon(root, size=1024, samples=8, margin=3):
     bpy.context.view_layer.objects.active = objs[0]
     bpy.ops.object.mode_set(mode='EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.uv.smart_project(angle_limit=math.radians(52), island_margin=0.004, area_weight=0.0, correct_aspect=True,
+    bpy.ops.uv.smart_project(angle_limit=math.radians(52), island_margin=0.003, area_weight=0.0, correct_aspect=True,
                              scale_to_bounds=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for o in objs:
+        _scale_islands(o)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.uv.select_all(action='SELECT')
     try:
-        bpy.ops.uv.pack_islands(rotate=True, margin=0.007)
+        bpy.ops.uv.pack_islands(rotate=True, margin=0.004 if size > 1024 else 0.006)
     except Exception:
         pass
     bpy.ops.object.mode_set(mode='OBJECT')
     rid = root.name
+    nrm = bpy.data.images.new(f'{rid}_normal', size, size, alpha=False, is_data=True)
+    nrm.colorspace_settings.name = 'Non-Color'
     base = bpy.data.images.new(f'{rid}_basecolor', size, size, alpha=False)
     orm = bpy.data.images.new(f'{rid}_metalrough', size, size, alpha=False, is_data=True)
     orm.colorspace_settings.name = 'Non-Color'
-    for img, mode in ((base, 'base'), (orm, 'orm')):
+    for img, mode in ((nrm, 'normal'), (base, 'base'), (orm, 'orm')):
         _bake_setup(objs, img, mode)
-        bpy.ops.object.bake(type='EMIT', use_clear=True, margin=margin)
-        _soften(img, size)
+        if mode == 'normal':
+            bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', use_clear=True, margin=margin)
+            _soften(img, size, 4.0)
+            _renorm(img, size)
+        else:
+            bpy.ops.object.bake(type='EMIT', use_clear=True, margin=margin)
+            _soften(img, size)
+        log(f'  baked {mode} {size}px in {time.time() - t0:.0f}s')
+    osz = orm_size or min(size, 1024)
+    if osz != size:
+        orm.scale(osz, osz)
+    nrm = _save_pack(nrm, f'{rid}_normal')
     base = _save_pack(base, f'{rid}_basecolor')
     orm = _save_pack(orm, f'{rid}_metalrough')
+    for m in _materials(objs):
+        _clear_bake_nodes(m)
     m = bpy.data.materials.new(f'{rid}_mat')
     m.use_nodes = True
     N, L = m.node_tree.nodes, m.node_tree.links
     b = N['Principled BSDF']
     tb = N.new('ShaderNodeTexImage'); tb.image = base
     tm = N.new('ShaderNodeTexImage'); tm.image = orm
+    tn = N.new('ShaderNodeTexImage'); tn.image = nrm
+    nm = N.new('ShaderNodeNormalMap'); nm.space = 'TANGENT'
     sep = N.new('ShaderNodeSeparateColor')
     L.new(tb.outputs['Color'], b.inputs['Base Color'])
     L.new(tm.outputs['Color'], sep.inputs['Color'])
     L.new(sep.outputs['Green'], b.inputs['Roughness'])
     L.new(sep.outputs['Blue'], b.inputs['Metallic'])
+    L.new(tn.outputs['Color'], nm.inputs['Color'])
+    L.new(nm.outputs['Normal'], b.inputs['Normal'])
     for o in objs:
         me = o.data
         me.materials.clear()
@@ -677,10 +1058,12 @@ def wire(points, r, m, seg=6, name='wire'):
     return loft(rings, m, name)
 
 
-def skin_x(side, x, y0, y1, z0, z1, m, step=0.003, disp=None, hole=None, zfn=None, name='skin'):
-    """Stamped sheet surface facing side*X at |x| (one-sided), y0..y1 by z0..z1 (or zfn(y) -> (lo, hi)).
+def skin_x(side, x, y0, y1, z0, z1, m, step=0.003, disp=None, hole=None, zfn=None, name='skin', thick=0.0009):
+    """Stamped sheet surface facing side*X at |x|, y0..y1 by z0..z1 (or zfn(y) -> (lo, hi)), solidified inwards by
+    `thick` (so the sheet borders and port edges are real edges for the bevel / wear bake).
     disp(y, z) pushes vertices outward (+) / inward (-) for dimples and ribs; hole(y, z) skips cells (ports)."""
-    ny = max(2, int(round((y1 - y0) / step))); nz = max(2, int(round((z1 - z0) / step)))
+    sy, sz = step if isinstance(step, tuple) else (step, step)
+    ny = max(2, int(round((y1 - y0) / sy))); nz = max(2, int(round((z1 - z0) / sz)))
     bm = bmesh.new(); V = {}
     for i in range(ny + 1):
         y = y0 + (y1 - y0) * i / ny
@@ -698,6 +1081,23 @@ def skin_x(side, x, y0, y1, z0, z1, m, step=0.003, disp=None, hole=None, zfn=Non
                 continue
             q = [V[i, j], V[i + 1, j], V[i + 1, j + 1], V[i, j + 1]]
             bm.faces.new(q if side > 0 else list(reversed(q)))
+    if thick:
+        # Rim only (no back face): extrude the boundary edges inwards so borders and port edges are real edges.
+        bm.edges.ensure_lookup_table()
+        inner = {}
+        def iv(v):
+            if v not in inner:
+                inner[v] = bm.verts.new((v.co.x - side * thick, v.co.y, v.co.z))
+            return inner[v]
+        for e in [e for e in bm.edges if e.is_boundary]:
+            f = e.link_faces[0]
+            a, b_ = e.verts
+            # Keep the winding consistent with the face: find the loop order of this edge in the face.
+            for lp in f.loops:
+                if lp.edge == e:
+                    a, b_ = lp.vert, lp.link_loop_next.vert
+                    break
+            bm.faces.new((b_, a, iv(a), iv(b_)))
     return _new_obj(bm, name, m, recalc=False)
 
 
@@ -751,6 +1151,7 @@ class Build:
         self.rid = rid
         self.cur = 'body'
         self.empties = []
+        self.stamps = []
         self.P = palette()
 
     def _tag(self):
@@ -762,8 +1163,14 @@ class Build:
         self._tag()
         self.cur = name
 
-    def E(self, name, loc):
-        self.empties.append((name, Vector(loc)))
+    def stamp(self, text, y, z, h, side):
+        """Stamped marking on the body (build frame, see add_stamps)."""
+        self.stamps.append(dict(text=text, y=y, z=z, h=h, side=side))
+
+    def E(self, name, loc, parent=None):
+        """Empty at loc (build frame). parent = name of a child-mesh group (e.g. 'mag', 'charge'): the empty becomes
+        a child of that mesh so it follows it when animated."""
+        self.empties.append((name, Vector(loc), parent))
 
     def finish(self, offset=(0, 0, 0), origins=None, smooth_angle=38.0):
         self._tag()
@@ -777,6 +1184,9 @@ class Build:
             g = o['grp']
             me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
             me.transform(Matrix.Translation(-off) @ o.matrix_world)
+            at = me.attributes.new('uvw', 'FLOAT', 'FACE')
+            w = uv_weight(o.name)
+            at.data.foreach_set('value', [w] * len(me.polygons))
             n = bpy.data.objects.new(o.name + '_x', me)
             bpy.context.scene.collection.objects.link(n)
             groups.setdefault(g, []).append(n)
@@ -806,13 +1216,20 @@ class Build:
                 j.location = o3
             j.parent = root
             out[g] = j
-        for name, loc in self.empties:
+        for name, loc, parent in self.empties:
             e = bpy.data.objects.new(name, None)
             bpy.context.scene.collection.objects.link(e)
             e.empty_display_size = 0.02
-            e.location = loc - off
-            e.parent = root
+            if parent:
+                p = out[parent]
+                e.parent = p
+                e.location = loc - off - p.location
+            else:
+                e.location = loc - off
+                e.parent = root
         bpy.ops.object.select_all(action='DESELECT')
+        if self.stamps:
+            add_stamps(root, [dict(d, y=d['y'] - off.y, z=d['z'] - off.z) for d in self.stamps])
         return root
 
 
@@ -858,7 +1275,8 @@ def export_glb(path, root_names):
         sel(bpy.data.objects[n])
     bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True, export_apply=True, export_yup=True,
                               export_extras=False, export_cameras=False, export_lights=False, export_materials='EXPORT',
-                              export_image_format='JPEG', export_jpeg_quality=90)
+                              export_image_format='JPEG', export_jpeg_quality=92, export_texcoords=True, export_normals=True,
+                              export_tangents=True)
 
 
 def tri_count(root):

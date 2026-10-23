@@ -1,8 +1,8 @@
 // Keyboard and mouse state with pointer lock. Bindings follow Project Reality where sensible.
 export const BIND = {
   fwd: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', sprint: 'ShiftLeft', crouch: 'ControlLeft', crouch2: 'KeyC', prone: 'KeyZ', jump: 'Space',
-  reload: 'KeyR', mode: 'KeyB', use: 'KeyE', map: 'KeyM', score: 'Tab', spot: 'KeyQ', bandage: 'KeyF', menu: 'Escape', giveUp: 'Enter',
-  slot1: 'Digit1', slot2: 'Digit2', slot3: 'Digit3', slot4: 'Digit4', slot5: 'Digit5', lean: 'KeyX', light: 'KeyT', freeLook: 'AltLeft', camera: 'KeyV',
+  reload: 'KeyR', mode: 'KeyB', use: 'KeyF', map: 'KeyM', score: 'Tab', leanL: 'KeyQ', leanR: 'KeyE', bandage: 'KeyF', menu: 'Escape', giveUp: 'Enter',
+  slot1: 'Digit1', slot2: 'Digit2', slot3: 'Digit3', slot4: 'Digit4', slot5: 'Digit5', light: 'KeyT', bipod: 'KeyG', orderMove: 'KeyY', orderHold: 'KeyH', orderSuppress: 'KeyU', freeLook: 'AltLeft', camera: 'KeyV',
 } as const;
 
 export class Input {
@@ -14,7 +14,7 @@ export class Input {
   private wheelAcc = 0; private wheelT = 0;
   constructor(private el: HTMLElement) {
     addEventListener('keydown', (e) => {
-      if (e.code === 'Tab' || (e.code.startsWith('Digit') && this.locked) || e.code === 'Space') e.preventDefault();
+      if (e.code === 'Tab' || (e.code.startsWith('Digit') && this.locked) || e.code === 'Space' || e.code === 'AltLeft') e.preventDefault();
       if (!e.repeat) this.pressed.add(e.code);
       this.down.add(e.code);
     });

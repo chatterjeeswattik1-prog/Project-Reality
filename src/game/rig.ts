@@ -5,9 +5,11 @@ import * as THREE from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { Soldier } from './soldier';
 import { damp } from '../core/rng';
+import { choreo, hand as handTrack, num, vec, type HandAt, type V3 } from '../player/handling';
 
 export interface CharAssets { models: Map<string, THREE.Object3D>; clips: Map<string, THREE.AnimationClip>; weapons: Map<string, THREE.Object3D>; tpWeapons: Map<string, THREE.Object3D> }
 
+const _r3: V3 = [0, 0, 0];
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3(), _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 
 /** Rotate `bone` (world space) so the direction from it to `child` turns from `from` to `to`. */
@@ -18,6 +20,15 @@ function aimBone(bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3) {
   // world → local
   const parentQ = bone.parent ? bone.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
   bone.quaternion.copy(parentQ.invert().multiply(_q2));
+  bone.updateMatrixWorld(true);
+}
+
+/** Rotate `bone` about a world-space axis (its children follow). */
+function rotateWorld(bone: THREE.Object3D, axis: THREE.Vector3, ang: number) {
+  bone.updateWorldMatrix(true, false);
+  const w = bone.getWorldQuaternion(new THREE.Quaternion()).premultiply(new THREE.Quaternion().setFromAxisAngle(axis, ang));
+  const pq = bone.parent ? bone.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
+  bone.quaternion.copy(pq.invert().multiply(w));
   bone.updateMatrixWorld(true);
 }
 
@@ -153,6 +164,10 @@ export class Rig {
   private kAim = 0; private kPort = 0; private lastDt = 0.016;
   private bind = new Map<THREE.Bone, THREE.Quaternion>();
   private lift = 0;
+  /** Hit stagger: spine bend (pitch back, roll sideways, twist) as a damped spring, kicked by each hit. */
+  private stag = new THREE.Vector3(); private stagV = new THREE.Vector3();
+  /** Speed-up of the fall clip right after a hit (the body drops hard, then the clip eases out). */
+  private fallBoost = 0;
 
   constructor(private A: CharAssets, modelId: string, private teamColor: number) {
     const src = A.models.get(modelId);
@@ -228,9 +243,16 @@ export class Rig {
       else clip = sp > 2.4 ? 'Jog_Fwd_Loop' : 'Walk_Loop';
     }
     if (!this.actions.has(clip)) clip = s.state !== 'alive' ? 'Death01' : 'Idle_Loop';
-    const cs = CLIP_SPEED[clip];
-    this.play(clip, 0.22, cs ? Math.max(0.4, Math.min(2, sp / cs)) : 1);
+    const cs = CLIP_SPEED[clip], falling = s.state !== 'alive';
+    this.play(clip, falling ? 0.08 : 0.22, falling ? 1 + this.fallBoost : cs ? Math.max(0.4, Math.min(2, sp / cs)) : 1);
+    this.fallBoost = Math.max(0, this.fallBoost - dt * 1.2);
     this.mixer!.update(dt);
+    // Stagger spring (ω ≈ 14 rad/s, ζ ≈ 0.35), added to the spine on top of the clip.
+    for (let i = 0, n = Math.max(1, Math.ceil(dt * 120)), h = dt / n; i < n; i++) { this.stagV.addScaledVector(this.stag, -196 * h).multiplyScalar(1 - 10 * h); this.stag.addScaledVector(this.stagV, h); }
+    if (s.state === 'alive' && this.stag.lengthSq() > 1e-6) {
+      for (const [bn, w] of [['spine_01', 0.25], ['spine_02', 0.35], ['spine_03', 0.4]] as const) { const b = this.bones[bn]; if (b) { b.rotateX(-this.stag.x * w); b.rotateZ(this.stag.z * w); b.rotateY(this.stag.y * w); } }
+      const hd = this.bones.Head; if (hd) hd.rotateX(-this.stag.x * 0.3);
+    }
     this.ground(s, dt);
     if (s.state !== 'alive' || camDist > 160) return;
     // Upper body: pitch the spine to the aim, then IK the hands onto the weapon.
@@ -238,6 +260,8 @@ export class Rig {
     if (sp1 && sp2 && sp3 && s.stance !== 'prone') {
       const share = (-this.aimPitch / 3) * this.kAim;
       for (const b of [sp1, sp2, sp3]) b.rotateX(share);
+      // Lean: roll the spine about the body's forward axis (the head goes out ~0.36 m at full lean).
+      if (Math.abs(s.lean) > 0.01) { const f = new THREE.Vector3(-Math.sin(s.yaw), 0, -Math.cos(s.yaw)); for (const [b, w] of [[sp1, 0.3], [sp2, 0.35], [sp3, 0.35]] as const) rotateWorld(b, f, s.lean * 0.42 * w); }
     }
     this.root.updateMatrixWorld(true);
   }
@@ -260,13 +284,26 @@ export class Rig {
     this.root.updateMatrixWorld(true);
   }
 
-  /** A short flinch when hit but still standing. */
-  hit(part: string) {
+  /**
+   * Hit while still standing: the torso snaps away from the bullet (a spring on the spine bones, strongest for chest
+   * hits from full-power rounds) on top of a short flinch clip.
+   */
+  hit(part: string, dir?: [number, number, number], power = 1) {
+    if (dir) {
+      // Bullet direction in body space (forward = −z): pitch back when hit from the front, roll when hit from the side.
+      const c = Math.cos(this.root.rotation.y), sn = Math.sin(this.root.rotation.y);
+      const lx = dir[0] * c - dir[2] * sn, lz = dir[0] * sn + dir[2] * c;
+      const k = power * (part === 'head' ? 1.4 : part === 'leg' ? 0.5 : 1);
+      this.stagV.x += lz * 9 * k; this.stagV.z += -lx * 8 * k; this.stagV.y += (Math.random() - 0.5) * 8 * k;
+    }
     if (!this.mixer) return;
     const a = this.actions.get(part === 'head' ? 'Hit_Head' : 'Hit_Chest'); if (!a) return;
     a.reset(); a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = false; a.setEffectiveWeight(0.85); a.fadeIn(0.04).play();
     setTimeout(() => a.fadeOut(0.15), Math.max(120, a.getClip().duration * 1000 - 150));
   }
+
+  /** Went down from a hit: the fall starts fast. */
+  fall(power = 1) { this.fallBoost = 0.6 + power * 0.5; }
 
   private poseMannequin(s: Soldier) {
     const g = this.mannequin!, torso = g.getObjectByName('torso')!, head = g.getObjectByName('head')!, lL = g.getObjectByName('legL')!, lR = g.getObjectByName('legR')!;
@@ -291,7 +328,10 @@ export class Rig {
     const shadow = camDist < 40;
     if (shadow !== this.shadow) { this.shadow = shadow; w.traverse((o) => { o.castShadow = shadow; }); this.root.traverse((o) => { o.castShadow = shadow; }); }
     const engaged = s.ads > 0.25 || now - s.lastShotT < 2 || s.stance === 'prone';
-    const tAim = engaged ? 1 : 0, tPort = !engaged && s.sprinting ? 1 : 0;
+    // Reloading: the same choreography as in first person (player/handling.ts), with the weapon brought in to the chest.
+    const cho = s.reloadT > 0 && !s.underSel && s.stance !== 'prone' ? choreo(s.weapon, s.reloadEmpty) : null;
+    const rp = cho ? Math.min(1, Math.max(0, 1 - s.reloadT / Math.max(0.1, s.reloadDur))) : 0;
+    const tAim = cho ? 0.45 : engaged ? 1 : 0, tPort = !engaged && !cho && s.sprinting ? 1 : 0;
     const k = Math.min(1, this.lastDt * 6);
     this.kAim += (tAim - this.kAim) * k; this.kPort += (tPort - this.kPort) * k;
     const yawQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, s.yaw, 0));
@@ -312,6 +352,7 @@ export class Rig {
     const pPort = chest.clone().add(new THREE.Vector3(0.14, -0.2, -0.24).applyQuaternion(yawQ));
     const q = qLow.clone().slerp(qPort, this.kPort).slerp(qAim, this.kAim);
     const pos = pLow.clone().lerp(pPort, this.kPort).lerp(pAim, this.kAim);
+    if (cho) { const r = vec(cho.rot, rp, _r3); q.multiply(_q1.setFromEuler(new THREE.Euler(r[0] * 0.8, r[1], r[2], 'YXZ'))); }
     w.quaternion.copy(q); w.position.copy(pos);
     w.updateMatrixWorld(true);
     w.getObjectByName('muzzle')?.getWorldPosition(this.muzzle);
@@ -324,7 +365,20 @@ export class Rig {
       wrapHand(b, q, 'r', this.bind);
     }
     if (b.upperarm_l && b.lowerarm_l && b.hand_l && gl) {
-      armIK(b, 'l', wristTarget(gl.getWorldPosition(new THREE.Vector3()), q, 'l'), b.upperarm_l.getWorldPosition(new THREE.Vector3()).addScaledVector(right, -0.25).add(new THREE.Vector3(0, -0.6, 0)));
+      let lt = gl.getWorldPosition(new THREE.Vector3());
+      if (cho && gr) {
+        // Support hand: magazine well (following the magazine's path), the pouch at the left hip, the charging handle.
+        const g0 = gr.getWorldPosition(new THREE.Vector3());
+        const at = (h: HandAt): THREE.Vector3 => {
+          if (h === 'mag' || h === 'catch' || h === 'cover') { const m = vec(cho.magPos, rp, _r3); return g0.clone().add(new THREE.Vector3(m[0] - 0.02, -0.05 + m[1] - num(cho.magSlide, rp) * 0.8, -0.13 + m[2]).applyQuaternion(q)); }
+          if (h === 'away') return chest.clone().add(new THREE.Vector3(-0.12, -0.32, -0.08).applyQuaternion(yawQ));
+          if (h === 'charge') return g0.clone().add(new THREE.Vector3(0.06, 0.07, -0.12).applyQuaternion(q));
+          return gl.getWorldPosition(new THREE.Vector3());
+        };
+        const [h0, h1, ht] = handTrack(cho.hand, rp);
+        lt = at(h0).lerp(at(h1), ht);
+      }
+      armIK(b, 'l', wristTarget(lt, q, 'l'), b.upperarm_l.getWorldPosition(new THREE.Vector3()).addScaledVector(right, -0.25).add(new THREE.Vector3(0, -0.6, 0)));
       wrapHand(b, q, 'l', this.bind);
     }
   }

@@ -53,6 +53,21 @@ export class Audio {
     }));
   }
   resume() { if (this.ctx.state !== 'running') void this.ctx.resume(); }
+  /**
+   * Low-frequency punch under a close gunshot (the chest thump recordings lose): a sine sweep ~95 → 38 Hz with a
+   * fast decay plus a short filtered noise crack. `k` scales it (~0.6 pistol, 1 rifle, 1.4 full-power, 2 heavy MG).
+   */
+  punch(k: number, gain = 1) {
+    if (this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime, g = this.ctx.createGain(), o = this.ctx.createOscillator();
+    o.type = 'sine'; o.frequency.setValueAtTime(95, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.12);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.55 * k * gain, t + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09 + 0.05 * k);
+    o.connect(g).connect(this.sfx); o.start(t); o.stop(t + 0.25);
+    const n = this.ctx.createBufferSource(), f = this.ctx.createBiquadFilter(), ng = this.ctx.createGain();
+    n.buffer = this.noise; f.type = 'lowpass'; f.frequency.value = 900;
+    ng.gain.setValueAtTime(0.25 * k * gain, t); ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+    n.connect(f).connect(ng).connect(this.sfx); n.start(t, Math.random() * 0.5, 0.08);
+  }
   setVolume(v: number) { this.master.gain.value = v; }
 
   setListener(p: V3, f: V3) {

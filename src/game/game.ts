@@ -46,6 +46,8 @@ export class Game {
   claims = new Map<number, number>();
   cover: CoverIndex | null = null;
   doors: Doors | null = null;
+  /** The player's fireteam brain when the mode has one (close-quarters test mode). */
+  fireteam: import('../ai/team').Fireteam | null = null;
   smokes: { p: V3; t0: number }[] = [];
   private zeros = new Map<string, number>();
   rng = mulberry(4242);
@@ -53,6 +55,8 @@ export class Game {
 
   constructor(public gfx: Gfx, public P: Physics, public city: City, public world: WorldView, public assets: CharAssets, quality: string) {
     this.fx = new FX(gfx.scene);
+    this.fx.floorAt = (p) => { const h = P.castRay([p[0], p[1], p[2]], [0, -1, 0], 3, G_WORLD); return h ? h.point[1] : null; };
+    this.fx.onCaseLand = (p) => { if (Math.random() < 0.6) this.audio.play('casing_drop', p, { range: 12, gain: 0.35, rate: 0.9 + Math.random() * 0.25 }); };
     this.audio = new Audio(quality !== 'low');
     this.audio.occluded = (a, b) => !P.clear(a, b, G_WORLD);
     // Under a roof with walls on at least two sides (an awning or a tree alone is not a room).
@@ -103,7 +107,8 @@ export class Game {
   // ---------------- weapons ----------------
   reload(s: Soldier): boolean {
     if (!s.startReload()) return false;
-    this.audio.play(s.weapon.belt ? 'belt_box_open_close' : 'mag_out', s.isPlayer ? null : s.eye, { range: 25, gain: 0.7 });
+    // The player's reload sounds come from the first-person choreography (in time with the hands).
+    if (!s.isPlayer || s.underSel) this.audio.play(s.weapon.belt ? 'belt_box_open_close' : 'mag_out', s.isPlayer ? null : s.eye, { range: 25, gain: 0.7 });
     return true;
   }
 
@@ -113,7 +118,7 @@ export class Game {
   trigger(s: Soldier, held: boolean, pressed: boolean, aiming = s.aiming) {
     if (!s.alive) return;
     const slot = s.slot, def = s.underSel ? WEAPONS.m203 : slot.def;
-    if (s.switchT > 0 || s.reloadT > 0 || s.bandageT > 0) return;
+    if (s.switchT > 0 || s.reloadT > 0 || s.bandageT > 0 || (s.support === 'bipod' && s.deployT < 1)) return;
     if (s.cool > 0) return;
     if (s.sprinting) { if (pressed) s.sprinting = false; return; }
     // Throwables.
@@ -164,23 +169,29 @@ export class Game {
     const slot = s.slot, a = AMMO[def.ammo];
     if (s.underSel) slot.glLoaded = 0; else slot.loaded--;
     s.cool = 60 / def.rpm; s.lastShotT = this.time; s.shots++;
-    // Direction: aim + deviation cone (uniform over the disc) + the sight's zero angle.
-    // The visible wobble carries most of the deviation (you see the sights drift); a smaller random part remains.
-    const devRad = s.dev / 1000, r = Math.min(devRad, s.devFloor() / 1000 + devRad * 0.3) * Math.sqrt(Math.random()), th = Math.random() * Math.PI * 2;
-    const yaw = s.yaw + s.wob[0] + r * Math.cos(th) / Math.max(0.2, Math.cos(s.pitch)), pitch = s.pitch + s.wob[1] + r * Math.sin(th) + this.zero(def) + (def.kind === 'gl' ? M203_SIGHT_TILT : 0);
+    // Direction: where the sights point (aim + sway + recoil) + the shot cone (uniform over the disc: mechanical
+    // dispersion when aimed, the hip cone otherwise) + the sight's zero angle.
+    const r = (s.dev / 1000) * Math.sqrt(Math.random()), th = Math.random() * Math.PI * 2;
+    const yaw = s.yaw + s.wob[0] + s.rcY + r * Math.cos(th) / Math.max(0.2, Math.cos(s.pitch)), pitch = s.pitch + s.wob[1] + s.rcP + r * Math.sin(th) + this.zero(def) + (def.kind === 'gl' ? M203_SIGHT_TILT : 0);
     const d = s.aimDir(yaw, pitch);
     const e = s.eye, o: V3 = [e[0] + d[0] * 0.25, e[1] + d[1] * 0.25 - (s.ads > 0.5 ? 0 : 0.08), e[2] + d[2] * 0.25];
-    const tracerEvery = a.tracer ?? 0, shotN = (slot.loaded % (tracerEvery || 1)) === 0;
+    const tracerEvery = def.tracer ?? a.tracer ?? 0, shotN = (slot.loaded % (tracerEvery || 1)) === 0;
     this.proj.fire(s, def, def.ammo, o, d, tracerEvery > 0 && shotN);
-    // Deviation and recoil.
-    const bip = def.bipod && s.stance === 'prone' ? 0.35 : 1;
-    s.dev += def.dev.kick * bip;
-    if (s.isPlayer && this.player) this.player.onShot(def.recoil[0] * bip, (Math.random() - 0.5) * 2 * def.recoil[1] * bip);
+    // Recoil: the aim climbs (with a random side kick); a bipod soaks most of it, a rest some. The hip cone opens up.
+    const sup = s.support === 'bipod' ? 0.3 : s.support === 'rest' ? 0.75 : s.stance === 'prone' ? 0.8 : 1;
+    s.dev += def.dev.kick * (s.ads > 0.9 ? 0.25 : 1) * sup;
+    const up = def.recoil[0] * sup * (0.85 + Math.random() * 0.3), side = (Math.random() - 0.45) * 2 * def.recoil[1] * sup;
+    s.recoil(up, side);
+    if (s.isPlayer && this.player) this.player.onShot(up, side);
     // Muzzle flash and sound.
     const rig = this.rigs.get(s.id);
     const mz = s.isPlayer && this.player && !this.player.third ? this.player.vm.muzzleWorld(new THREE.Vector3()) : rig?.muzzle ?? new THREE.Vector3(...o);
     const big = a.pen >= 3 ? 2 : def.kind === 'launcher' ? 2.5 : def.kind === 'pistol' ? 0.6 : 1;
     this.fx.muzzle([mz.x, mz.y, mz.z], d, big, !!s.isPlayer);
+    // Chest thump of a close shot (own weapon full, others by distance).
+    const pk = a.pen >= 3 ? 2 : def.kind === 'launcher' ? 1.8 : a.pen >= 2 ? 1.4 : def.kind === 'pistol' ? 0.6 : 1;
+    if (s.isPlayer) this.audio.punch(pk);
+    else { const cp = this.gfx.camera.position, dd = Math.hypot(cp.x - mz.x, cp.y - mz.y, cp.z - mz.z); if (dd < 25) this.audio.punch(pk, (1 - dd / 25) * 0.6); }
     const snd = s.underSel ? 'm203_launch' : def.sound;
     this.audio.play(snd, s.isPlayer ? null : [mz.x, mz.y, mz.z], { range: a.pen >= 3 || def.kind === 'launcher' ? 2500 : 1600, far: def.farSound, nearDist: 90, gain: s.isPlayer ? 0.9 : 1, variant: 0 });
     if (def.kind === 'launcher' || def.kind === 'gl') {
@@ -215,22 +226,26 @@ export class Game {
     const from = by.eye;
     s.damage(a.dmg, part, from, by, this.time);
     const d: V3 = [p[0] - from[0], p[1] - from[1], p[2] - from[2]], L = Math.hypot(...d) || 1, dn: V3 = [d[0] / L, d[1] / L, d[2] / L];
-    this.fx.blood(p, dn, a.pen >= 2 ? 1.5 : 1);
+    this.fx.blood(p, dn, a.pen >= 2 ? 1.6 : a.pen === 0 ? 0.8 : 1.2);
     // Splatter on whatever is behind the victim (exit spray), and drops on the ground below.
     const back = this.P.castRay([p[0] + dn[0] * 0.3, p[1] + dn[1] * 0.3, p[2] + dn[2] * 0.3], dn, 2.5);
     if (back) this.fx.bloodDecal(back.point, back.normal, 0.35 + Math.random() * 0.4 * (a.pen >= 2 ? 1.5 : 1));
     const below = this.P.castRay(p, [dn[0] * 0.3, -1, dn[2] * 0.3].map((v, i, arr) => v / Math.hypot(arr[0], arr[1], arr[2])) as V3, 3);
     if (below) this.fx.bloodDecal(below.point, below.normal, 0.25 + Math.random() * 0.2);
-    if (s.state === 'alive') this.rigs.get(s.id)?.hit(part);
-    this.audio.play('impact_flesh', s.isPlayer ? null : p, { range: 30 });
-    if (s.isPlayer) { this.player?.onShot(25, 10); this.hud?.hurt(from); }
+    // The hit shoves the body: a stagger away from the shot, and whoever goes down falls away from the shooter.
+    const rig = this.rigs.get(s.id), power = Math.min(1.6, a.dmg / 70) * (part === 'arm' || part === 'leg' ? 0.6 : 1);
+    if (s.state === 'alive') rig?.hit(part, dn, power);
+    else if (wasAlive) { s.yaw = Math.atan2(dn[0], dn[2]) + (Math.random() - 0.5) * 0.6; rig?.fall(power); }
+    this.audio.play('impact_flesh', s.isPlayer ? null : p, { range: 40, gain: 1.2 });
+    // A hit knocks the victim's aim off (and the player's view jolts).
+    s.rcP += (0.02 + Math.random() * 0.03) * power; s.rcY += (Math.random() - 0.5) * 0.07 * power;
+    if (s.isPlayer) { this.player?.onShot(30 * power, (Math.random() - 0.5) * 20); this.player && (this.player.shake += 0.25 * power); this.hud?.hurt(from); }
     if (wasAlive && s.state !== 'alive') this.events.onDown?.(s, by, s.state === 'dead');
     else if (!wasAlive && s.state === 'dead') this.events.onDown?.(s, by, true);
   }
 
   crack(s: Soldier, p: V3, a: Ammo, by: Soldier) {
     s.suppress = Math.min(1, s.suppress + (a.pen >= 2 ? 0.25 : 0.15));
-    s.dev = Math.max(s.dev, s.dev + 10);
     s.heard = { p: by.eye, t: this.time };
     if (s.isPlayer) { this.audio.play(a.v0 > 600 ? 'crack_supersonic' : 'whiz', p, { range: 15, delay: false, gain: 0.9 }); this.hud?.suppress(s.suppress); }
   }
@@ -293,7 +308,7 @@ export class Game {
       }
       if (s.state === 'alive') s.pooled = false;
       const reloaded = s.tick(dt, this.time);
-      if (reloaded) this.audio.play(s.weapon.belt ? 'belt_box_open_close' : 'mag_in', s.isPlayer ? null : s.eye, { range: 25, gain: 0.7 });
+      if (reloaded && (!s.isPlayer || s.underSel)) this.audio.play(s.weapon.belt ? 'belt_box_open_close' : 'mag_in', s.isPlayer ? null : s.eye, { range: 25, gain: 0.7 });
     }
     let t0 = performance.now();
     this.proj.step(dt);

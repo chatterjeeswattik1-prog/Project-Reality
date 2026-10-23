@@ -32,6 +32,7 @@ ONLY = argv[argv.index('--only') + 1].split(',') if '--only' in argv else None
 NOBAKE = '--nobake' in argv
 TEX = int(argv[argv.index('--tex') + 1]) if '--tex' in argv else None
 SMALL = {'makarov', 'f1', 'ied_phone', 'pg7v'}
+PRIMARY = {'akm', 'ak47', 'rpk', 'pkm', 'svd', 'aks74u'}   # long guns: 2048 px base colour + normal (metal-rough 1024)
 
 D = math.radians
 
@@ -67,15 +68,21 @@ def path_point(path, f):
 # notch 226 mm, front post 588 mm, brake exit 628 mm ahead of the receiver rear. Comb line ~0-6 mm below the bore,
 # butt 95 mm tall, grip bottom 130 mm below the bore, magazine rear edge on a ~0.25 m radius.
 AKN = dict(notch_y=0.2265, notch_z=0.0425, post_y=0.588, post_z=0.0431)
+# Charging: `charge` origin at the handle root on the carrier, knob centre = hand_charge, carrier travel to the rear.
+AK_CHARGE = dict(root=(0.012, 0.218, 0.0095), knob=(0.0355, 0.218, 0.013), travel=0.09)
 LOS = 0.0016   # sight line passes this far above the notch bottom: the post tip shows inside the U-notch
 
 
 def ak_mag(b, kind, rear=0.139, ztop=-0.026):
-    """Curved AK magazine: body following an arc, stamped side ribs (steel) or moulded ribs (polymer), floor plate,
-    front and rear lugs, feed lips and the top round. Returns the mag origin (top centre)."""
+    """Curved AK magazine: body following an arc, stamped side ribs (steel) or moulded ribs (bakelite / polymer), floor
+    plate, front and rear lugs, feed lips and the top round. Returns (pivot, hand): pivot = the mag origin, on the front
+    locking lug (the mag rocks forward about local X to come out of the well), hand = support-hand palm centre on the
+    front-left of the body at mid height."""
     P = b.P
     spec = {
         '762': dict(R=0.28, L=0.208, d0=0.058, d1=0.069, w=0.029, phi0=8, m=P['mag_steel'], ribs='steel', cal=(0.0385, 0.0057, 0.018)),
+        # AKM: orange-red AG-4S bakelite 30-rounder (steel feed lips and lugs moulded in), raised edge ribs.
+        '762b': dict(R=0.28, L=0.208, d0=0.058, d1=0.069, w=0.0295, phi0=8, m=P['bakelite'], ribs='bake', cal=(0.0385, 0.0057, 0.018)),
         '545': dict(R=0.4, L=0.19, d0=0.056, d1=0.06, w=0.027, phi0=6, m=P['bakelite'], ribs='poly', cal=(0.0395, 0.0050, 0.0175)),
         'rpk40': dict(R=0.33, L=0.262, d0=0.058, d1=0.076, w=0.0295, phi0=6, m=P['bakelite'], ribs='poly', cal=(0.0385, 0.0057, 0.018)),
     }[kind]
@@ -87,28 +94,40 @@ def ak_mag(b, kind, rear=0.139, ztop=-0.026):
     secs = [se(w, lerp(d0, d1, (i / n) ** 1.4), 7.0, 40) for i in range(n + 1)]
     loft_path(path, secs, spec['m'], 'mag_body')
     # Side ribs following the curve.
-    offs = (-0.019, -0.0065, 0.0065, 0.019) if spec['ribs'] == 'steel' else (-0.016, 0.0, 0.016)
-    for off in offs:
-        sec = [(x, d + off) for x, d in se(w + 0.0016, 0.0034 if spec['ribs'] == 'steel' else 0.0045, 2.6, 16)]
+    offs = {'steel': (-0.019, -0.0065, 0.0065, 0.019), 'poly': (-0.016, 0.0, 0.016), 'bake': (-0.0215, -0.007, 0.007, 0.0215)}[spec['ribs']]
+    for k, off in enumerate(offs):
+        rw = {'steel': 0.0034, 'poly': 0.0045, 'bake': 0.0038}[spec['ribs']]
+        rh = 0.0016 if spec['ribs'] != 'bake' else (0.0018 if k in (0, 3) else 0.0011)
+        sec = [(x, d + off) for x, d in se(w + rh, rw, 2.6, 16)]
         loft_path(path[2:n - 1], sec, spec['m'], 'mag_rib')
     # Floor plate with its lip.
     (y1, z1), (y0, z0) = path[-1], path[-2]
     t = Vector((y1 - y0, z1 - z0)).normalized()
     fp = [(y1 - t.x * 0.003, z1 - t.y * 0.003), (y1 + t.x * 0.004, z1 + t.y * 0.004)]
-    loft_path(fp, se(w + 0.003, d1 + 0.006, 9.0, 32), spec['m'] if kind == '762' else P['plum_poly'], 'floorplate')
+    loft_path(fp, se(w + 0.003, d1 + 0.006, 9.0, 32), spec['m'] if kind in ('762', '762b') else P['plum_poly'], 'floorplate')
     nrm = Vector((-t.y, t.x))
     ty, tz = path[-1][0] + nrm.x * (d1 / 2 + 0.002), path[-1][1] + nrm.y * (d1 / 2 + 0.002)
     bx((w * 0.6, 0.004, 0.008), (0, ty, tz), spec['m'], (math.degrees(math.atan2(t.x, -t.y)), 0, 0), name='floor_lip')
     # Top: front lug, rear catch lug, feed lips and a round.
     ry, rz = top
-    bx((w * 0.5, 0.007, 0.01), (0, ry + d0 / 2 + 0.003, rz - 0.008), spec['m'], name='front_lug')
-    bx((w * 0.6, 0.004, 0.007), (0, ry - d0 / 2 - 0.0015, rz - 0.014), spec['m'], name='rear_lug')
+    lm = P['mag_steel'] if kind == '762b' else spec['m']
+    bx((w * 0.5, 0.007, 0.01), (0, ry + d0 / 2 + 0.003, rz - 0.008), lm, name='front_lug')
+    bx((w * 0.6, 0.004, 0.007), (0, ry - d0 / 2 - 0.0015, rz - 0.014), lm, name='rear_lug')
     for sd in (-1, 1):
-        bx((0.004, d0 * 0.8, 0.003), (sd * (w / 2 - 0.002), ry - 0.004, rz + 0.0015), spec['m'], name='feed_lip')
+        bx((0.004, d0 * 0.8, 0.003), (sd * (w / 2 - 0.002), ry - 0.004, rz + 0.0015), lm, name='feed_lip')
+    if kind == '762b':
+        # Steel reinforcement band around the top of the body (feed-lip insert of the AG-4S).
+        loft_path(path[0:2], [(x, d) for x, d in se(w + 0.0012, d0 + 0.0012, 7.0, 40)], P['mag_steel'], 'top_band')
     cl, cr, bl = spec['cal']
     cartridge(b, ry - d0 / 2 + 0.003, 0.0035, rz + 0.0005, cl * 0.82, cr, bl, P['steel_case'], P['copper'], 14)
     b.group('body')
-    return (0, ry, rz)
+    pivot = (0, ry + d0 / 2 + 0.004, rz - 0.004)
+    (my, mz), (ny_, nz_) = path[n // 2], path[n // 2 + 1]
+    tg = Vector((ny_ - my, nz_ - mz)).normalized()
+    fw = Vector((-tg.y, tg.x))                    # path normal, points to the front of the mag
+    dm = lerp(d0, d1, 0.5 ** 1.4)
+    hand = (-(w / 2 + 0.012), my + fw.x * dm * 0.3, mz + fw.y * dm * 0.3)
+    return pivot, hand
 
 
 def ak_receiver(b, kind):
@@ -125,8 +144,10 @@ def ak_receiver(b, kind):
     sprism(prof_front, 0.028, st, bevel=0.0012, name='rcv_core')
     sprism([(0.125, -0.03), (0.205, -0.03), (0.205, 0.0012), (0.125, 0.0012)], 0.028, st, bevel=0.0008, name='rcv_core')
     sprism([(0.125, 0.0), (0.205, 0.0), (0.205, 0.016), (0.125, 0.016)], 0.0225, st, x=-0.00275, name='rcv_core')
+    b.group('charge')
     bx((0.003, 0.082, 0.0138), (0.0095, 0.166, 0.0088), br, name='bolt_carrier')
     bx((0.0035, 0.03, 0.006), (0.0096, 0.15, 0.0125), P['steel'], name='carrier_cut')
+    b.group('body')
     xs = 0.0148
     def dimple(y, z):
         if kind not in ('akm', 'rpk'):
@@ -170,9 +191,11 @@ def ak_receiver(b, kind):
     cy(0.0024, 0.0035, (xs + 0.002, 0.05, -0.004), br, 'X', 12)
     for k in range(3):
         bx((0.001, 0.0012, 0.003), (xs + 0.0004, 0.064 + k * 0.0045, -0.012 + k * 0.0022), P['shadow'], (k * 8.0, 0, 0), 0, 'detent')
-    # Charging handle on the bolt carrier.
+    # Charging handle on the bolt carrier (group 'charge': moves back AK_CHARGE['travel'] when the weapon is charged).
+    b.group('charge')
     cy_between((0.012, 0.218, 0.0095), (0.031, 0.218, 0.0125), 0.0033, br, 12)
     ball(0.0062, (0.0355, 0.218, 0.013), br, (1.25, 1.0, 0.95), 16, 10)
+    b.group('body')
     if kind != 'aks74u':
         ak_rear_sight(b, kind)
 
@@ -399,7 +422,7 @@ def ak_family(kind):
         muzzle = ak_front(b, kind, P)
     else:
         muzzle, butt = aks74u_front_and_stock(b, P)
-    morigin = ak_mag(b, {'akm': '762', 'ak47': '762', 'rpk': 'rpk40', 'aks74u': '545'}[kind])
+    morigin, mhand = ak_mag(b, {'akm': '762b', 'ak47': '762', 'rpk': 'rpk40', 'aks74u': '545'}[kind])
     gy, gz = path_point(gpath, 0.45)
     if kind == 'aks74u':
         ny, nz, py, pz = AKS74U['notch_y'], AKS74U['notch_z'], AKS74U['post_y'], AKS74U['post_z']
@@ -419,8 +442,25 @@ def ak_family(kind):
     b.E('grip_l', (0, 0.33 if kind == 'aks74u' else gy + 0.31, -0.026))
     b.E('eject', (0.0155, 0.165, 0.009))
     b.E('butt', butt)
-    root = b.finish((0, gy, gz), {'mag': morigin})
+    b.E('hand_mag', mhand, 'mag')
+    cr, ck, tr = AK_CHARGE['root'], AK_CHARGE['knob'], AK_CHARGE['travel']
+    b.E('charge_back', (cr[0], cr[1] - tr, cr[2]))
+    b.E('hand_charge', ck, 'charge')
+    ak_stamps(b, kind)
+    root = b.finish((0, gy, gz), {'mag': morigin, 'charge': cr})
     return root, [kind]
+
+
+def ak_stamps(b, kind):
+    """Receiver markings (build frame): selector positions on the right (AB = auto, OD = semi), arsenal mark, year
+    and serial on the left above the magazine well."""
+    h = 0.0038
+    if kind in ('akm', 'rpk', 'ak47'):
+        b.stamp('AB', 0.1985, -0.0048, h, 1)
+        b.stamp('OД', 0.1985, -0.0148, h, 1)
+    ser = {'akm': ('*1976', 'ЕЖ 4127'), 'ak47': ('56-1', '9206114'), 'rpk': ('*1974', 'ПЛ 3381'), 'aks74u': ('*1984', '3Г 0472')}[kind]
+    b.stamp(ser[0], 0.172, 0.0035, 0.0038, -1)
+    b.stamp(ser[1], 0.172, -0.0035, 0.0038, -1)
 
 
 AKS74U = dict(notch_y=0.16, notch_z=0.058, post_y=0.412, post_z=0.0586)
@@ -526,6 +566,7 @@ def fluted(y0, y1, R, m, flutes=8, depth=0.0016):
 # front sight 0.795 m, muzzle 0.895 m. Rear notch 56.5 mm and front post 55.5 mm above the bore; feed cover top 37-43 mm,
 # so the sight line clears the cover by > 12 mm.
 PKN = dict(notch_y=0.145, notch_z=0.0565, post_y=0.795, post_z=0.0571)
+PK_CHARGE_TRAVEL = 0.15     # cocking-handle stroke (approx.; operating rod travel ~150 mm)
 
 
 def obround(y0, y1, z0, z1, n=28):
@@ -568,7 +609,7 @@ def pkm():
             hole = lambda y, z: 0.17 < y < 0.265 and z > 0.004
         else:
             hole = lambda y, z: 0.19 < y < 0.25 and -0.012 < z < 0.012
-        skin_x(sd, 0.0235, 0.002, 0.299, -0.0525, 0.0255, st2, 0.0028, ribs, hole, name='rcv_skin')
+        skin_x(sd, 0.0235, 0.002, 0.299, -0.0525, 0.0255, st2, (0.006, 0.0028), ribs, hole, name='rcv_skin')
         for y, z in ((0.012, 0.012), (0.012, -0.024), (0.012, -0.045), (0.288, 0.012), (0.288, -0.024), (0.288, -0.045), (0.15, -0.046)):
             rivet(y, z, sd, st2, 0.0026, 0.0237)
     bx((0.0015, 0.095, 0.022), (0.021, 0.2175, 0.015), P['shadow'], bevel=0, name='feed_opening')
@@ -589,9 +630,13 @@ def pkm():
         z = 0.0415 + (0.166 - y) / (0.166 - ny) * (nz - 0.0045 - 0.0415) + 0.0002
         for sd in (-1, 1):
             bx((0.0028, 0.0006, 0.0006), (sd * 0.0052, y, z), P['white'], bevel=0, name='tick')
-    # Cocking handle (right), trigger housing, guard, trigger, grip, safety.
+    # Cocking handle (right, group 'charge': pulled back PK_CHARGE_TRAVEL), trigger housing, guard, trigger, grip, safety.
+    b.group('charge')
     cy_between((0.022, 0.205, -0.03), (0.042, 0.205, -0.03), 0.0042, br, 12)
     lathe([(0, 0.199), (0.007, 0.199), (0.008, 0.205), (0.007, 0.211), (0, 0.211)], br, 'Y', (0.047, 0, -0.03), 16, 'cocking_knob')
+    bx((0.004, 0.03, 0.007), (0.0225, 0.205, -0.03), st2, name='handle_slide')
+    b.group('body')
+    bx((0.0012, 0.17, 0.0075), (0.0237, 0.135, -0.03), P['shadow'], bevel=0, name='handle_slot')
     sprism([(0.0, -0.053), (0.152, -0.053), (0.152, -0.062), (0.075, -0.068), (0.0, -0.064)], 0.03, st2, bevel=0.0015, name='trigger_housing')
     gp = chaikin([(0.15, -0.061), (0.15, -0.084), (0.143, -0.094), (0.096, -0.094), (0.088, -0.088), (0.085, -0.066)], 3)
     loft_path(gp, se(0.011, 0.003, 6.0, 16), st2, 'trigger_guard')
@@ -679,7 +724,14 @@ def pkm():
     b.E('grip_l', (0, 0.33, -0.052))
     b.E('eject', (-0.024, 0.22, 0.0))
     b.E('butt', (0, -0.2905, -0.055))
-    return b.finish((0, gy, gz), {'cover': (0, 0.302, 0.03), 'box': (0.014, 0.24, -0.06)}), ['pkm']
+    # Reload nodes. The PK feed cover is hinged at its FRONT pin (real gun): hand_cover sits at the rear latch, so the
+    # cover opens by lifting its rear (opposite sense to the rear-hinged M249 / M240B covers).
+    b.E('charge_back', (0.022, 0.205 - PK_CHARGE_TRAVEL, -0.03))
+    b.E('hand_charge', (0.047, 0.205, -0.03), 'charge')
+    b.E('hand_cover', (0, 0.18, 0.043), 'cover')
+    b.E('hand_mag', (bc[0] - 0.036 - 0.012, bc[1] + 0.03, bc[2]), 'box')
+    b.E('mag_dir', (0.014, 0.24, -0.06 - 0.12))
+    return b.finish((0, gy, gz), {'cover': (0, 0.302, 0.03), 'box': (0.014, 0.24, -0.06), 'charge': (0.022, 0.205, -0.03)}), ['pkm']
 
 
 # =================================================================== SVD
@@ -697,19 +749,21 @@ def svd():
     sprism([(0.0, -0.042), (0.004, -0.045), (0.3, -0.045), (0.3, 0.006), (0.0, 0.006)], 0.029, st, bevel=0.0012, name='rcv_core')
     for sd in (-1, 1):
         hole = (lambda y, z: 0.15 < y < 0.235 and z > -0.006) if sd > 0 else None
-        skin_x(sd, 0.0152, 0.002, 0.299, -0.0435, 0.0055, st, 0.0028, None, hole, name='rcv_skin')
+        skin_x(sd, 0.0152, 0.002, 0.299, -0.0435, 0.0055, st, (0.006, 0.0028), None, hole, name='rcv_skin')
         for y, z in ((0.012, -0.004), (0.012, -0.03), (0.288, -0.004), (0.288, -0.03), (0.27, -0.038)):
             rivet(y, z, sd, st, 0.0021, 0.0153)
     sprism([(0.15, -0.006), (0.235, -0.006), (0.235, 0.006), (0.15, 0.006)], 0.022, st, x=-0.0035, name='rcv_core_port')
+    b.group('charge')
     bx((0.003, 0.085, 0.011), (0.0095, 0.1925, 0.0), br, name='bolt_carrier')
+    cy_between((0.012, 0.245, -0.0), (0.03, 0.245, 0.002), 0.0033, br, 12)
+    ball(0.0058, (0.0345, 0.245, 0.0025), br, (1.25, 1, 0.95), 16, 10)
+    b.group('body')
     loft_y([(0.002, arch(0.027, -0.0005, 0.011, 0.005, 14, 2.8)), (0.005, arch(0.0315, -0.0005, 0.0137, 0.006, 14, 2.8)),
             (0.25, arch(0.0315, -0.0005, 0.0137, 0.006, 14, 2.8))], st, 'dust_cover')
     loft_y([(-0.004, se(0.01, 0.0055, 3, 16, 0, 0.007)), (0.005, se(0.01, 0.0055, 3, 16, 0, 0.007))], st, 'guide_tab')
     sprism([(0.03, -0.022), (0.044, -0.023), (0.06, -0.016), (0.2, -0.008), (0.226, -0.009), (0.236, -0.008), (0.236, 0.004), (0.2, 0.004),
             (0.06, -0.008), (0.032, -0.012)], 0.0016, st, x=0.0163, bevel=0.0004, name='safety')
     cy(0.0062, 0.0022, (0.0162, 0.037, -0.017), st, 'X', 24, bevel=0.0004)
-    cy_between((0.012, 0.245, -0.0), (0.03, 0.245, 0.002), 0.0033, br, 12)
-    ball(0.0058, (0.0345, 0.245, 0.0025), br, (1.25, 1, 0.95), 16, 10)
     # Rear sight block (front of the receiver) with tangent leaf and notch.
     ny, nz, py, pz = SVDN['notch_y'], SVDN['notch_z'], SVDN['post_y'], SVDN['post_z']
     sprism([(0.27, -0.016), (0.33, -0.016), (0.33, 0.022), (0.318, 0.027), (0.28, 0.028), (0.27, 0.022)], 0.027, st, bevel=0.0015, name='rs_block')
@@ -789,7 +843,9 @@ def svd():
     for off in (-0.026, -0.009, 0.009, 0.026):
         loft_path(path[2:11], [(x, d + off) for x, d in se(0.0286, 0.007, 3, 16)], st, 'mag_rib')
     loft_path([path[-1], (path[-1][0] + 0.0004, path[-1][1] - 0.006)], se(0.03, 0.094, 8, 32), st, 'floorplate')
+    bx((0.012, 0.006, 0.008), (0, 0.175 + d0 + 0.002, -0.045), st, name='front_lug')
     b.group('body')
+    my, mz = path[6]
     gy, gz = 0.03, -0.088
     lz = nz + LOS
     slope = (pz - lz) / (py - ny)
@@ -803,7 +859,11 @@ def svd():
     b.E('grip_l', (0, 0.4, -0.026))
     b.E('eject', (0.016, 0.19, 0.0))
     b.E('butt', (0, -0.2525, -0.08))
-    return b.finish((0, gy, gz), {'mag': (0, 0.175 + d0 / 2, -0.04)}), ['svd']
+    b.E('hand_mag', (-0.0135 - 0.012, my + 0.012, mz), 'mag')
+    b.E('charge_back', (0.012, 0.245 - 0.085, 0.0))
+    b.E('hand_charge', (0.0345, 0.245, 0.0025), 'charge')
+    # Mag origin on the front locking lug (AK-pattern rock-in / rock-out), charge origin at the handle root.
+    return b.finish((0, gy, gz), {'mag': (0, 0.175 + d0 + 0.004, -0.042), 'charge': (0.012, 0.245, 0.0)}), ['svd']
 
 
 # =================================================================== RPG-7 and PG-7V
@@ -966,12 +1026,15 @@ def makarov():
         f = 1.0 if y < y1 - 0.014 else 1.0 - ((y - (y1 - 0.014)) / 0.014) ** 2 * 0.22
         k = (0.95 + 0.05 * e) * f
         secs.append((y, arch(0.0285 * k, -0.011 + (1 - f) * 0.004, 0.0125 - (1 - f) * 0.006, -0.001, 18, 2.1)))
+    b.group('charge')
     loft_y(secs, st, 'slide')
     for i in range(11):
         for sd in (-1, 1):
             bx((0.0009, 0.0011, 0.0135), (sd * 0.0141, -0.0265 + i * 0.0026, 0.0005), P['shadow'], (0, 0, 0), 0, 'serration')
     bx((0.0016, 0.024, 0.0085), (0.0137, 0.043, 0.0055), P['shadow'], (0, 0, 0), 0, 'eject_port')
+    b.group('body')
     htube(0.0056, 0.0046, y1 - 0.004, y1 + 0.0003, br, 0, 0, 24, name='barrel')
+    b.group('charge')
     # Sights.
     ny, nz, py, pz = -0.0275, 0.0165, 0.121, 0.0181
     sprism([(-0.031, 0.011), (-0.023, 0.011), (-0.023, nz + 0.0022), (-0.031, nz + 0.0022)], 0.0105, st, bevel=0.0004, name='rear_sight')
@@ -981,6 +1044,7 @@ def makarov():
     cy(0.0045, 0.002, (-0.0149, -0.019, 0.002), st, 'X', 20, bevel=0.0003)
     sprism([(-0.026, -0.002), (-0.012, -0.003), (-0.004, 0.006), (-0.006, 0.0085), (-0.022, 0.007), (-0.027, 0.003)], 0.0018, st,
            x=-0.0152, bevel=0.0004, name='safety')
+    b.group('body')
     sprism([(-0.03, -0.006), (-0.035, -0.006), (-0.039, -0.001), (-0.039, 0.006), (-0.035, 0.0105), (-0.031, 0.009), (-0.029, 0.002)],
            0.0075, st, bevel=0.0006, name='hammer')
     for k in range(4):
@@ -1030,7 +1094,14 @@ def makarov():
     b.E('grip_r', (0, gy, gz))
     b.E('grip_l', (-0.013, gy - 0.002, gz - 0.01))
     b.E('eject', (0.0142, 0.043, 0.006))
-    return b.finish((0, gy, gz), {'mag': (0, -0.008, -0.015)}), ['makarov']
+    # Reload nodes: straight-inserted mag (origin top centre, withdrawn along its axis), slide = charge.
+    d = Vector((path[-1][0] - path[0][0], path[-1][1] - path[0][1])).normalized()
+    b.E('mag_dir', (0, -0.008 + d.x * 0.12, -0.015 + d.y * 0.12))
+    my, mz = path[3]
+    b.E('hand_mag', (-0.0098 - 0.012, my + 0.004, mz), 'mag')
+    b.E('charge_back', (0, y0 - 0.036, 0))
+    b.E('hand_charge', (0, -0.018, 0.0125), 'charge')
+    return b.finish((0, gy, gz), {'mag': (0, -0.008, -0.015), 'charge': (0, y0, 0)}), ['makarov']
 
 
 # =================================================================== F1 grenade
@@ -1353,7 +1424,7 @@ def main():
         r = bpy.data.objects[names[0]]
         if not NOBAKE:
             tb = time.time()
-            bake_weapon(r, TEX or (512 if wid in SMALL else 1024))
+            bake_weapon(r, TEX or (512 if wid in SMALL else 2048 if wid in PRIMARY else 1024))
             print(f'[weapons_ins] {wid}: baked in {time.time() - tb:.1f}s')
         path = os.path.join(OUT, f'{wid}.glb')
         export_glb(path, names)

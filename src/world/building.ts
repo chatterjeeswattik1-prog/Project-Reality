@@ -49,6 +49,9 @@ export interface BuildingInfo {
   rooms: { x0: number; z0: number; x1: number; z1: number; y: number; floor: number; kind: 'living' | 'kitchen' | 'bedroom' | 'store' }[];
   /** Interior paint colour (vertex tint for interior wall faces). */
   paint: [number, number, number];
+  /** Window openings as firing positions: a point inside the room ~0.6 m from the wall (on the floor), the outward
+   *  normal, the sill height above that floor and the floor index. */
+  windows: { x: number; y: number; z: number; nx: number; nz: number; sill: number; floor: number }[];
 }
 
 interface Opening { u0: number; u1: number; y0: number; y1: number }
@@ -165,7 +168,7 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
 
   // Interior paint: pastel lime-washed colours typical of Iraqi homes (light green, blue, cream, pink, white).
   const PAINTS: [number, number, number][] = [[0.82, 0.9, 0.78], [0.78, 0.86, 0.92], [0.95, 0.9, 0.78], [0.94, 0.84, 0.82], [0.92, 0.92, 0.9], [0.8, 0.88, 0.86]];
-  const info: BuildingInfo = { id: sp.id, spec: sp, spots: [], roof: [], doors: [], roofY, debris: [], doorways: [], rooms: [], paint: PAINTS[Math.floor(hash2(sp.id, 333) * PAINTS.length) % PAINTS.length] };
+  const info: BuildingInfo = { id: sp.id, spec: sp, spots: [], roof: [], doors: [], roofY, debris: [], doorways: [], rooms: [], windows: [], paint: PAINTS[Math.floor(hash2(sp.id, 333) * PAINTS.length) % PAINTS.length] };
   S.paint = sp.hall ? null : info.paint;
   // Local axis → world axis: u runs along world x for orientations 0/2, along z for 1/3.
   const axisOf = (alongV: boolean): 'x' | 'z' => ((orient % 2 === 0) !== alongV ? 'x' : 'z');
@@ -217,6 +220,11 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
           if (hasStairs && ((side === 'front' && u1 > wellU0 - 0.2 && u0 < wellU1 + 0.2) || (side === 'left' && u1 > wellV0 - 0.2 && u0 < wellV1 + 0.2))) continue;
           if (k === 0 && side === 'front' && sp.shops) continue;
           ops.push({ u0, u1, y0: yb, y1: k === 0 && !sp.modern && !sp.hall ? yb + winH * 0.8 : ye });
+          if (!sp.hall) {
+            const inner = c0 < 1 ? t + 0.6 : c0 - 0.6, wallMid = c0 + t / 2;
+            const [x, z] = alongV ? W2(inner, c) : W2(c, inner), [ox, oz] = alongV ? W2(wallMid, c) : W2(c, wallMid), L = Math.hypot(ox - x, oz - z) || 1;
+            info.windows.push({ x, y: yb - sill, z, nx: (ox - x) / L, nz: (oz - z) / L, sill, floor: k });
+          }
         }
       }
     }

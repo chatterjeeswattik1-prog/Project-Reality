@@ -10,7 +10,8 @@ shooter's eye really is with a cheek weld (same line, eye relief behind `eye`); 
 Every weapon is modelled in millimetres in a "weapon frame" (bore on the Y axis, z = 0 on the bore, y = 0 at the
 rear of the receiver) and shifted so the grip point lands on the origin. Proportions were matched to side-view
 photographs in tools/blender/src-assets/ref/us/ (US Army PEO Soldier / Wikimedia Commons) and public dimensions.
-After building, each weapon is Smart-UV unwrapped into one atlas and a texture set is baked (wcommon_us.bake_weapon):
+After building, each weapon is Smart-UV unwrapped into one atlas and a texture set is baked (wcommon_us.bake_weapon,
+2048 px base colour + normal for the long guns, metal-rough capped at 1024):
 ambient occlusion + edge-wear mask -> parkerised / anodised / polymer finishes with worn edges and roughness
 variation, packed into the GLB as base colour + metallic-roughness."""
 import os, sys, math
@@ -35,15 +36,15 @@ def mats():
     satin with a slight sheen, polymer matte; wear = how much lighter metal shows on exposed edges; pattern = the
     micro relief baked into the normal map (wcommon_us.PATTERNS)."""
     W = wmat
-    anod = dict(rough=0.42, metal=0.3, wear=0.3, worn=(0.13, 0.13, 0.13), worn_rough=0.34, worn_metal=0.7, dust=0.15)
-    park = dict(rough=0.64, metal=0.45, wear=0.35, worn=(0.14, 0.14, 0.13), worn_rough=0.32, worn_metal=0.9, dust=0.18)
+    anod = dict(rough=0.5, metal=0.15, wear=0.55, worn=(0.2, 0.2, 0.2), worn_rough=0.3, worn_metal=0.85, dust=0.15)
+    park = dict(rough=0.62, metal=0.45, wear=0.55, worn=(0.22, 0.22, 0.21), worn_rough=0.3, worn_metal=0.95, dust=0.18)
     poly = dict(rough=0.76, metal=0.0, wear=0.12, worn=(0.075, 0.075, 0.072), worn_rough=0.62, ao=0.5, dust=0.2)
     acog = dict(rough=0.45, metal=0.3, wear=0.3, worn=(0.15, 0.15, 0.15), worn_rough=0.35, worn_metal=0.75)
     return dict(
-        anod=W('anodized_black', (0.034, 0.034, 0.037), pattern='anod', **anod),
-        knurl_a=W('anodized_knurled', (0.034, 0.034, 0.037), pattern='knurl', **anod),
-        park=W('parkerized', (0.038, 0.040, 0.035), pattern='park', **park),
-        knurl_p=W('parkerized_knurled', (0.038, 0.040, 0.035), pattern='knurl', **park),
+        anod=W('anodized_black', (0.022, 0.022, 0.023), pattern='anod', **anod),
+        knurl_a=W('anodized_knurled', (0.022, 0.022, 0.023), pattern='knurl', **anod),
+        park=W('parkerized', (0.028, 0.029, 0.026), pattern='park', **park),
+        knurl_p=W('parkerized_knurled', (0.028, 0.029, 0.026), pattern='knurl', **park),
         poly=W('polymer_black', (0.04, 0.04, 0.039), pattern='poly', **poly),
         stip=W('polymer_stippled', (0.042, 0.042, 0.041), pattern='stipple', **poly),
         grip=W('polymer_grip', (0.04, 0.04, 0.039), pattern='grip', smudge=0.7, **poly),
@@ -78,11 +79,12 @@ class Gun:
         self.E = {}
         self.grip = Vector((0, 0, 0))
         self.body = self.part('body')
-        self.tex = 1024
+        self.tex = 2048 if gid in ('m4a1', 'm4a1_m203', 'm16a4', 'm249', 'm240b', 'm24') else 1024
         self.hip = True       # render the hip view (camera 0.18 m right, 0.12 m up, 0.25 m behind the grip)
         self.decals = []      # stamped markings (wcommon_us.decal_images)
 
     def mark(self, text, y, z, h, side, fill=False, **kw):
+        """Stamped marking (wcommon_us.add_decal_quads); obj='charge' etc. puts it on a moving part instead of the body."""
         d = dict(text=text, y=y, z=z, h=h, side=side, fill=fill); d.update(kw)
         self.decals.append(d)
 
@@ -105,8 +107,10 @@ class Gun:
         self.parts[name] = p
         return p
 
-    def e(self, name, p):
-        self.E[name] = tuple(p)
+    def e(self, name, p, parent=None):
+        """Empty at p (mm, weapon frame). parent = name of a part (e.g. 'mag', 'charge'): the empty becomes a child of
+        that part's object and follows it when the game animates it."""
+        self.E[name] = (tuple(p), parent)
 
     def cheek(self, eye, back, name='cheek'):
         """Cheek-weld eye point: `back` mm behind `eye` along the bore direction (sight lines are bore-parallel)."""
@@ -119,8 +123,12 @@ class Gun:
         bpy.context.scene.collection.objects.link(root)
         root.empty_display_size = 0.05
         objs = [make_object(p, self.grip, root) for p in self.parts.values() if p.F]
-        for n, p in self.E.items():
-            make_empty(n, p, self.grip, root)
+        by = {o.name: o for o in objs}
+        for n, (p, parent) in self.E.items():
+            if parent:
+                make_empty(n, p, self.parts[parent].pivot, by[parent])
+            else:
+                make_empty(n, p, self.grip, root)
         return root, objs
 
 
@@ -184,6 +192,10 @@ def stanag(g, P, top, L=172.0):
     mg.loft([ring(L - 2, 67.5, 25.5, 4), ring(L + 2, 68, 26, 4.5), ring(L + 6, 66, 25, 4)], P['poly'])
     mg.loft([ring(1, 46, 20, 3), ring(-4, 44, 18, 3)], P['steel'])  # feed lips
     mg.loft([ring(-3.5, 40, 12, 3), ring(-6, 36, 10, 3)], P['dark'])  # follower / top round
+    # Reload nodes: origin = top centre (straight top section, inserted straight up), withdrawn straight down.
+    g.e('mag_dir', (0, top[0], top[1] - 120))
+    c, nf = frame(80)
+    g.e('hand_mag', (-(22.2 / 2 + 12), c.y + 8, c.z), 'mag')
     return mg
 
 
@@ -262,7 +274,10 @@ def peq15(b, P, y0, deck):
 RT = 30.0  # rail top above the bore (flat-top upper and RAS)
 
 
-def ar_upper(b, P):
+AR_CHARGE = (0.0, -4.5, 15.0)   # charging-handle T centre at rest (part 'charge' origin); travel 70 mm
+
+
+def ar_upper(g, b, P):
     an, dk, st = P['anod'], P['dark'], P['steel']
     pc = b.sub()
     sec = [(-13, -15), (13, -15), (13.2, 7), (11.6, 13), (9.4, 16.6), (9.4, 21.6), (-9.4, 21.6), (-9.4, 16.6),
@@ -273,11 +288,12 @@ def ar_upper(b, P):
     ct.box2((-6.5, -4, 9.5), (6.5, 30, 19), dk, bevel=0)                # charging handle channel
     b.add_cut(pc, ct)
     b.pic_rail(0.5, 179.5, TM((0, 0, 21.6)), an)
-    # Bolt carrier + bolt inside, seen through the port.
-    b.lathe_y([(4, 0), (4, 12.3), (118, 12.3), (118, 0)], m=st, n=24)
-    b.lathe_y([(118, 0), (118, 9.6), (160, 9.6), (160, 0)], m=st, n=18)
-    b.box((3, 6, 5), (8.6, 96, 10.5), st, bevel=0.6)                     # cam pin head
-    b.box((3, 18, 4), (9.4, 140, 0), st, bevel=0.5)                      # extractor
+    # Bolt carrier + bolt inside, seen through the port (part 'charge': travels back with the charging handle).
+    ch = g.part('charge', AR_CHARGE)
+    ch.lathe_y([(4, 0), (4, 12.3), (118, 12.3), (118, 0)], m=st, n=24)
+    ch.lathe_y([(118, 0), (118, 9.6), (160, 9.6), (160, 0)], m=st, n=18)
+    ch.box((3, 6, 5), (8.6, 96, 10.5), st, bevel=0.6)                    # cam pin head
+    ch.box((3, 18, 4), (9.4, 140, 0), st, bevel=0.5)                     # extractor
     # Dust cover, open (hanging from its hinge rod below the port), with its stiffening ribs.
     b.tube(1.4, 69, 131, 13.8, -10, P['park'], 10)
     b.extrude([(13.4, -9.2), (15.3, -10.2), (18.8, -25.0), (16.9, -25.6)], 58, an, 'y', 71, bevel=0.4)
@@ -294,10 +310,12 @@ def ar_upper(b, P):
         b.lathe([(yy, 7.1), (yy, 7.5), (yy + 0.8, 7.5), (yy + 0.8, 7.1)], dk, (17, 6, 9), (0, 0, 8), 24, closed=True)
     b.box2((12, 10, 0.5), (14.6, 46, 12), an, bevel=1.2)
     # Charging handle (T) with its latch, the shaft in the channel.
-    b.extrude([(-24, -6.5), (-24, -2), (-7, 0.5), (7, 0.5), (24, -2), (24, -6.5), (7, -9.5), (-7, -9.5)], 7, an, 'z', 11.5,
-              bevel=1.3)
-    b.box2((-5.5, -3, 12), (5.5, 30, 18.5), an, bevel=0.6)
-    b.extrude([(-24, -3), (-19, -1), (-12, -1), (-12, -6), (-24, -6)], 3, P['knurl_a'], 'z', 18.6, bevel=0.6)
+    ch.extrude([(-24, -6.5), (-24, -2), (-7, 0.5), (7, 0.5), (24, -2), (24, -6.5), (7, -9.5), (-7, -9.5)], 7, an, 'z', 11.5,
+               bevel=1.3)
+    ch.box2((-5.5, -3, 12), (5.5, 30, 18.5), an, bevel=0.6)
+    ch.extrude([(-24, -3), (-19, -1), (-12, -1), (-12, -6), (-24, -6)], 3, P['knurl_a'], 'z', 18.6, bevel=0.6)
+    g.e('charge_back', (AR_CHARGE[0], AR_CHARGE[1] - 70, AR_CHARGE[2]))
+    g.e('hand_charge', (0, -5, 15), 'charge')
     # Barrel nut + delta ring with its weld-spring cap.
     b.lathe_y([(176, 0), (176, 16.5), (197, 16.5), (197, 0)], m=P['park'], n=24)
     b.lathe_y([(181, 0), (181, 24), (183, 28.6), (192, 28.6), (194, 25.5), (196, 24), (196, 0)], m=an, n=32)
@@ -460,7 +478,7 @@ def ar15(g, P, kind):
     YB = -255.0 if carbine else -295.0         # rear of the butt
     R0, R1 = 197.0, FS - 2
     an, pk, po = P['anod'], P['park'], P['poly']
-    ar_upper(b, P)
+    ar_upper(g, b, P)
     ar_lower(b, P, g)
     if carbine:
         ar_buffer_m4stock(b, P, YB)
@@ -613,8 +631,11 @@ def m249(P):
     ct = b.sub(); ct.box((24, 64, 60), (-48, 231, -116), dk, (0, 32, 0), bevel=0)
     b.add_cut(mw, ct)
     b.box2((29, 150, -24), (32, 256, -14), pk, bevel=0.6)                 # charging handle track (right)
-    b.box2((30, 226, -30), (40, 246, -10), pk, bevel=2)
-    b.cylx(5.5, 38, 50, 236, -20, po, 14, bevel=1)
+    ch = g.part('charge', (30, 236, -20))                                # charging handle (pulled back 80 mm)
+    ch.box2((30, 226, -30), (40, 246, -10), pk, bevel=2)
+    ch.cylx(5.5, 38, 50, 236, -20, po, 14, bevel=1)
+    g.e('charge_back', (30, 236 - 80, -20))
+    g.e('hand_charge', (47, 236, -20), 'charge')
     ct = b.sub()
     pc = b.sub(); pc.box2((10, 180, -82), (29.5, 252, -74), pk, bevel=0.5)
     ct.box2((14, 186, -90), (26, 246, -76), dk, bevel=0)
@@ -709,6 +730,7 @@ def m249(P):
     for s in (-1, 1):
         cv.box2((s * 30 - 3, 78, 18), (s * 30 + 3, 94, 30), pk, bevel=1.2)
     cv.box2((-12, 252, 20), (12, 262, 32), pk, bevel=1.5)
+    g.e('hand_cover', (0, 88, 38), 'cover')                               # rear latches: lift here (hinge at the front)
     # ---- 200-round soft pack on the magazine well, belt rising into the feed tray (left)
     bx = g.part('box', (-12, 236, -100))
     cn = P['canvas']
@@ -724,6 +746,8 @@ def m249(P):
     bx.box2((-30, 205, -94), (6, 262, -82), po, bevel=2)                  # adapter into the magwell
     pts = [(-40, -88 + i * 14.5) for i in range(7)]
     belt(bx, P, pts, 205, '556')
+    g.e('hand_mag', (-50, 262, -150), 'box')
+    g.e('mag_dir', (-12, 236, -220))
     g.e('muzzle', (0, yfh, 0))
     g.e('eject', (20, 216, -84))
     g.e('butt', (0, -265, -72))
@@ -760,8 +784,11 @@ def m240b(P):
     ct = b.sub(); ct.box2((-11, 256, -90), (11, 339, -77), dk, bevel=0)
     b.add_cut(pc, ct)                                                       # ejection port (bottom)
     b.box2((27, 290, -36), (31, 378, -26), pk, bevel=0.6)                   # charging handle (right, folded)
-    b.box2((30, 340, -40), (40, 372, -22), pk, bevel=2)
-    b.cylx(7, 38, 52, 362, -31, po, 14, bevel=1)
+    ch = g.part('charge', (30, 356, -31))                                # charging handle (pulled back 150 mm)
+    ch.box2((30, 340, -40), (40, 372, -22), pk, bevel=2)
+    ch.cylx(7, 38, 52, 362, -31, po, 14, bevel=1)
+    g.e('charge_back', (30, 356 - 150, -31))
+    g.e('hand_charge', (48, 362, -31), 'charge')
     # Rear sight on the receiver front, ahead of the cover: base, leaf folded flat, battle notch (line 60 mm).
     b.box2((-15, 378, 26), (15, 404, 46), pk, bevel=2)
     b.box2((-11, 386, 46), (11, 428, 49), pk, bevel=0.8)
@@ -833,6 +860,7 @@ def m240b(P):
     cv.loft_y([(175, 46, 26, 56, 6), (376, 46, 26, 56, 6)], pk, n=3)
     cv.pic_rail(192, 362, TM((0, 0, 46)), pk)
     cv.box2((-21, 172, 30), (21, 186, 44), pk, bevel=2)
+    g.e('hand_cover', (0, 180, 47), 'cover')                              # rear latch: lift here (hinge at the front)
     # ---- 100-round soft pouch hanging on the left, belt into the feed tray
     bx = g.part('box', (-45, 335, -6))
     cn = P['canvas']
@@ -841,6 +869,8 @@ def m240b(P):
     bx.box2((-40, 318, -22), (-26, 352, 8), pk, bevel=2)
     pts = [(-58 + 4 * i, -8 + 9 * i) for i in range(4)]
     belt(bx, P, pts, 300, '762')
+    g.e('hand_mag', (-114, 340, -80), 'box')
+    g.e('mag_dir', (-45, 335, -126))
     g.e('eye', (0, 381, 60))
     g.cheek((0, 381, 60), 320)
     g.e('muzzle', (0, 1025, 0))
@@ -919,6 +949,8 @@ def m24(P):
     bo.rod((14, 15, -4), (44, 9, -24), 4.5, pk, 10)
     bo.sphere(9, (48, 8, -27), pk, u=14, v=8)
     bo.box((1.2, 70, 15), (16.8, 128, 2), P['steel'])
+    g.e('charge_back', (0, -100, 0))                                       # bolt origin on the bore: lift = rotate about Y
+    g.e('hand_charge', (48, 8, -27), 'bolt')
     # ---- floorplate (hinged magazine floorplate)
     mg = g.part('mag', (0, 165, -58))
     mg.box2((-11, 70, -63), (11, 166, -57), pk, bevel=1.2)
@@ -989,29 +1021,32 @@ def m9(P):
     g = Gun('m9'); b = g.body
     g.tex = 512
     an, pk, po, dk = P['anod'], P['park'], P['poly'], P['dark']
-    # ---- slide
-    sl = b.sub()
+    # ---- slide (part 'charge', origin at its rear face on the bore; travels back 40 mm)
+    ch = g.part('charge', (0, 0, 0))
+    sl = ch.sub()
     sl.extrude([(0, -16), (202, -15), (203, 3), (201, 8.75), (190, 8.75), (186, 6), (180, 3.75), (84, 3.75),
                 (80, 6.5), (76, 8.75), (2, 8.75), (0, 6)], 25, an, 'x', 0, bevel=1.4)
-    ct = b.sub()
+    ct = ch.sub()
     for i in range(17):
         for s in (-1, 1):
             ct.box((1.4, 1.1, 12), (s * 12.7, 38 + i * 2.6, -7.5), an, bevel=0)    # rear cocking serrations
     ct.box2((-6.5, 150, -12), (6.5, 210, 2), dk, bevel=0)                      # nose cavity around the barrel
-    b.add_cut(sl, ct)
+    ch.add_cut(sl, ct)
     b.lathe_y([(60, 0), (60, 8), (203.5, 8), (203.5, 6.5), (203.5, 4.4), (199, 4.4), (199, 0)], m=pk, n=24)
     b.box2((-7.5, 62, -2), (7.5, 92, 7.5), pk, bevel=1)                        # chamber hood
     b.box((1.2, 22, 4), (12.6, 66, 4.5), pk, bevel=0.3)                        # extractor
     for s in (-1, 1):
-        b.extrude([(18, -4), (36, -3), (37, 2.5), (24, 3.5), (18, 1.5)], 3.6, an, 'x', s * 13.6, bevel=0.8)  # safety-decocker
-        b.cylx(3.2, s * 12.4, s * 15, 22, 0, an, 12)
-    b.box2((-9, 21, 8.2), (9, 30, 10.5), an, bevel=0.6)                        # rear sight
+        ch.extrude([(18, -4), (36, -3), (37, 2.5), (24, 3.5), (18, 1.5)], 3.6, an, 'x', s * 13.6, bevel=0.8)  # safety-decocker
+        ch.cylx(3.2, s * 12.4, s * 15, 22, 0, an, 12)
+    ch.box2((-9, 21, 8.2), (9, 30, 10.5), an, bevel=0.6)                       # rear sight
     for s in (-1, 1):
         x0, x1 = (3.3, 8.6) if s > 0 else (-8.6, -3.3)                      # rear sight ears, 6.6 mm notch
-        b.box2((x0, 22, 10), (x1, 29, 13.6), an, bevel=0.4)
-        b.box((1.5, 0.3, 1.5), (s * 5.9, 21.9, 12.2), P['white'], bevel=0)
-    b.extrude([(185, 8.5), (197, 8.5), (196, 13.6), (189, 13.6)], 3.2, an, 'x', 0, bevel=0.6)  # front sight blade
-    b.box((1.5, 0.3, 1.5), (0, 188.7, 12.2), P['white'], bevel=0)
+        ch.box2((x0, 22, 10), (x1, 29, 13.6), an, bevel=0.4)
+        ch.box((1.5, 0.3, 1.5), (s * 5.9, 21.9, 12.2), P['white'], bevel=0)
+    ch.extrude([(185, 8.5), (197, 8.5), (196, 13.6), (189, 13.6)], 3.2, an, 'x', 0, bevel=0.6)  # front sight blade
+    ch.box((1.5, 0.3, 1.5), (0, 188.7, 12.2), P['white'], bevel=0)
+    g.e('charge_back', (0, -40, 0))
+    g.e('hand_charge', (0, 58, 8.75), 'charge')
     b.extrude([(-1, -7), (5, -7), (5, 3), (1, 7.5), (-5.5, 6), (-6.5, -1)], 6.4, an, 'x', 0, bevel=0.8)   # hammer
     # ---- frame: dust cover, deep squared trigger guard, trigger, grip with the curved back strap
     b.extrude([(3, -15.5), (196, -15.5), (196, -21), (192, -26), (112, -26), (110, -24), (60, -24), (56, -30),
@@ -1039,12 +1074,15 @@ def m9(P):
     mg.loft_axis(top, ang, [(4, 34, 21, 4, -1), (97, 34, 21, 4, -3)], P['mag'])
     mg.loft_axis_spline(top, ang, [(97, 52, 28, 7, -4), (100, 53, 28.5, 7, -4), (104, 51, 27, 6, -4)], po, steps=1, n=4)
     mg.box((7, 6, 3), (0, top[0] + 4, top[1] - 2.5), P['brass'])
+    g.e('mag_dir', b.axis_pt(top, ang, 4 + 120))
+    hp = b.axis_pt(top, ang, 50)
+    g.e('hand_mag', (-(21 / 2 + 12), hp[1], hp[2]), 'mag')
     g.e('grip_r', g.grip)
     g.e('grip_l', (-18, g.grip.y + 8, g.grip.z - 8))
     g.e('eye', (0, 21.5, 12.8))
-    g.mark('U.S. 9MM M9', 125, -5, 2.6, -1)
+    g.mark('U.S. 9MM M9', 125, -5, 2.6, -1, obj='charge')
     g.mark('SN M9-1049217', 130, -21, 2.0, 1)
-    g.mark('F', 28, 1, 2.6, -1, True)
+    g.mark('F', 28, 1, 2.6, -1, True, obj='charge')
     g.cheek((0, 21.5, 12.8), 600)
     g.e('muzzle', (0, 203.5, 0))
     g.e('eject', (12, 130, 6))
@@ -1223,9 +1261,10 @@ def main():
         print(f'BUILT {gid}: {tri_count(objs)} tris, children {sorted(o.name for o in root.children)}', flush=True)
         if not NOBAKE:
             bake_weapon(gid, objs, 512 if FAST else g.tex, samples=4 if FAST else 6, log=lambda s: print(s, flush=True))
-        if g.decals:
-            body = [o for o in objs if o.name == 'body'][0]
-            add_decal_quads(body, gid, g.decals, log=lambda s: print(s, flush=True))
+        for on in sorted({d.get('obj', 'body') for d in g.decals}):
+            ob = [o for o in objs if o.name == on][0]
+            add_decal_quads(ob, gid if on == 'body' else f'{gid}_{on}', [d for d in g.decals if d.get('obj', 'body') == on],
+                            log=lambda s: print(s, flush=True))
         if PREV:
             os.makedirs(PREV, exist_ok=True)
             emp = {o.name: o.matrix_world.translation.copy() for o in root.children if o.type == 'EMPTY'}

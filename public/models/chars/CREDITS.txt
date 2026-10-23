@@ -1,10 +1,16 @@
-Characters and animations in this folder are built by tools/blender/characters.py from:
+Characters and animations in this folder are built by tools/blender/characters.py (+ outfits.py, outfits_ins.py,
+chbuild.py, gear.py, gear_ins.py, mhcommon.py, mhchar.py, texbake.py) from these CC0 sources only:
 
-- Universal Base Characters (Superhero_Male_FullBody, hairstyles Hair_Buzzed, Hair_Beard, eyebrows) by Quaternius
-  https://quaternius.com  License: CC0 1.0 (public domain)
-- Universal Animation Library 1 and 2 (UAL1_Standard, UAL2_Standard) by Quaternius
-  https://quaternius.com  License: CC0 1.0 (public domain)
+- Universal Base Characters (Superhero_Male_FullBody skeleton) by Quaternius. Only the skeleton / rest pose is used.
+  https://quaternius.com  (quaternius.itch.io/universal-base-characters)  License: CC0 1.0
+- Universal Animation Library 1 and 2 (UAL1_Standard, UAL2_Standard) by Quaternius: animation clips in anims.glb.
+  https://quaternius.com  License: CC0 1.0
+- MakeHuman hm08 base mesh, targets (body shape, faces), game_engine rig weights: MPFB2 data
+  https://github.com/makehumancommunity/mpfb2  (assets released CC0, see LICENSE.ASSETS.md)
+- MakeHuman system assets (skins, clothes male_casualsuit01/02/05, shoes01/03/05, eyes, eyebrows, eyelashes,
+  hair short04) http://files.makehumancommunity.org/asset_packs/makehuman_system_assets/  License: CC0 1.0
 
-Clothing, gear, camouflage (UCP), shemagh/ghutra and fabric textures are generated procedurally by the build
-script. Authored clips (Prone_*, Stand_To_Prone, Prone_To_Stand, Wounded_Loop, Death02, Death03, Walk_Bwd_Loop,
-Strafe_L/R_Loop, Crouch_Bwd_Loop) are keyframed procedurally in the same script. No other third-party assets.
+Camouflage (OCP-like), keffiyeh/shemagh patterns, gloves, gear (plate carrier, pouches, helmet, chest rigs,
+boots shafts, knee pads), robes, beards and all texture recolouring are generated procedurally by the build scripts.
+Authored clips (Prone_*, Stand_To_Prone, Prone_To_Stand, Wounded_Loop, Death02, Death03, Walk_Bwd_Loop,
+Strafe_L/R_Loop, Crouch_Bwd_Loop) are keyframed procedurally in characters.py. No other third-party assets.

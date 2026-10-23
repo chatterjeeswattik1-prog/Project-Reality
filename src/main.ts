@@ -100,7 +100,7 @@ async function boot() {
   const skirm = test ? new SkirmishDirector(game, mode as Skirmish, nav, params.has('shot') || params.has('fly') ? null : choice.faction) : null;
   const director = { update: (dt: number) => (full ?? skirm)!.update(dt), setup: () => (full ? full.setup(null) : skirm!.startRound()) };
   if (test) (mode as Skirmish).onRound = () => skirm!.startRound(); // the game section adds the player's respawn
-  W.__game = game; W.__skirm = skirm; W.__G = G;
+  W.__game = game; W.__skirm = skirm; W.__G = G; W.__input = input;
   L.done();
 
   // ---------- free camera / screenshot mode ----------

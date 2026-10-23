@@ -12,6 +12,7 @@ export class Hud {
   private flashT = 0;
   private hurts: { t: number; p: V3 }[] = [];
   private supp = 0; private blastV = 0;
+  private supportT = 0; private canBipod = false;
 
   constructor(host: HTMLElement) {
     this.el = document.createElement('div'); this.el.className = 'hud';
@@ -52,12 +53,14 @@ export class Hud {
 
     // Scope.
     if (p.scoped()) this.scope(W, H, s.weapon.optic);
-    // Settle indicator while aiming: a short bar under the sight that fills and turns green as the aim settles.
-    if (s.alive && s.ads > 0.6 && s.weapon.optic !== 'none') {
-      const k = s.settled(), bw = 64, bx = W / 2 - bw / 2, by = H / 2 + Math.min(W, H) * 0.2;
-      x.fillStyle = 'rgba(0,0,0,0.35)'; x.fillRect(bx - 1, by - 1, bw + 2, 5);
-      x.fillStyle = k > 0.92 ? 'rgba(110,210,110,0.9)' : `rgba(${Math.round(230 - k * 80)},${Math.round(150 + k * 50)},60,0.85)`;
-      x.fillRect(bx, by, bw * k, 3);
+    // Weapon support, low under the sight: bipod deployed / available (G), weapon rested; breath left while held.
+    if (s.alive) {
+      this.supportT -= dt;
+      if (this.supportT <= 0) { this.supportT = 0.3; this.canBipod = s.support !== 'bipod' && !!s.weapon.bipod && s.supportSpot()?.kind === 'bipod'; }
+      const label = s.support === 'bipod' ? (s.deployT < 1 ? 'DEPLOYING BIPOD' : 'BIPOD') : this.canBipod ? 'G — DEPLOY BIPOD' : s.support === 'rest' ? 'RESTED' : '';
+      const by = H / 2 + Math.min(W, H) * 0.24;
+      if (label) { x.font = '600 12px system-ui, sans-serif'; x.textAlign = 'center'; x.fillStyle = 'rgba(0,0,0,0.5)'; x.fillText(label, W / 2 + 1, by + 1); x.fillStyle = s.support === 'none' ? 'rgba(235,225,190,0.75)' : 'rgba(150,220,140,0.9)'; x.fillText(label, W / 2, by); x.textAlign = 'start'; }
+      if (s.breath < 0.999 && s.ads > 0.5) { const bw = 48; x.fillStyle = 'rgba(0,0,0,0.35)'; x.fillRect(W / 2 - bw / 2 - 1, by + 7, bw + 2, 4); x.fillStyle = 'rgba(200,215,230,0.8)'; x.fillRect(W / 2 - bw / 2, by + 8, bw * s.breath, 2); }
     }
     // Compass strip.
     if (s.alive) this.compass(W, s.yaw);

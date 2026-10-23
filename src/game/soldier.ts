@@ -1,6 +1,7 @@
 // A soldier (player or bot): body physics, stance, stamina, health/bleeding, inventory and the weapon state machine.
-// Deviation follows Project Reality: a cone that grows with movement, stance changes and firing, and settles back
-// over a couple of seconds; aiming down sights only removes it once settled. There is no crosshair.
+// Aiming follows Squad rather than PR: there is no settle time. Aimed shots leave along the sights with only the
+// weapon's mechanical dispersion; what makes aiming hard is visible — the sights sway (stance, stamina, movement,
+// suppression, bleeding; a bipod or a rest nearly stops it) and recoil climbs. From the hip a cone remains. No crosshair.
 import type RAPIER from '@dimforge/rapier3d-compat';
 import { AMMO, WEAPONS, type FireMode, type WeaponDef } from './data/weapons';
 import { type Faction, type Kit } from './data/kits';
@@ -25,6 +26,8 @@ export interface Slot {
 const STANCE_H: Record<Stance, number> = { stand: 1.62, crouch: 1.1, prone: 0.32 };
 const CAP_R = 0.3;
 const CAP_HH: Record<Stance, number> = { stand: 0.6, crouch: 0.28, prone: 0.0 };
+/** Sideways head travel of a full lean (m). */
+export const LEAN_M = 0.36;
 export const SPEED = { walk: 3.2, sprint: 5.6, crouch: 1.6, prone: 0.7, adsMul: 0.55 };
 
 export interface Capsule { a: [number, number, number]; b: [number, number, number]; r: number; part: HitPart }
@@ -55,10 +58,19 @@ export class Soldier {
   slots: Slot[] = [];
   cur = 0; prevSlot = 0;
   ads = 0; aiming = false;
-  dev = 30; // mrad
-  /** Current visible aim wobble (yaw, pitch) in radians, from the excess deviation. */
-  wob: [number, number] = [0, 0]; private wobT = Math.random() * 100;
-  cool = 0; reloadT = 0; reloadDur = 0; switchT = 0; burst = 0; triggerWas = false;
+  /** Random shot cone half-angle (mrad): mechanical dispersion when aimed, the hip-fire cone otherwise. */
+  dev = 30;
+  /** Current visible sway of the sights (yaw, pitch) in radians — shots follow it. */
+  wob: [number, number] = [0, 0]; private wobT = Math.random() * 100; private swayA = 0.002;
+  /** Recoil offset of the aim (rad, pitch up / yaw), recovers between shots; part of each kick stays in `pitch`. */
+  rcP = 0; rcY = 0;
+  /** Extra sway after a stance change, a hit or running out of breath (0..1, decays). */
+  swayBoost = 0;
+  /** Breath held (steadies the sights for a few seconds) and the breath left (0..1). */
+  holdBreath = false; breath = 1;
+  /** Weapon support: deployed bipod (prone or on a ledge) or resting on a surface. */
+  support: 'none' | 'rest' | 'bipod' = 'none'; bipodYaw = 0; bipodPitch = 0; deployT = 0;
+  cool = 0; reloadT = 0; reloadDur = 0; /** The reload started on an empty weapon (adds charging). */ reloadEmpty = false; switchT = 0; burst = 0; triggerWas = false;
   bandages: number;
   bandageT = 0;
   /** Under-barrel launcher selected (M203). */ underSel = false;
@@ -95,7 +107,14 @@ export class Soldier {
   get slot(): Slot { return this.slots[this.cur]; }
   get weapon(): WeaponDef { return this.slot.def; }
   get alive() { return this.state === 'alive'; }
-  get eye(): [number, number, number] { return [this.pos[0], this.pos[1] + this.eyeH, this.pos[2]]; }
+  /** Lean round corners: wanted (−1 left … +1 right, from the input) and current; how far the head can go (m). */
+  leanWant = 0; lean = 0; private leanRoom = LEAN_M;
+  /** Sideways head offset of the lean (m, + = right). */
+  get leanX() { return this.lean * Math.min(LEAN_M, this.leanRoom); }
+  get eye(): [number, number, number] {
+    const lx = this.leanX;
+    return [this.pos[0] + Math.cos(this.yaw) * lx, this.pos[1] + this.eyeH - Math.abs(this.lean) * 0.07, this.pos[2] - Math.sin(this.yaw) * lx];
+  }
   /** Aim direction (unit) from yaw/pitch: yaw 0 looks −z (north). */
   aimDir(yaw = this.yaw, pitch = this.pitch): [number, number, number] {
     const c = Math.cos(pitch); return [-Math.sin(yaw) * c, Math.sin(pitch), -Math.cos(yaw) * c];
@@ -112,8 +131,9 @@ export class Soldier {
     }
     this.stance = s;
     this.collider.setHalfHeight(CAP_HH[s]);
-    // Changing stance throws the aim off (PR settle penalty).
-    this.dev = Math.max(this.dev, s === 'prone' ? 40 : 22);
+    // Changing stance makes the sights wander briefly and folds the bipod.
+    this.swayBoost = Math.max(this.swayBoost, s === 'prone' ? 0.6 : 0.3);
+    this.support = 'none';
     void now;
   }
 
@@ -124,7 +144,7 @@ export class Soldier {
     const accel = this.onGround ? 14 : 2;
     this.vel[0] += (want[0] - this.vel[0]) * damp(accel, dt);
     this.vel[2] += (want[1] - this.vel[2]) * damp(accel, dt);
-    if (this.onGround && jump && this.stance === 'stand' && this.stamina > 15) { this.vel[1] = 3.8; this.stamina -= 15; this.dev = Math.max(this.dev, 80); }
+    if (this.onGround && jump && this.stance === 'stand' && this.stamina > 15) { this.vel[1] = 3.8; this.stamina -= 15; this.swayBoost = 1; }
     this.vel[1] -= 9.81 * dt;
     const hh = CAP_HH[this.stance], cy = this.pos[1] + CAP_R + hh;
     const t = this.body.translation();
@@ -203,8 +223,8 @@ export class Soldier {
     this.lastHitT = now; this.lastHitFrom = from;
     if (this.state === 'wounded') { if (d > 30 || part === 'head') this.die(by); return false; }
     this.health -= d;
-    this.bleed = Math.min(6, this.bleed + d * (explosive ? 0.02 : 0.03));
-    this.dev = Math.max(this.dev, 60);
+    this.bleed = Math.min(8, this.bleed + d * (explosive ? 0.03 : 0.045));
+    this.swayBoost = 1; this.support = 'none';
     if (part === 'head' && dmg > 25) { this.health = 0; this.die(by); return true; }
     if (this.health <= 0) {
       if (this.health < -60) { this.die(by); return true; }
@@ -226,20 +246,21 @@ export class Soldier {
     if (i < 0 || i >= this.slots.length || i === this.cur || !this.alive) return;
     this.prevSlot = this.cur; this.cur = i; this.switchT = 0.6 + this.weapon.mass * 0.05; this.reloadT = 0; this.ads = 0; this.underSel = false;
   }
-  canFire() { return this.alive && this.switchT <= 0 && this.reloadT <= 0 && this.bandageT <= 0 && this.cool <= 0 && !this.sprinting; }
+  canFire() { return this.alive && this.switchT <= 0 && this.reloadT <= 0 && this.bandageT <= 0 && this.cool <= 0 && !this.sprinting && !(this.support === 'bipod' && this.deployT < 1); }
   startReload() {
     const s = this.slot, d = s.def;
     if (this.reloadT > 0 || !this.alive || d.disposable) return false;
     if (d.kind === 'grenade' || d.kind === 'charge') return false;
     if (this.underSel) {
       if ((s.glLoaded ?? 0) > 0 || !s.gl) return false;
-      this.reloadDur = this.reloadT = WEAPONS.m203.reload[0];
+      this.reloadDur = this.reloadT = WEAPONS.m203.reload[0]; this.reloadEmpty = false;
       return true;
     }
     // Pick the fullest spare mag (PR cycles them).
     const best = s.mags.reduce((bi, m, i) => (m > (s.mags[bi] ?? -1) ? i : bi), -1);
     if (best < 0 || s.mags[best] <= 0 || (s.loaded >= d.mag && !d.belt)) return false;
     this.reloadDur = this.reloadT = s.loaded > 0 ? d.reload[0] : d.reload[1];
+    this.reloadEmpty = s.loaded === 0;
     this.ads = 0;
     return true;
   }
@@ -257,41 +278,94 @@ export class Soldier {
   /** Shot interval for the current weapon. */
   interval() { return 60 / this.weapon.rpm; }
 
-  /** Deviation target (mrad) for the current state, before firing kicks. */
-  /** Fully settled deviation for the current stance and sights (mrad) — the floor the cone settles to. */
-  devFloor(): number {
-    const d = this.underSel ? WEAPONS.m203.dev : this.weapon.dev;
-    const si = this.stance === 'stand' ? 0 : this.stance === 'crouch' ? 1 : 2;
-    return this.ads > 0.9 ? d.ads[si] : d.hip[si];
-  }
-  /** 0 = unsettled, 1 = fully settled (HUD settle indicator). */
-  settled(): number { const f = this.devFloor(); return clamp(1 - (this.dev - f) / Math.max(8, f * 6), 0, 1); }
-
+  /** Shot cone (mrad) for the current state: the weapon's mechanical dispersion when aimed, the hip cone otherwise. */
   devTarget(): number {
     const d = this.underSel ? WEAPONS.m203.dev : this.weapon.dev;
     const si = this.stance === 'stand' ? 0 : this.stance === 'crouch' ? 1 : 2;
-    let base = this.ads > 0.9 ? d.ads[si] : d.hip[si] * (1 - this.ads * 0.5);
-    if (this.weapon.bipod && this.stance === 'prone' && this.moving < 0.1) base *= 0.6;
-    if (this.moving > 0.3) base += this.sprinting ? 90 : this.stance === 'prone' ? 30 : 26 * Math.min(1, this.moving / SPEED.walk);
-    if (!this.onGround) base += 90;
-    if (this.bleed > 0.5) base *= 1 + this.bleed * 0.08;
-    if (this.stamina < 25) base *= 1.6;
-    base *= 1 + this.suppress * 1.5;
+    if (this.ads > 0.9) return d.acc;
+    let base = d.hip[si] * (1 - this.ads * 0.6);
+    if (this.moving > 0.3) base += this.sprinting ? 60 : 16 * Math.min(1, this.moving / SPEED.walk);
+    if (!this.onGround) base += 60;
     return base;
   }
 
-  /** Per-frame upkeep: deviation settle, timers, stamina, bleeding. Returns true when a reload completes. */
+  /** Sway amplitude of the sights (rad) — stance, weapon weight, movement, stamina, suppression, wounds, support. */
+  swayTarget(): number {
+    let a = this.stance === 'stand' ? 2.4 : this.stance === 'crouch' ? 1.4 : 0.6;
+    a *= 0.6 + Math.min(14, this.weapon.mass) * 0.1;
+    if (this.moving > 0.3) a += (this.stance === 'prone' ? 3 : 7) * Math.min(1, this.moving / SPEED.walk);
+    a *= 1 + Math.max(0, 70 - this.stamina) / 30;
+    a *= 1 + this.suppress * 1.5 + this.bleed * 0.1 + this.swayBoost * 2;
+    if (this.support === 'bipod' && this.deployT >= 1) a *= 0.1; else if (this.support === 'rest') a *= 0.4;
+    else if (this.holdBreath && this.breath > 0) a *= 0.3;
+    return a / 1000;
+  }
+
+  /** A shot's recoil: the aim jumps up and to the side; most of it recovers, a part stays (the shooter pulls down). */
+  recoil(up: number, side: number) {
+    this.rcP += up / 1000; this.rcY += side / 1000;
+    this.pitch += (up / 1000) * 0.35;
+  }
+
+  /**
+   * What the weapon could rest on here: a bipod weapon lying prone, or any long gun on a surface just below the
+   * sights in front of the soldier (window sill, wall top, sandbags, car bonnet) with an open view over it.
+   * Returns the kind of support and the surface height, or null.
+   */
+  supportSpot(): { kind: 'bipod' | 'rest'; y: number } | null {
+    const d = this.weapon;
+    if (!this.alive || this.underSel || this.moving > 0.3 || !(d.kind === 'rifle' || d.kind === 'lmg' || d.kind === 'gpmg' || d.kind === 'sniper')) return null;
+    if (this.stance === 'prone') return d.bipod ? { kind: 'bipod', y: this.pos[1] } : null;
+    const e = this.eye, fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
+    if (this.P.castRay(e, [fx, 0, fz], 1.0)) return null;
+    for (const f of [0.35, 0.55, 0.75]) {
+      const h = this.P.castRay([e[0] + fx * f, e[1] + 0.02, e[2] + fz * f], [0, -1, 0], 0.65);
+      if (!h || h.normal[1] < 0.7) continue;
+      const drop = e[1] - h.point[1];
+      if (drop > 0.07 && drop < 0.6) return { kind: d.bipod ? 'bipod' : 'rest', y: h.point[1] };
+    }
+    return null;
+  }
+  /** Deploy (or fold) the bipod where possible. Returns the new state. */
+  toggleBipod(): boolean {
+    if (this.support === 'bipod') { this.support = 'none'; return false; }
+    const sp = this.supportSpot();
+    if (!sp || sp.kind !== 'bipod') return false;
+    this.support = 'bipod'; this.deployT = 0; this.bipodYaw = this.yaw; this.bipodPitch = this.pitch;
+    return true;
+  }
+  private restCheck = 0;
+
+  /** Per-frame upkeep: aim, sway, recoil recovery, timers, stamina, bleeding. Returns true when a reload completes. */
   tick(dt: number, now: number): boolean {
     let reloaded = false;
     if (this.state === 'wounded') { this.downT += dt; if (this.downT > 300) this.die(null); return false; }
     if (this.state === 'dead') { this.deadT += dt; return false; }
-    const target = this.devTarget(), settle = (this.underSel ? WEAPONS.m203.dev : this.weapon.dev).settle;
-    // Visible sway: the excess deviation drives a smooth wobble of the aim (what the sights show is where it goes).
+    // Support: a bipod folds when the soldier moves; resting is found automatically while aiming.
+    if (this.support === 'bipod') { this.deployT = Math.min(1, this.deployT + dt / 0.5); if (this.moving > 0.4 || this.sprinting || this.reloadT > 0 && !this.weapon.belt) this.support = 'none'; }
+    else if ((this.restCheck -= dt) <= 0) { this.restCheck = 0.25; this.support = this.ads > 0.5 && this.supportSpot() ? 'rest' : 'none'; }
+    // Breath: holding it steadies the sights for ~4 s, then they shake worse while the soldier catches it.
+    if (this.holdBreath && this.breath > 0 && this.ads > 0.9) { this.breath = Math.max(0, this.breath - dt / 4); if (this.breath === 0) this.swayBoost = Math.max(this.swayBoost, 0.8); }
+    else this.breath = Math.min(1, this.breath + dt / 6);
+    this.swayBoost = Math.max(0, this.swayBoost - dt * 0.6);
+    // Lean: eases over ~0.25 s; the head stops short of walls; no leaning prone or sprinting.
+    const lw = this.stance === 'prone' || this.sprinting ? 0 : this.leanWant;
+    this.lean += (lw - this.lean) * damp(9, dt);
+    if (Math.abs(lw) > 0.01) {
+      const side = Math.sign(lw), o: [number, number, number] = [this.pos[0], this.pos[1] + this.eyeH, this.pos[2]];
+      const h = this.P.castRay(o, [Math.cos(this.yaw) * side, 0, -Math.sin(this.yaw) * side], LEAN_M + 0.2);
+      this.leanRoom = h ? Math.max(0, h.dist - 0.2) : LEAN_M;
+    }
+    // Sway: a slow figure-of-eight (breathing, ~0.3 Hz) plus a smaller, faster tremor; the amplitude eases in and out.
     this.wobT += dt;
-    const A = Math.max(0, this.dev - this.devFloor()) / 1000 * 0.75, w = this.wobT;
-    this.wob[0] = A * (Math.sin(w * 1.7 + this.id) * 0.6 + Math.sin(w * 3.9 + this.id * 2.1) * 0.4);
-    this.wob[1] = A * (Math.sin(w * 2.3 + this.id * 1.3) * 0.55 + Math.sin(w * 4.7 + this.id * 0.7) * 0.45);
-    this.dev += (target - this.dev) * (target < this.dev ? damp(1 / settle, dt) : damp(10, dt));
+    this.swayA += (this.swayTarget() - this.swayA) * damp(3, dt);
+    const A = this.swayA, w = this.wobT, k = this.id * 1.7;
+    this.wob[0] = A * (Math.sin(w * 1.9 + k) * 0.75 + Math.sin(w * 5.3 + k * 2.1) * 0.25);
+    this.wob[1] = A * (Math.sin(w * 3.8 + k * 2) * 0.45 + Math.sin(w * 1.3 + k) * 0.35 + Math.sin(w * 6.1 + k * 0.7) * 0.2);
+    this.dev += (this.devTarget() - this.dev) * damp(12, dt);
+    // Recoil recovery (the aim drifts back towards where it was held).
+    const rec = damp(this.support === 'bipod' ? 12 : 7, dt);
+    this.rcP -= this.rcP * rec; this.rcY -= this.rcY * rec;
     this.cool -= dt; this.switchT -= dt;
     if (this.reloadT > 0) { this.reloadT -= dt; if (this.reloadT <= 0) { this.finishReload(); reloaded = true; } }
     if (this.bandageT > 0) { this.bandageT -= dt; if (this.bandageT <= 0) { this.bleed = 0; this.health = Math.min(100, this.health + 10); } }
@@ -319,9 +393,10 @@ export class Soldier {
       out.push({ a: P(0.5, 0.22, 0.2), b: P(0.9, 0.12, 0.25), r: 0.07, part: 'arm' });
       return out;
     }
-    const k = this.stance === 'crouch' ? 0.68 : 1, hy = this.eyeH + 0.06;
-    out.push({ a: P(0.02, 0, hy), b: P(0.02, 0, hy), r: 0.125, part: 'head' });
-    out.push({ a: P(0, 0, 1.45 * k), b: P(0, 0, 1.18 * k), r: 0.2, part: 'chest' });
+    const k = this.stance === 'crouch' ? 0.68 : 1, hy = this.eyeH + 0.06 - Math.abs(this.lean) * 0.07, lx = this.leanX;
+    // Leaning moves the head fully and the upper chest about half as far.
+    out.push({ a: P(0.02, lx, hy), b: P(0.02, lx, hy), r: 0.125, part: 'head' });
+    out.push({ a: P(0, lx * 0.6, 1.45 * k), b: P(0, lx * 0.15, 1.18 * k), r: 0.2, part: 'chest' });
     out.push({ a: P(0, 0, 1.18 * k), b: P(0, 0, 0.92 * k), r: 0.18, part: 'stomach' });
     if (this.stance === 'crouch') {
       out.push({ a: P(0.05, 0.13, 0.62), b: P(0.35, 0.13, 0.42), r: 0.1, part: 'leg' });

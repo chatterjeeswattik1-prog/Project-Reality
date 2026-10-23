@@ -119,6 +119,54 @@ sixdays.com/news/sitrep-audio-design.
 - Test scripts: `doorshot`, `roomshot`, `lightshot`, `verbtest`, `fpstest`, `botprobe`, `pathprobe`, `navcheck`,
   `aitest`, `adsshots <kit> <team> <out>`.
 
+## Fifth round: Squad / Six Days in Fallujah pass (2026-10-22/23, user feedback + AKM reference video)
+User: weapon models/handling/reloads not good (reference: Squad AKM video), AI dumb (stays in one area, no small unit
+tactics), small arms do not feel powerful, settle time annoying (remove it), want bipods for MGs/snipers usable prone, at
+windows and on walls, projectile effects hard to see, characters look bad. Work on the small map (test mode) first.
+- **Machine (Windows now):** Blender 4.5.15 at `E:/tools/blender-4.5.15-windows-x64/blender.exe`, ffmpeg at
+  `E:/tools/ffmpeg-master-latest-win64-gpl/bin`. Test scripts launch Edge headless (`scripts/browser.mjs`).
+  `scripts/drive.mjs "<query>" <outPrefix> '<steps>'` plays scripted input (keys, mouse, look, frozen reload poses
+  `{"pose":[p, empty, name]}`, screenshots, evals). `tools/blender/glbshot.py` renders any GLB under studio light.
+- **Aiming (no settle time):** `Soldier.devTarget` is the weapon's mechanical dispersion `dev.acc` when aimed (hip cone
+  otherwise, no settling); visible sway `swayTarget` (stance, weight, movement, stamina, suppression, bleeding, hits,
+  support); real recoil `Soldier.recoil` (aim climbs, 35 % stays, rest recovers); the camera follows 60 % of the climb
+  (`CAM_RECOIL`), the viewmodel turns about the eye by sway + the rest, so the sights show where the round goes.
+  Hold breath: Shift while aiming. The HUD settle bar is gone.
+- **Bipod / rest:** `Soldier.supportSpot()` (prone, or a surface 0.07-0.6 m below the eye within 0.75 m ahead with an
+  open view); G deploys a bipod (0.5 s, sway x0.1, recoil x0.3, +-0.45 rad traverse, folds on move/stance); weapons
+  without one rest automatically while aiming (sway x0.4). M24 now has its bipod. Bots deploy theirs when firing.
+  Verified: prone M249, and standing at a ground-floor house window (sill 1.1 m).
+- **First-person handling:** `player/handling.ts` choreography per reload style (AK from the video, AR, belt, bolt,
+  pistol, RPG) drives weapon pose, magazine path (rock about the lug / slide along `mag_dir`), charging handle and the
+  support hand target (IK); sound cues in time with the hands; per-shot carrier cycle and ejected brass
+  (`FX.casing`); bolt-action cycling with the firing hand. Hip pose more central. FP body lowered so the arms rise from
+  the bottom edge. Viewmodel materials reflect less sky indoors (no more navy-blue steel). Bots reload in third person
+  with the same choreography (`Rig.placeWeapon`, not yet verified visually).
+- **Power and feedback:** higher damage (rifle torso hit 65-100 HP before bleeding, heavier bleeding), procedural hit
+  stagger on the spine (`Rig.hit`), downed soldiers fall away from the shooter, a hit knocks the victim's aim; bigger
+  impacts (dust jet + hanging puff + chips + sparks + larger holes), heavier blood mist, tracers as glowing streaks
+  (M249 4:1, RPK 5:1), suppression desaturates/blurs the screen.
+- **AI:** `ai/team.ts` - US `Fireteam` (wedge/file formation on the leader, contact drill: react -> base of fire +
+  flanking maneuver -> shift fire -> assault -> search) and insurgent `Cell` (window ambush with peeking, spring, shoot
+  and scoot between windows, stalkers, fallback house to house, hunt). Bots take `Task`s (`ai/bot.ts`: slot, hold,
+  move, suppress, assault, search) and react to hits. Windows are recorded as firing posts (`BuildingInfo.windows`).
+  Test mode is now a US fireteam of 4 (player leads) v an insurgent cell of 5. Player orders: Y move there, H hold /
+  form up, U suppress there. Radio callouts in the log. Check with `node scripts/aitest.mjs 120`.
+- **Models:** Blender agents rebuilding the weapons (materials, animatable `mag` pivot, `hand_mag`,
+  `charge`/`charge_back`/`hand_charge`, `mag_dir`, `hand_cover`) and the characters (realistic proportions, fitted
+  clothing, gloves, close-range arms). The game reads those nodes with fallbacks.
+- **Lean / freelook:** hold Q / E to lean (head 0.36 m sideways, stops short of walls; hitboxes and the eye used for
+  shots and AI sight move with it; third-person spine rolls); hold Alt to look round while the weapon stays on the aim.
+  Doors and field dressings share F (door in front first).
+- **Room clearing:** when the enemy is in a house and the assault element is close, the fireteam stacks along the wall
+  beside the nearest exterior doorway, the number one throws a frag in, then they flow in ~0.7 s apart to the points of
+  domination (far corner, near corner, centre), call the room clear and search the rest of the house
+  (`Fireteam.planBreach/runBreach`).
+- **Agents:** the Blender agents keep checkpoint files (`tools/blender/AGENT_WEAPONS.md`, `AGENT_CHARS.md`) so any
+  interrupted run (usage limits) resumes from the next step.
+- TODO: large map (insurgency mode director) still uses the old orders - port the team brains there after the user
+  tests the small map; door stack/breach for the fireteam; RPG gunner bots in the cell.
+
 ## Performance (Intel HD 5500 / Radeon R5 M330, Low, 1280×720)
 - ~19–24 FPS with 32 soldiers. Remaining cost is rendering (~40 ms): ~2.8M triangles incl. the shadow pass, ~700–1800 draw calls.
 - Next steps: character LOD (hide skinned mesh / cheaper body beyond ~150 m), cheaper props in the shadow pass, fewer

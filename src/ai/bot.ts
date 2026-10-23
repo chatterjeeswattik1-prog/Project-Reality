@@ -13,6 +13,25 @@ type Tac = 'none' | 'toCover' | 'hide' | 'peek' | 'flank';
 export type OrderKind = 'move' | 'defend' | 'patrol' | 'search' | 'demolish' | 'follow' | 'hold' | 'advance';
 export interface Order { kind: OrderKind; pos: V3; radius?: number; leader?: Soldier; offset?: [number, number]; facing?: number; stance?: 'stand' | 'crouch' | 'prone' }
 
+/**
+ * A task from the team brain (ai/team.ts), which takes precedence over the order:
+ *  slot     — formation position next to the leader: walk there, watch the given sector;
+ *  hold     — a firing position (window, cover): get there and fight from it; `ambush` keeps the bot hidden (below
+ *             the sill, peeking now and then) and holding fire until the cell springs the ambush;
+ *  move     — a bound, a flanking leg or a fallback: get there (running), returning fire only at close range;
+ *  suppress — base of fire: from `p` (or where it is) keep bursts going at `at` even without a target in sight;
+ *  assault  — close with the enemy at `at`: shoot what shows, grenade what hides;
+ *  search   — sweep the given spots with the weapon up.
+ */
+export type Task =
+  | { kind: 'slot'; p: V3; face: number }
+  | { kind: 'hold'; p: V3; face: number; ambush?: boolean; window?: boolean }
+  | { kind: 'move'; p: V3; run: boolean }
+  | { kind: 'suppress'; p: V3 | null; at: V3 }
+  | { kind: 'assault'; at: V3 }
+  | { kind: 'search'; spots: V3[] };
+type Act = { move: V3 | null; stance: 'stand' | 'crouch' | 'prone'; aimAt: V3 | null; fire: boolean; run?: boolean };
+
 const VIEW = 380;
 
 export class Bot {
@@ -45,6 +64,13 @@ export class Bot {
   private throwAt: V3 | null = null; private throwSlot = -1; private throwUntil = 0;
   /** Attackers who lost contact push towards the last known position until this time. */
   private pushUntil = 0;
+  /** Current task from the team brain; `taskDone` is set when a move/search task is complete. */
+  task: Task | null = null; taskDone = false; private taskKey = '';
+  /** Ambush sprung: hidden ambushers may now fight. */ sprung = false;
+  /** Time spent firing from the current position (shoot and scoot). */ firingHere = 0;
+  private peekCycle = Math.random() * 5;
+  private seenHitT = -99; private searchI = 0;
+  private rpgT = 5 + Math.random() * 10; private rpgOn = false; private rpgUntil = 0;
 
   constructor(public g: Game, public s: Soldier, public nav: Nav | null, order: Order, skill = 0.6) {
     this.order = order; this.skill = skill; this.lastProgress = [...s.pos];
@@ -132,27 +158,61 @@ export class Bot {
       g.trigger(s, true, true, false);
       this.throwAt = null;
     }
-    if (s.cur !== 0 && !this.throwAt && s.weapon.kind !== 'charge' && !this.reviving && s.switchT <= 0) s.select(0);
+    // RPG gunner: a team in the open or a man behind a wall at 30–180 m gets a rocket (the backblast needs room).
+    this.rpgT -= dt;
+    const rpg = s.slots.findIndex((x) => x.def.kind === 'launcher' && (x.loaded > 0 || x.mags.length > 0));
+    if (rpg >= 0 && this.target && this.rpgT <= 0 && !this.rpgOn && s.reloadT <= 0) {
+      const t0 = this.target, d = Math.hypot(t0.pos[0] - s.pos[0], t0.pos[2] - s.pos[2]);
+      const group = g.soldiers.filter((o) => o.team === t0.team && o.alive && Math.hypot(o.pos[0] - t0.pos[0], o.pos[2] - t0.pos[2]) < 6).length;
+      const back = s.aimDir(), behind = g.P.castRay(s.eye, [-back[0], 0, -back[2]], 1.8);
+      // Hidden in an ambush, the RPG is what opens it (on a group in the kill zone).
+      const ok = this.sprung ? (group >= 2 || Math.random() < 0.3) : group >= 2 && d < 90;
+      if (ok && d > 30 && d < 180 && !behind) { this.rpgOn = true; this.rpgUntil = g.time + 7; this.sprung = true; s.select(rpg); }
+      else this.rpgT = 2;
+    }
+    if (this.rpgOn) {
+      // Committed for a few seconds: a target that ducks is still shot at where it was last seen.
+      const done = g.time > this.rpgUntil || s.cur !== rpg;
+      if (s.weapon.kind === 'launcher' && s.slot.loaded === 0 && s.reloadT <= 0 && s.slot.mags.length && !done) g.reload(s);
+      if (done || (s.weapon.kind === 'launcher' && s.slot.loaded === 0 && g.time - s.lastShotT < 1.5)) { this.rpgOn = false; this.rpgT = 20 + Math.random() * 15; }
+    }
+    if (s.cur !== 0 && !this.throwAt && !this.rpgOn && s.weapon.kind !== 'charge' && !this.reviving && s.switchT <= 0) s.select(0);
     let move: V3 | null = null, speed = s.maxSpeed(), stance: 'stand' | 'crouch' | 'prone' = this.order.stance ?? 'stand';
-    let aimAt: V3 | null = null, wantFire = false;
+    let aimAt: V3 | null = null, wantFire = false, run = false;
 
     const t = this.target;
+    // Hit: the bot is knocked off its aim and reacts (it does not keep running and shooting as if nothing happened);
+    // out in the open it drops or dives for cover.
+    if (s.lastHitT > this.seenHitT) {
+      this.seenHitT = s.lastHitT;
+      this.reactT = Math.max(this.reactT, 0.45 + Math.random() * 0.45); this.pauseT = Math.max(this.pauseT, 0.6);
+      this.aimErr[0] += (Math.random() - 0.5) * 0.12; this.aimErr[1] += (Math.random() - 0.5) * 0.08;
+      if (s.lastHitFrom) this.lastSeen = { p: [s.lastHitFrom[0], s.lastHitFrom[1] - 1.5, s.lastHitFrom[2]], t: g.time };
+      if (this.tac === 'peek' && this.coverPt) { this.tac = 'hide'; this.tacT = 1.5 + Math.random(); }
+      this.sprung = true;
+    }
+    let tasked = false;
+    if (this.task && !this.throwAt) {
+      const a = this.runTask(dt, t);
+      if (a) { tasked = true; move = a.move; stance = a.stance; aimAt = a.aimAt; wantFire = a.fire; run = !!a.run; }
+    }
     // Attackers who have not seen anybody for 7 s stop hiding and push (bounding) to the last known position.
     if (!t && this.order.kind === 'advance' && this.noSightT > 7 && this.lastSeen && g.time > this.pushUntil) { this.pushUntil = g.time + 12; this.leaveCover(); this.bound = null; }
     const pushing = !t && g.time < this.pushUntil;
     const threat = t ? t.pos : !pushing && this.lastSeen && g.time - this.lastSeen.t < 20 ? this.lastSeen.p : null;
-    if (threat) {
+    if (tasked) { /* the task decided */ }
+    else if (threat) {
       const c = this.combat(dt, t, threat);
       move = c.move; stance = c.stance; aimAt = c.aimAt; wantFire = c.fire;
       // Grenade an enemy hiding behind cover at short range.
       const d = Math.hypot(threat[0] - s.pos[0], threat[2] - s.pos[2]);
       if (!t && this.lastSeen && d > 10 && d < 32 && this.grenadeT <= 0 && g.time - this.lastSeen.t > 2 && g.time - this.lastSeen.t < 10) this.throwGrenade(this.lastSeen.p);
     } else { this.leaveCover(); this.tac = 'none'; this.engagedT = 0; }
-    // Suppressed: get lower.
-    if (s.suppress > 0.85 && this.tac !== 'toCover' && this.tac !== 'flank') stance = 'prone';
+    // Suppressed: get lower (unless the task needs it up — a hidden ambusher is already down).
+    if (s.suppress > 0.85 && this.tac !== 'toCover' && this.tac !== 'flank' && !run) stance = this.task?.kind === 'hold' && this.task.window ? 'crouch' : 'prone';
 
     // Orders when not fighting.
-    if (!threat && !move) move = this.order.kind === 'advance' ? this.advance(dt, pushing && this.lastSeen ? this.lastSeen.p : undefined) : this.orderGoal();
+    if (!tasked && !threat && !move) move = this.order.kind === 'advance' ? this.advance(dt, pushing && this.lastSeen ? this.lastSeen.p : undefined) : this.orderGoal();
     if (pushing) this.noSightT += dt;
     // Medics revive wounded teammates nearby.
     if (s.kit.medic && !t) {
@@ -182,6 +242,12 @@ export class Bot {
       }
     }
 
+    // Peeking from tall cover: lean out towards the edge rather than step into the open.
+    s.leanWant = 0;
+    if (this.tac === 'peek' && this.coverPt && !this.coverPt.low) {
+      const c = this.coverPt, rx = Math.cos(s.yaw), rz = -Math.sin(s.yaw);
+      s.leanWant = Math.sign((c.peek[0] - c.p[0]) * rx + (c.peek[2] - c.p[2]) * rz);
+    }
     // Stance and movement.
     if (s.stance !== stance && s.switchT <= 0) s.setStance(stance, g.time);
     let want: [number, number] = [0, 0];
@@ -190,8 +256,8 @@ export class Bot {
       if (dir) {
         const far = Math.hypot(move[0] - s.pos[0], move[2] - s.pos[2]);
         // Rush to cover / flank at a sprint when not shooting; otherwise move at the order's pace.
-        const dash = (this.tac === 'toCover' && far > 4) || this.tac === 'flank';
-        s.sprinting = s.stance === 'stand' && s.stamina > 25 && (dash || (far > 40 && !threat));
+        const dash = run || (this.tac === 'toCover' && far > 4) || this.tac === 'flank';
+        s.sprinting = s.stance === 'stand' && s.stamina > 20 && far > 2.5 && (dash || (far > 40 && !threat));
         speed = s.maxSpeed();
         want = [dir[0] * speed, dir[1] * speed];
         if (!aimAt) { this.wantYaw = Math.atan2(-dir[0], -dir[1]); this.wantPitch = 0; }
@@ -215,7 +281,9 @@ export class Bot {
     let dy = this.wantYaw - s.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
     s.yaw += clamp(dy, -turn, turn);
     s.pitch += clamp(this.wantPitch - s.pitch, -turn, turn);
-    s.aiming = !!t && Math.hypot(t.pos[0] - s.pos[0], t.pos[2] - s.pos[2]) > 12 && s.switchT <= 0;
+    s.aiming = ((!!t && Math.hypot(t.pos[0] - s.pos[0], t.pos[2] - s.pos[2]) > 12) || (wantFire && !t)) && s.switchT <= 0 && !s.sprinting;
+    // Machine gunners deploy the bipod where they can when they settle into a firing position.
+    if (s.weapon.bipod && s.aiming && s.support !== 'bipod' && s.moving < 0.1 && Math.random() < dt * 2) s.toggleBipod();
     s.ads = clamp(s.ads + (s.aiming ? 4 : -6) * dt, 0, 1);
 
     // Fire control.
@@ -233,7 +301,7 @@ export class Bot {
     const coneM = (s.dev / 1000) * d;
     const errM = Math.hypot(this.aimErr[0], this.aimErr[1]) * d;
     if (d > 15 && (coneM > 0.9 + (1 - this.skill) * 0.6 || errM > 1.4) && this.burst <= 0) { g.trigger(s, false, false); return; }
-    if (def.kind === 'launcher') { if (d < 25 || d > 300 || !t) return; }
+    if (def.kind === 'launcher') { if (d < 25 || d > 300) return; }
     const auto = s.slot.mode === 'auto';
     if (this.burst <= 0) this.burst = auto ? (d < 30 ? 6 : def.kind === 'rifle' ? 3 : 7) : d < 30 ? 3 : 1;
     if (auto) {
@@ -306,6 +374,96 @@ export class Bot {
     return { move: null, stance: low(d), aimAt, fire: canShoot };
   }
 
+  /** Give the bot a task (null = back to its order and free combat). Re-issuing the same task keeps its progress. */
+  setTask(t: Task | null) {
+    const key = t ? `${t.kind}:${'p' in t && t.p ? t.p.map((v) => v.toFixed(0)).join(',') : ''}:${'at' in t ? t.at.map((v) => v.toFixed(0)).join(',') : ''}` : '';
+    if (key === this.taskKey) { this.task = t; return; }
+    this.taskKey = key; this.task = t; this.taskDone = false; this.searchI = 0; this.firingHere = 0;
+    if (t && t.kind !== 'hold') this.leaveCover();
+    if (t?.kind === 'hold') this.sprung = !t.ambush;
+  }
+
+  /** Eye height for a stance (for line-of-sight checks from a position). */
+  private eyeAt(p: V3, st: 'stand' | 'crouch' | 'prone'): V3 { return [p[0], p[1] + (st === 'stand' ? 1.62 : st === 'crouch' ? 1.1 : 0.32), p[2]]; }
+  /** Highest stance that sees `at` from p (stand if none does). */
+  private stanceToSee(p: V3, at: V3): 'stand' | 'crouch' | 'prone' {
+    if (this.g.P.clear(this.eyeAt(p, 'crouch'), at)) return 'crouch';
+    return 'stand';
+  }
+  /** Chest of a soldier (aim point) with lead for its motion. */
+  private aimPoint(t: Soldier): V3 {
+    const s = this.s, d = Math.hypot(t.pos[0] - s.pos[0], t.pos[2] - s.pos[2]), tof = d / 700;
+    const y = t.pos[1] + (t.stance === 'prone' || t.state !== 'alive' ? 0.25 : t.stance === 'crouch' ? 0.85 : 1.3);
+    return [t.pos[0] + t.vel[0] * tof, y + (d > 300 ? (d - 300) * 0.004 : 0), t.pos[2] + t.vel[2] * tof];
+  }
+
+  /** Carry out the current task; null hands control back to the order/combat logic. */
+  private runTask(dt: number, t: Soldier | null): Act | null {
+    const s = this.s, g = this.g, k = this.task!;
+    const dist = (p: V3) => Math.hypot(p[0] - s.pos[0], p[2] - s.pos[2]);
+    const canShoot = !!t && this.reactT <= 0;
+    const faceAt = (yaw: number, h = 1.4): V3 => [s.pos[0] - Math.sin(yaw) * 20, s.pos[1] + h, s.pos[2] - Math.cos(yaw) * 20];
+    switch (k.kind) {
+      case 'slot': {
+        // In formation: fight back from where you are when something shows up (the brain then runs the drill).
+        if (t) return null;
+        const far = dist(k.p);
+        return { move: far > 1.8 ? k.p : null, stance: far > 1.8 ? 'stand' : 'crouch', aimAt: far > 1.8 ? null : faceAt(k.face), fire: false, run: far > 14 };
+      }
+      case 'hold': {
+        const far = dist(k.p);
+        if (far > 0.7) return { move: k.p, stance: 'stand', aimAt: t && far < 25 ? this.aimPoint(t) : null, fire: canShoot && far < 20 && this.sprung, run: far > 6 };
+        if (t || this.sprung) this.firingHere += dt;
+        // Hidden ambusher: down below the sill, peeking (standing for ~1.2 s every ~5 s) to watch the approach.
+        if (!this.sprung) {
+          this.peekCycle += dt;
+          const peek = this.peekCycle % 5 > 3.8;
+          return { move: null, stance: peek ? 'stand' : 'crouch', aimAt: t ? this.aimPoint(t) : faceAt(k.face, 1.2), fire: false };
+        }
+        const at = t ? this.aimPoint(t) : this.lastSeen && g.time - this.lastSeen.t < 12 ? [this.lastSeen.p[0], this.lastSeen.p[1] + 1.2, this.lastSeen.p[2]] as V3 : faceAt(k.face);
+        // At a window: stand to fire over the sill, duck to reload or when the fire gets too heavy.
+        const duck = (s.reloadT > 0 || s.suppress > 0.75 || this.reactT > 0.2) && !this.rpgOn;
+        const st = duck ? 'crouch' : k.window ? 'stand' : this.stanceToSee(s.pos, at);
+        return { move: null, stance: st, aimAt: at, fire: (canShoot || (this.rpgOn && s.switchT <= 0 && !!this.lastSeen)) && !duck };
+      }
+      case 'move': {
+        const far = dist(k.p);
+        if (far < 1.2) { this.taskDone = true; return { move: null, stance: 'crouch', aimAt: t ? this.aimPoint(t) : null, fire: canShoot }; }
+        const close = !!t && Math.hypot(t.pos[0] - s.pos[0], t.pos[2] - s.pos[2]) < 18;
+        // Close contact on the way: stop and fight it out.
+        if (close) return { move: null, stance: 'crouch', aimAt: this.aimPoint(t!), fire: canShoot };
+        return { move: k.p, stance: 'stand', aimAt: null, fire: false, run: k.run };
+      }
+      case 'suppress': {
+        if (k.p && dist(k.p) > 1.0) return { move: k.p, stance: 'stand', aimAt: null, fire: false, run: true };
+        const at: V3 = t ? this.aimPoint(t) : [k.at[0] + Math.sin(g.time * 0.7 + s.id) * 1.5, k.at[1] + 0.9 + Math.sin(g.time * 1.3) * 0.4, k.at[2] + Math.cos(g.time * 0.9 + s.id) * 1.5];
+        const duck = s.reloadT > 0 || s.suppress > 0.9;
+        const st = duck ? 'crouch' : s.weapon.bipod && s.supportSpot() ? s.stance : this.stanceToSee(s.pos, at);
+        return { move: null, stance: st, aimAt: at, fire: !duck && this.reactT <= 0 };
+      }
+      case 'assault': {
+        const far = dist(k.at);
+        // Grenade an enemy hidden behind cover or in a room before going in.
+        if (!t && far > 6 && far < 26 && this.grenadeT <= 0) this.throwGrenade(k.at);
+        if (t) {
+          const d = Math.hypot(t.pos[0] - s.pos[0], t.pos[2] - s.pos[2]);
+          // Shoot on the move at close range, stop to shoot further out.
+          return { move: d < 12 ? k.at : null, stance: d < 12 ? 'stand' : 'crouch', aimAt: this.aimPoint(t), fire: canShoot };
+        }
+        if (far < 2) { this.taskDone = true; return { move: null, stance: 'crouch', aimAt: [k.at[0], k.at[1] + 1.2, k.at[2]], fire: false }; }
+        return { move: k.at, stance: 'stand', aimAt: null, fire: false, run: far > 15 };
+      }
+      case 'search': {
+        if (t) return null;
+        while (this.searchI < k.spots.length && dist(k.spots[this.searchI]) < 1.5) this.searchI++;
+        if (this.searchI >= k.spots.length) { this.taskDone = true; return { move: null, stance: 'crouch', aimAt: null, fire: false }; }
+        const p = k.spots[this.searchI];
+        // Weapon up, looking where the next spot is (rooms are cleared with the muzzle leading).
+        return { move: p, stance: 'stand', aimAt: [p[0], s.pos[1] + 1.5, p[2]], fire: false };
+      }
+    }
+  }
+
   /** Teammates moving under fire want covering fire. */
   private suppressing() { return this.g.movers(this.s.team) > 0; }
 
@@ -361,6 +519,9 @@ export class Bot {
     this.boundWait = 2 + Math.random() * 2.5;
     return this.bound;
   }
+
+  /** Throw a frag at a point now (team brain: into a room before the entry). */
+  fragInto(at: V3) { this.grenadeT = 0; this.throwGrenade(at); }
 
   private throwGrenade(at: V3) {
     const s = this.s, i = s.slots.findIndex((x) => x.def.kind === 'grenade' && x.def.ammo === 'frag' && x.loaded > 0);

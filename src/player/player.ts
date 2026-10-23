@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { BIND, type Input } from '../core/input';
 import type { Soldier } from '../game/soldier';
 import type { Game } from '../game/game';
-import { Viewmodel } from './viewmodel';
+import { CAM_RECOIL, Viewmodel } from './viewmodel';
 import { WeaponLight, hasLight } from './weaponlight';
 import { clamp, damp } from '../core/rng';
 
@@ -14,28 +14,31 @@ export function setBaseFov(v: number) { BASE_FOV = v; }
 export class Player {
   vm: Viewmodel;
   light: WeaponLight;
-  /** View recoil offsets (rad), recovered over time. */
-  kickP = 0; kickY = 0;
   shake = 0;
   zoom = 1;
   private wallDist = 2;
   third = false;
   private sprintLock = false;
+  private indoorT = 0; private indoor = 0; private filt = 0;
+  /** Freelook (hold Alt): the head turns, the weapon stays on the aim. */
+  freeYaw = 0; freePitch = 0;
 
   constructor(private g: Game, public s: Soldier, private input: Input) {
     this.vm = new Viewmodel(g.gfx.camera, g.assets.weapons, s.team === 'us' ? 0x7d7f6c : 0x5a4e3e);
-    this.vm.set(s.weapon.model);
+    this.vm.set(s.weapon.model, s);
     this.vm.setBody(g.assets.models.get(s.kit.model[0]));
+    this.vm.onCue = (name, gain) => g.audio.play(name, null, { gain });
+    this.vm.onEject = (p, v, link) => g.fx.casing(p, v, link);
     this.light = new WeaponLight(g.gfx.scene, g.gfx.quality);
     s.isPlayer = true;
   }
 
-  setSoldier(s: Soldier) { this.s = s; s.isPlayer = true; this.vm.set(s.weapon.model); this.vm.setBody(this.g.assets.models.get(s.kit.model[0])); this.kickP = this.kickY = 0; }
+  setSoldier(s: Soldier) { this.s = s; s.isPlayer = true; this.vm.set(s.weapon.model, s); this.vm.setBody(this.g.assets.models.get(s.kit.model[0])); }
 
+  /** Per-shot feel: the weapon kicks back into the shoulder and the view shakes a little (the aim itself climbs in Soldier.recoil). */
   onShot(up: number, side: number) {
-    this.kickP += up * 0.001; this.kickY += side * 0.001;
-    this.vm.kick(up);
-    this.shake += up * 0.002;
+    this.vm.kick(up, side);
+    this.shake += up * 0.0015;
   }
 
   update(dt: number) {
@@ -44,10 +47,18 @@ export class Player {
       // Look: slower when zoomed.
       const sens = I.sens / Math.max(1, this.zoom * 0.85);
       const dyaw = -I.mouse.dx * sens, dpitch = -I.mouse.dy * sens;
-      s.yaw += dyaw; s.pitch = clamp(s.pitch + dpitch, -1.45, 1.45);
+      const free = I.is(BIND.freeLook) && s.ads < 0.5;
+      if (free) { this.freeYaw = clamp(this.freeYaw + dyaw, -1.75, 1.75); this.freePitch = clamp(this.freePitch + dpitch, -1.0, 1.0); }
+      else { s.yaw += dyaw; s.pitch = clamp(s.pitch + dpitch, -1.45, 1.45); }
+      // Lean (hold Q / E).
+      s.leanWant = (I.is(BIND.leanR) ? 1 : 0) - (I.is(BIND.leanL) ? 1 : 0);
       if (s.stance === 'prone') s.pitch = clamp(s.pitch, -0.35, 0.6);
-      // Turning quickly unsettles the aim (PR).
-      s.dev = Math.max(s.dev, s.dev + Math.abs(dyaw) * 220 + Math.abs(dpitch) * 160);
+      // A deployed bipod only traverses so far (wider prone, where the body can pivot round it).
+      if (s.support === 'bipod') {
+        const lim = s.stance === 'prone' ? 0.6 : 0.45;
+        let dy = s.yaw - s.bipodYaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+        s.yaw = s.bipodYaw + clamp(dy, -lim, lim); s.pitch = clamp(s.pitch, s.bipodPitch - 0.2, s.bipodPitch + 0.25);
+      }
 
       // Stance.
       if (I.hit(BIND.crouch) || I.hit(BIND.crouch2)) s.setStance(s.stance === 'crouch' ? 'stand' : 'crouch', this.g.time);
@@ -61,15 +72,36 @@ export class Player {
       if (I.mouse.wheel && !s.sprinting) s.select((s.cur + I.mouse.wheel + s.slots.length) % s.slots.length);
       if (I.hit(BIND.reload)) this.g.reload(s);
       if (I.hit(BIND.mode)) { const m = s.weapon.modes; s.slot.mode = m[(m.indexOf(s.slot.mode) + 1) % m.length]; this.g.audio.play('switch_fire_mode', null, { gain: 0.5 }); this.g.hud.flash(`${s.slot.mode.toUpperCase()}`); }
-      if (I.hit(BIND.bandage)) { if (s.startBandage()) this.g.audio.play('bandage', null); }
+      // F: open/close the door in front, otherwise apply a field dressing.
+      if (I.hit(BIND.use)) {
+        if (this.g.doors?.use(s.eye, s.aimDir())) this.g.audio.play('car_door', null, { gain: 0.5, rate: 0.8 });
+        else if (s.startBandage()) this.g.audio.play('bandage', null);
+      }
+      if (I.hit(BIND.bipod)) {
+        const was = s.support === 'bipod', on = s.toggleBipod();
+        if (on) { this.g.audio.play('bolt_release', null, { gain: 0.5, rate: 0.7 }); this.g.hud.flash('BIPOD DEPLOYED'); }
+        else if (was) this.g.audio.play('bolt_release', null, { gain: 0.35, rate: 0.8 });
+        else this.g.hud.flash(s.weapon.bipod ? 'Nothing to deploy the bipod on' : 'No bipod on this weapon');
+      }
+      // Fireteam orders (the player leads the bots on their team): move there / hold–form up / suppress there.
+      const ft = this.g.fireteam;
+      if (ft && ft.team === s.team && (I.hit(BIND.orderMove) || I.hit(BIND.orderSuppress) || I.hit(BIND.orderHold))) {
+        const d = s.aimDir(), h = this.g.P.castRay(s.eye, d, 150);
+        const p: [number, number, number] | undefined = h ? [h.point[0], h.point[1], h.point[2]] : undefined;
+        if (I.hit(BIND.orderHold)) ft.command('hold');
+        else if (I.hit(BIND.orderMove)) { if (p) ft.command('move', [p[0] - d[0] * 0.8, p[1], p[2] - d[2] * 0.8]); }
+        else if (p) ft.command('suppress', p);
+        this.g.audio.play('radio_squelch', null, { gain: 0.4 });
+      }
       if (I.hit(BIND.light) && hasLight(s)) { s.light = !s.light; this.g.audio.play('switch_fire_mode', null, { gain: 0.35, rate: 1.4 }); }
-      if (I.hit(BIND.use) && this.g.doors?.use(s.eye, s.aimDir())) this.g.audio.play('car_door', null, { gain: 0.5, rate: 0.8 });
     }
     // Aiming (hold right mouse). Raising the sights takes longer with heavy weapons.
     const canAim = s.alive && s.reloadT <= 0 && s.switchT <= 0 && s.bandageT <= 0 && !s.sprinting && s.weapon.optic !== 'none';
     s.aiming = canAim && this.input.mouse.right;
     const rate = 1 / (0.18 + s.weapon.mass * 0.03);
     s.ads = clamp(s.ads + (s.aiming ? rate : -rate * 1.6) * dt, 0, 1);
+    // Hold breath (Shift while aimed and not walking forward): steadier sights for a few seconds.
+    s.holdBreath = s.aiming && s.ads > 0.9 && I.is(BIND.sprint) && !I.is(BIND.fwd);
     // Movement.
     const f = (I.is(BIND.fwd) ? 1 : 0) - (I.is(BIND.back) ? 1 : 0), r = (I.is(BIND.right) ? 1 : 0) - (I.is(BIND.left) ? 1 : 0);
     // Once exhausted, sprint stays locked until Shift is released or stamina is back above half (PR style).
@@ -85,8 +117,8 @@ export class Player {
     // Trigger.
     if (I.locked) this.g.trigger(s, I.mouse.left, I.mouse.leftPressed, I.mouse.right);
     // Camera.
-    this.kickP *= Math.exp(-6 * dt); this.kickY *= Math.exp(-6 * dt);
-    this.shake *= Math.exp(-5 * dt);
+    this.shake *= Math.exp(-7 * dt);
+    if (!I.is(BIND.freeLook) || s.ads >= 0.5) { const k = Math.exp(-14 * dt); this.freeYaw *= k; this.freePitch *= k; if (Math.abs(this.freeYaw) + Math.abs(this.freePitch) < 1e-3) this.freeYaw = this.freePitch = 0; }
     const def = s.underSel ? null : s.weapon, mag = s.ads > 0.95 && def ? def.zoom : 1 + (def ? (def.zoom > 1.5 ? 0.25 : def.zoom - 1) : 0) * s.ads;
     this.zoom += (mag - this.zoom) * damp(14, dt);
     cam.fov = BASE_FOV / this.zoom; cam.updateProjectionMatrix();
@@ -95,14 +127,28 @@ export class Player {
     cam.position.set(e[0], e[1] + bob, e[2]);
     const sh = this.shake, n = performance.now() / 1000;
     const wounded = s.state === 'wounded';
-    // Aimed: the view itself sways with the unsettled aim (the sight's centre is where the round goes).
-    const wy = s.wob[0] * s.ads, wp = s.wob[1] * s.ads;
-    cam.rotation.set(wounded ? -0.9 : s.pitch + wp + this.kickP + Math.sin(n * 47) * sh * 0.02, s.yaw + wy + this.kickY + Math.sin(n * 39) * sh * 0.02, wounded ? 0.5 : Math.sin(n * 31) * sh * 0.01, 'YXZ');
+    // The view follows most of the recoil climb; the rest, and the sway, move the weapon in front of the eye
+    // (Viewmodel.update rotates it about the eye), so the sights always point where the round goes.
+    // Leaning tilts the view with the body; freelook turns the head away from the weapon.
+    const aimP = s.pitch + s.rcP * CAM_RECOIL + Math.sin(n * 47) * sh * 0.02, aimY = s.yaw + s.rcY * CAM_RECOIL + Math.sin(n * 39) * sh * 0.02, roll = -s.lean * 0.2;
+    cam.rotation.set(wounded ? -0.9 : aimP + this.freePitch, aimY + this.freeYaw, wounded ? 0.5 : Math.sin(n * 31) * sh * 0.01 + roll, 'YXZ');
+    // The weapon (child of the camera) keeps pointing along the aim while the head looks round.
+    if (this.freeYaw || this.freePitch) { cam.updateMatrixWorld(); this.vm.group.quaternion.copy(cam.quaternion).invert().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(aimP, aimY, roll, 'YXZ'))); }
+    else this.vm.group.quaternion.identity();
     if (wounded || s.state === 'dead') cam.position.y = s.pos[1] + 0.25;
     // Wall distance for the viewmodel pull-back.
     const d = s.aimDir(); const hit = this.g.P.castRay(e, d, 1.2);
     this.wallDist = hit ? hit.dist : 2;
-    this.vm.set(s.underSel ? s.weapon.model : s.weapon.model);
+    this.vm.set(s.weapon.model, s);
+    // Suppression (Squad): the picture drains of colour and, under heavy fire, blurs; it comes back as the fire stops.
+    const sup = s.alive ? s.suppress : 0;
+    if (Math.abs(sup - this.filt) > 0.03 || (sup === 0 && this.filt !== 0)) {
+      this.filt = sup;
+      this.g.gfx.renderer.domElement.style.filter = sup < 0.05 ? '' : `saturate(${(1 - sup * 0.6).toFixed(2)}) contrast(${(1 + sup * 0.12).toFixed(2)})${sup > 0.55 ? ` blur(${((sup - 0.55) * 3).toFixed(2)}px)` : ''}`;
+    }
+    // Indoors the weapon reflects the dim room, not the sky.
+    if ((this.indoorT -= dt) <= 0) { this.indoorT = 0.5; this.indoor = this.g.audio.indoorAt(e) ? 1 : 0; }
+    this.vm.setEnv(THREE.MathUtils.lerp(0.75, 0.22, this.indoor));
     this.vm.update(dt, s, [I.mouse.dx, I.mouse.dy], this.wallDist, def?.optic ?? 'irons');
     // Hide the model when looking through a magnified optic (the HUD draws the scope).
     this.vm.group.visible = s.alive && !(this.scoped());

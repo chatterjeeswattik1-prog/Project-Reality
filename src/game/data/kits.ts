@@ -28,7 +28,7 @@ export const KITS: Kit[] = [
   { id: 'ins_rifle2', name: 'Insurgent (AK-47)', faction: 'ins', role: 'rifleman', items: [{ weapon: 'ak47', count: 6 }, { weapon: 'f1', count: 1 }], bandages: 3, model: ['insurgent_b', 'insurgent_a'], perSquad: 8 },
   { id: 'ins_at', name: 'Anti-Tank (RPG)', faction: 'ins', role: 'at', items: [{ weapon: 'aks74u', count: 3 }, { weapon: 'rpg7', count: 3 }], bandages: 3, model: ['insurgent_a', 'insurgent_c'], perSquad: 2 },
   { id: 'ins_mg', name: 'Machine Gunner', faction: 'ins', role: 'mg', items: [{ weapon: 'pkm', count: 2 }, { weapon: 'makarov', count: 2 }], bandages: 3, model: ['insurgent_c', 'insurgent_b'], perSquad: 1 },
-  { id: 'ins_rpk', name: 'Automatic Rifleman', faction: 'ins', role: 'ar', items: [{ weapon: 'rpk', count: 5 }, { weapon: 'f1', count: 1 }], bandages: 3, model: ['insurgent_b', 'insurgent_a'], perSquad: 1 },
+  { id: 'ins_rpk', name: 'Automatic Rifleman', faction: 'ins', role: 'ar', items: [{ weapon: 'rpd', count: 3 }, { weapon: 'f1', count: 1 }], bandages: 3, model: ['insurgent_b', 'insurgent_a'], perSquad: 1 },
   { id: 'ins_marks', name: 'Marksman', faction: 'ins', role: 'marksman', items: [{ weapon: 'svd', count: 5 }, { weapon: 'makarov', count: 2 }], bandages: 3, model: ['insurgent_a', 'insurgent_c'], perSquad: 1 },
   { id: 'ins_medic', name: 'Medic', faction: 'ins', role: 'medic', items: [{ weapon: 'aks74u', count: 4 }], bandages: 10, medic: true, model: ['insurgent_b'], perSquad: 1 },
   { id: 'ins_sapper', name: 'Sapper', faction: 'ins', role: 'sapper', items: [{ weapon: 'makarov', count: 3 }, { weapon: 'ied', count: 2 }], bandages: 3, model: ['insurgent_c'], perSquad: 1 },

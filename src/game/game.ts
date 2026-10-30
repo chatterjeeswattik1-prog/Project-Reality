@@ -15,6 +15,7 @@ import { Rig, type CharAssets } from './rig';
 import { AMMO, WEAPONS, type Ammo, type WeaponDef } from './data/weapons';
 import { type Faction, type Kit } from './data/kits';
 import type { Player } from '../player/player';
+import { PACKS } from '../player/fprig';
 import type { Hud } from '../ui/hud';
 import type { GameMode } from './mode';
 import { mulberry } from '../core/rng';
@@ -55,7 +56,8 @@ export class Game {
 
   constructor(public gfx: Gfx, public P: Physics, public city: City, public world: WorldView, public assets: CharAssets, quality: string) {
     this.fx = new FX(gfx.scene);
-    this.fx.floorAt = (p) => { const h = P.castRay([p[0], p[1], p[2]], [0, -1, 0], 3, G_WORLD); return h ? h.point[1] : null; };
+    this.fx.floorAt = (p) => { const h = P.castRay([p[0], p[1], p[2]], [0, -1, 0], 80, G_WORLD); return h ? h.point[1] : null; };
+    this.fx.sweep = (a, d, len) => { const h = P.castRay(a, d, len, G_WORLD); return h ? { dist: h.dist, normal: h.normal } : null; };
     this.fx.onCaseLand = (p) => { if (Math.random() < 0.6) this.audio.play('casing_drop', p, { range: 12, gain: 0.35, rate: 0.9 + Math.random() * 0.25 }); };
     this.audio = new Audio(quality !== 'low');
     this.audio.occluded = (a, b) => !P.clear(a, b, G_WORLD);
@@ -174,7 +176,11 @@ export class Game {
     const r = (s.dev / 1000) * Math.sqrt(Math.random()), th = Math.random() * Math.PI * 2;
     const yaw = s.yaw + s.wob[0] + s.rcY + r * Math.cos(th) / Math.max(0.2, Math.cos(s.pitch)), pitch = s.pitch + s.wob[1] + s.rcP + r * Math.sin(th) + this.zero(def) + (def.kind === 'gl' ? M203_SIGHT_TILT : 0);
     const d = s.aimDir(yaw, pitch);
-    const e = s.eye, o: V3 = [e[0] + d[0] * 0.25, e[1] + d[1] * 0.25 - (s.ads > 0.5 ? 0 : 0.08), e[2] + d[2] * 0.25];
+    const e = s.eye;
+    let o: V3 = [e[0] + d[0] * 0.25, e[1] + d[1] * 0.25 - (s.ads > 0.5 ? 0 : 0.08), e[2] + d[2] * 0.25];
+    // A muzzle pushed into or past a wall must not fire from the far side of it: start inside the body instead.
+    const core = s.core;
+    if (!this.P.clear(core, o)) o = [core[0] + d[0] * 0.05, core[1] + d[1] * 0.05, core[2] + d[2] * 0.05];
     const tracerEvery = def.tracer ?? a.tracer ?? 0, shotN = (slot.loaded % (tracerEvery || 1)) === 0;
     this.proj.fire(s, def, def.ammo, o, d, tracerEvery > 0 && shotN);
     // Recoil: the aim climbs (with a random side kick); a bipod soaks most of it, a rest some. The hip cone opens up.
@@ -247,7 +253,11 @@ export class Game {
   crack(s: Soldier, p: V3, a: Ammo, by: Soldier) {
     s.suppress = Math.min(1, s.suppress + (a.pen >= 2 ? 0.25 : 0.15));
     s.heard = { p: by.eye, t: this.time };
-    if (s.isPlayer) { this.audio.play(a.v0 > 600 ? 'crack_supersonic' : 'whiz', p, { range: 15, delay: false, gain: 0.9 }); this.hud?.suppress(s.suppress); }
+    if (s.isPlayer) {
+      this.audio.play(a.v0 > 600 ? 'crack_supersonic' : 'whiz', p, { range: 15, delay: false, gain: 0.9 }); this.hud?.suppress(s.suppress);
+      // A round snapping past makes you flinch: the view jolts (more for heavy rounds and when already pinned).
+      if (this.player) this.player.shake += (a.pen >= 2 ? 0.012 : 0.008) * (0.6 + s.suppress);
+    }
   }
 
   explode(p: V3, a: Ammo, by: Soldier | null, n?: V3) {
@@ -327,6 +337,7 @@ export class Game {
     }
     this.prof.rigs = performance.now() - t0; t0 = performance.now();
     this.doors?.update(dt);
+    this.fx.cam.set(cam.x, cam.y, cam.z);
     this.fx.update(dt);
     this.prof.fx = performance.now() - t0;
     if (this.player) this.audio.setListener([cam.x, cam.y, cam.z], this.player.forward());
@@ -363,9 +374,13 @@ export async function loadCharAssets(): Promise<CharAssets> {
   const wids = [...new Set(Object.values(WEAPONS).map((w) => w.model))];
   const tpWeapons = new Map<string, THREE.Object3D>();
   await Promise.all(wids.map(async (id) => {
-    const g = await gltf(`models/weapons/${id}.glb`); if (!g) return;
+    // Light copy for bots and third person (<id>_lod.glb); the full-detail <id>.glb is loaded only for the player's
+    // own weapons (Viewmodel.preload). Weapons without a LOD file use the full one.
+    const g = (await gltf(`models/weapons/${id}_lod.glb`)) ?? (await gltf(`models/weapons/${id}.glb`)); if (!g) return;
     const root = g.scene.getObjectByName(id) ?? g.scene;
     weapons.set(id, root); tpWeapons.set(id, mergeByMaterial(root));
   }));
-  return { models, clips, weapons, tpWeapons };
+  const fpRigs: CharAssets['fpRigs'] = new Map();
+  await Promise.all(Object.entries(PACKS).map(async ([id, d]) => { const g = await gltf(d.url); if (g) fpRigs.set(id, { scene: g.scene, animations: g.animations }); }));
+  return { models, clips, weapons, tpWeapons, fpRigs };
 }

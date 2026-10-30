@@ -13,6 +13,10 @@
 // everybody fires at once. Fighters shoot and scoot — after a few bursts from one window they move to another — and
 // one or two stalk round the flank. When the cell is losing (half down, or the Americans at the door) it falls back
 // to the next house away from them and sets up again. A cell that hears nothing for a long time goes hunting.
+//
+// Both sides fight from buildings (Brain.overwatch): windows on every floor and roof spots of nearby houses that face
+// the enemy and can see out to him, higher posts preferred. The cell spreads over several houses and moves between them;
+// the US base of fire climbs to an overwatch window before suppressing, and the maneuver element flanks into a house.
 import type { Game } from '../game/game';
 import type { Soldier } from '../game/soldier';
 import type { Faction } from '../game/data/kits';
@@ -22,6 +26,8 @@ import type { Bot } from './bot';
 import type { BuildingInfo } from '../world/building';
 
 const flat = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[2] - b[2]);
+/** A firing position: navmesh point, facing (yaw), at a window (fire over the sill), building id (-1 outside), floor. */
+interface Post { p: V3; face: number; window: boolean; b: number; floor: number }
 const yawTo = (a: V3, b: V3) => Math.atan2(-(b[0] - a[0]), -(b[2] - a[2]));
 
 /** Shared helpers for both brains. */
@@ -57,6 +63,45 @@ abstract class Brain {
   protected hitRecently(sec: number) { return this.members().some((s) => this.g.time - s.lastHitT < sec); }
   /** Nearest navmesh point, or the point itself. */
   protected snap(p: V3, r = 4): V3 { return this.nav?.closest(p, r) ?? p; }
+
+  /**
+   * Firing posts in the houses near `center` that look towards `threat`: windows on every floor and roof spots, on the
+   * navmesh, with a sight line out to the threat area. Best first: higher floors (overwatch), facing the threat, at a
+   * fighting distance.
+   */
+  protected overwatch(center: V3, threat: V3, radius = 40, maxHouses = 5): Post[] {
+    const g = this.g, area = (g.mode as { area?: { x0: number; z0: number; x1: number; z1: number } } | null)?.area;
+    const tx = threat[0] - center[0], tz = threat[2] - center[2], tl = Math.hypot(tx, tz) || 1;
+    const dc = (b: BuildingInfo) => Math.hypot((b.spec.x0 + b.spec.x1) / 2 - center[0], (b.spec.z0 + b.spec.z1) / 2 - center[2]);
+    const houses = g.city.buildings.filter((b) => {
+      const cx = (b.spec.x0 + b.spec.x1) / 2, cz = (b.spec.z0 + b.spec.z1) / 2;
+      if (area && (cx < area.x0 || cx > area.x1 || cz < area.z0 || cz > area.z1)) return false;
+      return dc(b) < radius;
+    }).sort((a, b) => dc(a) - dc(b)).slice(0, maxHouses);
+    const aim: V3 = [threat[0], threat[1] + 1.2, threat[2]];
+    const scored: { q: Post; sc: number }[] = [];
+    for (const h of houses) {
+      for (const w of h.windows) {
+        const facing = (w.nx * tx + w.nz * tz) / tl;
+        if (facing < 0.2) continue;
+        const p = this.nav?.closest([w.x, w.y + 0.2, w.z], 0.8);
+        if (!p || Math.abs(p[1] - w.y) > 0.6) continue;
+        // Out through the window to the threat (the eye just inside the opening, standing at the sill).
+        if (!g.P.clear([w.x - w.nx * 0.15, w.y + 1.45, w.z - w.nz * 0.15], aim)) continue;
+        const d = flat(p, threat);
+        scored.push({ q: { p, face: Math.atan2(-w.nx, -w.nz), window: true, b: h.id, floor: w.floor }, sc: w.floor * 4 + facing * 3 - Math.abs(d - 45) * 0.08 });
+      }
+      // Roofs (behind the parapet): good fields of fire but exposed - ranked like a window one floor down.
+      for (const r of h.roof) {
+        const p = this.nav?.closest(r, 0.8);
+        if (!p || Math.abs(p[1] - r[1]) > 0.6) continue;
+        if (!g.P.clear([p[0], p[1] + 1.5, p[2]], aim)) continue;
+        const d = flat(p, threat);
+        scored.push({ q: { p, face: yawTo(p, threat), window: false, b: h.id, floor: h.spec.floors }, sc: h.spec.floors * 3 + 1 - Math.abs(d - 45) * 0.08 });
+      }
+    }
+    return scored.sort((a, b) => b.sc - a.sc).map((x) => x.q);
+  }
   /** Building whose footprint contains p (with a margin), if any. */
   protected buildingAt(p: V3, margin = 0.5): BuildingInfo | null {
     for (const b of this.g.city.buildings) { const sp = b.spec; if (p[0] > sp.x0 - margin && p[0] < sp.x1 + margin && p[2] > sp.z0 - margin && p[2] < sp.z1 + margin) return b; }
@@ -72,6 +117,8 @@ export class Fireteam extends Brain {
   private trail: V3[] = [];
   private base: Bot[] = []; private maneuver: Bot[] = [];
   private flankTo: V3 | null = null;
+  /** Overwatch posts (windows / roofs) taken by the base of fire, by soldier id. */
+  private basePost = new Map<number, V3>();
   private enemyAt: V3 | null = null; private enemyT = 0;
   private legT = 0; private leg: V3 | null = null;
   /** The player's standing order to the team (Six Days in Fallujah-style): form up on me, hold, or move to a point;
@@ -91,12 +138,17 @@ export class Fireteam extends Brain {
 
   constructor(g: Game, nav: Nav | null, team: Faction, bots: Bot[], objective: V3) { super(g, nav, team, bots); this.objective = objective; this.state = 'move'; }
 
-  /** The player leads when on this team; otherwise the leader kit, else the first bot standing. */
+  /** The player leads this fireteam (false for squads the player is not in). */
+  playerLed = true;
+  /** The player leads when in this fireteam; otherwise the leader kit, else the first bot standing. */
   leader(): Soldier | null {
-    const p = this.g.soldiers.find((s) => s.isPlayer && s.team === this.team && s.alive);
+    const p = this.playerLed ? this.g.soldiers.find((s) => s.isPlayer && s.team === this.team && s.alive) : null;
     if (p) return p;
-    const a = this.alive();
-    return (a.find((b) => b.s.kit.leader) ?? a[0])?.s ?? null;
+    // Bot-led: the member furthest forward (towards the objective) leads, the squad leader kit preferred by 40 m — a
+    // reinforcement just respawned at the FOB must not pull the whole squad back to him.
+    const a = this.alive(); if (!a.length) return null;
+    const score = (b: Bot) => flat(b.s.pos, this.objective) - (b.s.kit.leader ? 40 : 0);
+    return a.reduce((x, y) => (score(y) < score(x) ? y : x)).s;
   }
 
   update(dt: number) {
@@ -136,7 +188,7 @@ export class Fireteam extends Brain {
         const e = this.enemyAt!;
         const man = this.maneuver.filter((b) => b.s.alive), base = this.base.filter((b) => b.s.alive);
         if (!man.length) { this.set('react'); break; }
-        for (const b of base) b.setTask({ kind: 'suppress', p: null, at: e });
+        for (const b of base) b.setTask({ kind: 'suppress', p: this.basePost.get(b.s.id) ?? null, at: e });
         for (const b of man) b.setTask({ kind: 'move', p: this.offsetFor(this.flankTo!, b), run: true });
         const arrived = man.every((b) => b.taskDone || flat(b.s.pos, e) < 20);
         if (arrived || this.stateT > 35) { this.set('assault'); this.say('Maneuver set — assaulting!'); }
@@ -151,7 +203,7 @@ export class Fireteam extends Brain {
         // its line of fire, and covers from where it is instead.
         for (const b of base) {
           const inLine = man.some((m) => { const a1 = yawTo(b.s.pos, e), a2 = yawTo(b.s.pos, m.s.pos); return Math.abs(Math.atan2(Math.sin(a1 - a2), Math.cos(a1 - a2))) < 0.3 || flat(m.s.pos, e) < 12; });
-          b.setTask(inLine ? { kind: 'hold', p: [...b.s.pos], face: yawTo(b.s.pos, e) } : { kind: 'suppress', p: null, at: e });
+          b.setTask(inLine ? { kind: 'hold', p: [...b.s.pos], face: yawTo(b.s.pos, e) } : { kind: 'suppress', p: this.basePost.get(b.s.id) ?? null, at: e });
         }
         if (!man.length) { this.set('react'); break; }
         // Enemy inside a house and the assault element close: stack on its door and clear it.
@@ -246,10 +298,26 @@ export class Fireteam extends Brain {
       break;
     }
     if (!best) { this.base = []; this.maneuver = bots; this.set('assault'); this.say('Assaulting!'); return; }
-    this.flankTo = best.p;
+    // Flank into a house when there is one by the flank point with a window or roof onto the enemy (higher ground).
+    const inHouse = this.overwatch(best.p, e, 16, 2).find((q) => flat(q.p, e) > 10 && flat(q.p, best!.p) < 16);
+    this.flankTo = inHouse ? inHouse.p : best.p;
+    // Base of fire: an overwatch window or roof near where it is (reachable within ~45 m), else from where it stands.
+    this.basePost.clear();
+    const bc: V3 = this.base.length ? [this.base[0].s.pos[0], this.base[0].s.pos[1], this.base[0].s.pos[2]] : c;
+    const posts = this.overwatch(bc, e, 30, 4).filter((q) => flat(q.p, e) > 15 && flat(q.p, e) < 120);
+    const used = new Set<Post>();
+    for (const b of this.base) {
+      if (b.s.isPlayer) continue;
+      const q = posts.find((x) => !used.has(x) && flat(x.p, b.s.pos) < 35);
+      if (!q) continue;
+      const path = this.nav?.path(b.s.pos, q.p);
+      const len = path ? path.reduce((a, pt, i) => a + (i ? flat(pt, path[i - 1]) : 0), 0) : flat(q.p, b.s.pos);
+      if (this.nav && (!path || len > 45)) continue;
+      used.add(q); this.basePost.set(b.s.id, q.p);
+    }
     this.set('fix');
     const who = this.base.map((b) => b.s.name.split(' ').pop()).join(' and ');
-    this.say(`${who || 'Base'}: suppress! ${this.maneuver.map((b) => b.s.name.split(' ').pop()).join(', ')}: flank ${best.p === null ? '' : 'round the side'}!`);
+    this.say(`${who || 'Base'}: ${this.basePost.size ? 'get up high and ' : ''}suppress! ${this.maneuver.map((b) => b.s.name.split(' ').pop()).join(', ')}: flank ${inHouse ? 'through that house' : 'round the side'}!`);
     void L;
   }
 
@@ -342,15 +410,16 @@ export class Fireteam extends Brain {
 }
 
 // ================================================================================================== Insurgent cell
-interface Post { p: V3; face: number; window: boolean; b: number }
 export class Cell extends Brain {
   private posts: Post[] = [];
   private postOf = new Map<number, Post>();
   private stalkers = new Set<number>();
   private quietT = 0; private lostAt = 0; private home: V3; private threatFrom: V3;
   private relocateCheck = 0;
-  /** Seconds before an unsprung ambush loses patience and goes hunting. */
+  /** Seconds before an unsprung ambush loses patience and goes hunting (Infinity: never, e.g. cache defenders). */
   patience = 90;
+  /** Hunting only goes after enemies this close to the cell's home (m). */
+  huntRange = Infinity;
 
   constructor(g: Game, nav: Nav | null, team: Faction, bots: Bot[], home: V3, threatFrom: V3) {
     super(g, nav, team, bots); this.home = home; this.threatFrom = threatFrom;
@@ -358,29 +427,16 @@ export class Cell extends Brain {
     this.state = 'ambush';
   }
 
-  /** Firing posts round a position: windows (and roofs) of the nearest houses that look towards the threat. */
+  /** Firing posts round a position: windows on every floor and roofs of the houses round it that see the threat. */
   private setupAt(center: V3) {
-    const g = this.g, area = (g.mode as { area?: { x0: number; z0: number; x1: number; z1: number } } | null)?.area;
+    const g = this.g;
     const tx = this.threatFrom[0] - center[0], tz = this.threatFrom[2] - center[2], tl = Math.hypot(tx, tz) || 1;
-    const houses = g.city.buildings.filter((b) => {
-      const cx = (b.spec.x0 + b.spec.x1) / 2, cz = (b.spec.z0 + b.spec.z1) / 2;
-      if (area && (cx < area.x0 || cx > area.x1 || cz < area.z0 || cz > area.z1)) return false;
-      return Math.hypot(cx - center[0], cz - center[2]) < 30 && b.windows.length > 0;
-    }).sort((a, b) => Math.hypot((a.spec.x0 + a.spec.x1) / 2 - center[0], (a.spec.z0 + a.spec.z1) / 2 - center[2]) - Math.hypot((b.spec.x0 + b.spec.x1) / 2 - center[0], (b.spec.z0 + b.spec.z1) / 2 - center[2])).slice(0, 3);
-    const posts: Post[] = [];
-    for (const h of houses) for (const w of h.windows) {
-      if (w.floor > 1) continue;
-      const facing = (w.nx * tx + w.nz * tz) / tl;
-      if (facing < 0.25) continue;
-      const p = this.nav?.closest([w.x, w.y + 0.2, w.z], 0.8);
-      if (!p || Math.abs(p[1] - w.y) > 0.6) continue;
-      posts.push({ p, face: Math.atan2(-w.nx, -w.nz), window: true, b: h.id });
-    }
+    const posts: Post[] = this.overwatch(center, this.threatFrom, 40, 5).slice(0, Math.max(8, this.bots.length * 3));
     // Low cover outside as a fallback (walls, cars) facing the threat.
     if (posts.length < this.bots.length && g.cover) for (const c of g.cover.near(center[0], center[2], 20)) {
       if (posts.length >= this.bots.length * 2) break;
       if ((c.n[0] * tx + c.n[1] * tz) / tl > -0.3) continue;
-      posts.push({ p: c.p, face: Math.atan2(-tx, -tz), window: false, b: -1 });
+      posts.push({ p: c.p, face: Math.atan2(-tx, -tz), window: false, b: -1, floor: 0 });
     }
     this.posts = posts;
     this.postOf.clear();
@@ -443,7 +499,11 @@ export class Cell extends Brain {
         break;
       }
       case 'hunt': {
-        const tgt = k ? k.p : enemies[0] ? this.snap([enemies[0].pos[0] + (Math.random() - 0.5) * 16, enemies[0].pos[1], enemies[0].pos[2] + (Math.random() - 0.5) * 16], 6) : this.home;
+        const inRange = enemies.filter((e) => flat(e.pos, this.home) < this.huntRange).sort((a, c) => flat(a.pos, this.home) - flat(c.pos, this.home));
+        const kk = k && flat(k.p, this.home) < this.huntRange ? k : null;
+        // Nobody to hunt near home: back to the posts and wait.
+        if (!kk && !inRange.length) { this.setupAt(this.home); this.set('ambush'); break; }
+        const tgt = kk ? kk.p : this.snap([inRange[0].pos[0] + (Math.random() - 0.5) * 16, inRange[0].pos[1], inRange[0].pos[2] + (Math.random() - 0.5) * 16], 6);
         for (const b of bots) if (!b.task || b.task.kind !== 'assault' || b.taskDone || this.stateT % 10 < dt) b.setTask({ kind: 'assault', at: tgt });
         if (bots.some((b) => b.target)) { this.setupAt(bots[0].s.pos); this.spring(); }
         break;
@@ -468,10 +528,14 @@ export class Cell extends Brain {
     return this.snap([tgt[0] - (dx / d) * 10 + (-dz / d) * side * 16, tgt[1], tgt[2] - (dz / d) * 10 + (dx / d) * side * 16], 6);
   }
 
-  /** Move a fighter to another free firing post (prefer one in the same house, a few metres away). */
+  /** Move a fighter to another free firing post: a few metres away, upstairs or in the next house. */
   private relocate(b: Bot) {
     const cur = this.postOf.get(b.s.id), taken = new Set(this.postOf.values());
-    const opts = this.posts.filter((q) => !taken.has(q) && flat(q.p, b.s.pos) > 2.5 && flat(q.p, b.s.pos) < 22).sort((a, c) => (a.b === cur?.b ? 0 : 6) + flat(a.p, b.s.pos) - ((c.b === cur?.b ? 0 : 6) + flat(c.p, b.s.pos)));
+    const cost = (q: Post) => flat(q.p, b.s.pos) - q.floor * 3 - (q.b !== cur?.b ? 2 : 0);
+    const pick = () => this.posts.filter((q) => !taken.has(q) && flat(q.p, b.s.pos) > 2.5 && flat(q.p, b.s.pos) < 30).sort((a, c) => cost(a) - cost(c));
+    let opts = pick();
+    // The fight has moved: survey the houses round this fighter again.
+    if (!opts.length) { this.posts.push(...this.overwatch(b.s.pos, this.threatFrom, 35, 4).filter((q) => !this.posts.some((o) => flat(o.p, q.p) < 0.5))); opts = pick(); }
     const q = opts[0]; if (!q) { b.firingHere = 0; return; }
     this.postOf.set(b.s.id, q);
     b.setTask({ kind: 'hold', p: q.p, face: q.face, window: q.window });
@@ -490,4 +554,15 @@ export class Cell extends Brain {
   }
 
   private hunt() { this.set('hunt'); for (const b of this.alive()) b.sprung = true; }
+
+  /** A reinforcement joins the cell: it gets a free post (or the nearest one). */
+  join(b: Bot) {
+    this.bots.push(b);
+    const taken = new Set(this.postOf.values());
+    const q = this.posts.find((x) => !taken.has(x)) ?? this.posts[0];
+    if (q) this.postOf.set(b.s.id, q);
+    if (this.state !== 'ambush') b.sprung = true;
+  }
+  /** Move the cell's base (a new cache to defend, or a new patrol area) and set up there in ambush. */
+  rehome(home: V3, threatFrom: V3) { this.home = home; this.threatFrom = threatFrom; this.setupAt(home); this.set('ambush'); this.stateT = 0; this.stalkers.clear(); }
 }

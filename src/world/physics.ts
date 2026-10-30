@@ -7,6 +7,8 @@ import type { Surface } from './sink';
 import { groundH } from './terrain';
 
 export const G_WORLD = 0x0001, G_CHAR = 0x0002, G_VEH = 0x0004, G_DEBRIS = 0x0008;
+/** Play-area boundary barriers: stop soldiers and vehicles only (never bullets, sight lines or grenades). */
+export const G_BOUND = 0x0010;
 export const groups = (member: number, filter: number) => ((member & 0xffff) << 16) | (filter & 0xffff);
 
 export interface RayHit { dist: number; point: [number, number, number]; normal: [number, number, number]; surf: Surface; tag: number; collider: RAPIER.Collider }
@@ -37,6 +39,8 @@ export class Physics {
 
   /** Static boxes kept for surface lookups (trimesh hits carry no per-triangle data). */
   private boxes: { c: number[]; h: number[]; ry: number; q?: number[]; s: Surface; tag: number }[] = [];
+  /** Static boxes [0, cityBoxN) are the city (walls, floors); the rest are props. */
+  cityBoxN = 0;
   private grid = new Map<number, number[]>();
   private static cell = 4;
   private key(ix: number, iz: number) { return (ix + 4096) * 8192 + (iz + 4096); }
@@ -67,6 +71,7 @@ export class Physics {
       for (const [a, b2, cc, d] of BOX_FACES) ch.i.push(b + a, b + b2, b + cc, b + a, b + cc, b + d);
     };
     for (const c of city.sink.colliders) add(c.c, c.h, c.q ?? null, c.s, c.tag ?? -1);
+    this.cityBoxN = this.boxes.length;
     for (const p of props) {
       if (!p.tris) { add(p.c, p.h, [0, Math.sin(p.ry / 2), 0, Math.cos(p.ry / 2)], propSurface(p.id), -1, p.ry); continue; }
       // Real-shape props: their triangles go into the chunk trimesh; the (shrunk) box stays only for surface lookups.
@@ -95,13 +100,13 @@ export class Physics {
     if (city.area) {
       const A = city.area, cx = (A.x0 + A.x1) / 2, cz = (A.z0 + A.z1) / 2, hx = (A.x1 - A.x0) / 2, hz = (A.z1 - A.z0) / 2;
       for (const [x, z, ex, ez] of [[cx, A.z0, hx, 0.3], [cx, A.z1, hx, 0.3], [A.x0, cz, 0.3, hz], [A.x1, cz, 0.3, hz]]) {
-        const c = w.createCollider(R.ColliderDesc.cuboid(ex, 30, ez).setTranslation(x, 10, z).setCollisionGroups(groups(G_WORLD, G_CHAR | G_VEH)), body);
+        const c = w.createCollider(R.ColliderDesc.cuboid(ex, 30, ez).setTranslation(x, 10, z).setCollisionGroups(groups(G_BOUND, G_CHAR | G_VEH)), body);
         this.surf.set(c.handle, 'sandbag');
       }
     }
     // Invisible walls at the map edge (soldiers may not leave the AO; vehicles neither).
     for (const [cx, cz, hx, hz] of [[0, -700, 720, 2], [0, 700, 720, 2], [-700, 0, 2, 720], [700, 0, 2, 720]]) {
-      const c = w.createCollider(R.ColliderDesc.cuboid(hx, 60, hz).setTranslation(cx, 20, cz).setCollisionGroups(groups(G_WORLD, G_CHAR | G_VEH)), body);
+      const c = w.createCollider(R.ColliderDesc.cuboid(hx, 60, hz).setTranslation(cx, 20, cz).setCollisionGroups(groups(G_BOUND, G_CHAR | G_VEH)), body);
       this.surf.set(c.handle, 'dirt');
     }
   }

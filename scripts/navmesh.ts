@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { init, exportNavMesh } from 'recast-navigation';
 import { generateTiledNavMesh } from 'recast-navigation/generators';
 import { generateCity } from '../src/world/citygen';
-import { navGeometry, NAV_BOUNDS, NAV_CONFIG, solidBox, type Box } from '../src/world/navgeom';
+import { fittedBoxes, navGeometry, NAV_BOUNDS, NAV_CONFIG, solidBox, type Box, type PropCol } from '../src/world/navgeom';
 
 type M = number[];
 const mul = (a: M, b: M): M => { const o = new Array(16).fill(0); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) o[j * 4 + i] += a[k * 4 + i] * b[j * 4 + k]; return o; };
@@ -45,8 +45,11 @@ const city = generateCity(seed);
 const kit = glbBoxes('public/models/props.glb');
 const veh = new Map<string, [M, M]>();
 const props: Box[] = [];
+// Same collision shapes as the game (world/render.ts buildProps): fitted boxes, else the model bounds.
+const col: PropCol = existsSync('public/models/props_col.json') ? JSON.parse(readFileSync('public/models/props_col.json', 'utf8')) : {};
 for (const p of city.props) {
   if (!p.solid) continue;
+  if (col[p.id]?.length) { props.push(...fittedBoxes(p.id, col[p.id], p)); continue; }
   let b = p.id.startsWith('veh:') ? veh.get(p.id) : kit.get(p.id);
   if (!b && p.id.startsWith('veh:')) { const m = glbBoxes(`public/models/vehicles/${p.id.slice(4)}.glb`); const v = [...m.values()][0]; if (v) { veh.set(p.id, v); b = v; } }
   if (!b) continue;

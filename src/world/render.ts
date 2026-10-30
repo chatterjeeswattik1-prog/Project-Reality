@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { gltf, pbr, tex } from '../core/assets';
 import { CHUNK, MATS } from './sink';
 import { cityMaterials, interiorLit } from './citymat';
-import { solidBox } from './navgeom';
+import { fittedBoxes, solidBox, type PropCol } from './navgeom';
 import { type City, MASK_HALF, MASK_N } from './citygen';
 import { canalX, CANAL_W, groundH, HALF, OUTER, WATER_Y } from './terrain';
 
@@ -37,6 +37,9 @@ export async function buildWorld(city: City, quality: 'low' | 'medium' | 'high')
     root.add(mesh); tris += b.n / 3;
     if (b.layer) { const c = g.boundingBox!.getCenter(new THREE.Vector3()); lods.push({ mesh, layer: b.layer, cx: c.x, cz: c.z }); }
   }
+  // The generator's batches were copied into the meshes above (tightly sized): release them (hundreds of MB on the
+  // full map).
+  city.sink.batches.clear();
   root.add(terrain(city, quality));
   root.add(roads(city));
   if (!city.area || (city.area.x0 < -340 && city.area.x1 > -400)) root.add(water());
@@ -191,8 +194,6 @@ const FALLBACK: Record<string, [number, number, number, number]> = {
   'veh:m1114_wreck': [2.3, 1.9, 5, 0x2a2420], 'veh:bus_wreck': [2.3, 2.6, 7, 0x3a3028],
 };
 export interface PropBox { c: [number, number, number]; h: [number, number, number]; ry: number; id: string; /** World-space triangles for props that collide with their real shape (rubble, wrecks…). */ tris?: { pos: Float32Array; idx: Uint32Array } }
-/** Props whose collision uses the real mesh (an outline box would be an invisible wall above a rubble pile or a car). */
-const EXACT = /^(rubble_|debris_|veh:|sandbag|market_stall|tyres_pile|trash_|cache_crate|cart_hand|guard_tower|fountain|burnt_tyre)/;
 
 /** Instance all props; returns the solid props' boxes (for colliders), measured from the models. */
 export async function buildProps(city: City, world: WorldView, shadows: boolean, quality: 'low' | 'medium' | 'high', renderer: THREE.WebGLRenderer): Promise<PropBox[]> {
@@ -262,14 +263,17 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
       }
     }
   }
+  // Collision: each solid prop is a few boxes fitted to its real shape (scripts/propcol.mjs), shared with the navmesh
+  // baker. Not the full mesh (10 M triangles on the full map) and not its bounding box (invisible walls round open
+  // shapes: tank legs, pole cross-arms, dishes).
+  const col = (await fetch(`${import.meta.env.BASE_URL}models/props_col.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}))) as PropCol;
   const solid: PropBox[] = [];
   for (const p of city.props) {
     if (!p.solid) continue;
-    const b = boxes.get(p.id); if (!b) continue;
-    const sb = solidBox(p.id, b.min.toArray(), b.max.toArray(), p);
-    const box: PropBox = { c: sb.c as [number, number, number], h: sb.h as [number, number, number], ry: p.ry, id: p.id };
     if (EXACT.test(p.id)) {
-      // Real triangles, placed like the instance; the box shrinks to a surface-lookup hint.
+      // Mounds and wrecks: their real triangles (a few hundred props on the map).
+      const b = boxes.get(p.id); if (!b) continue;
+      const sb = solidBox(p.id, b.min.toArray(), b.max.toArray(), p);
       const pos: number[] = [], idx: number[] = [], m = new THREE.Matrix4().compose(new THREE.Vector3(p.x, p.y, p.z), new THREE.Quaternion().setFromAxisAngle(up, p.ry), new THREE.Vector3().setScalar(p.s ?? 1)), v = new THREE.Vector3();
       for (const part of partsOf(p.id)) {
         const pa = part.geo.getAttribute('position'), base = pos.length / 3, mm = m.clone().multiply(part.local);
@@ -277,13 +281,20 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
         const ix = part.geo.getIndex();
         if (ix) for (let i = 0; i < ix.count; i++) idx.push(base + ix.getX(i)); else for (let i = 0; i < pa.count; i++) idx.push(base + i);
       }
-      box.tris = { pos: new Float32Array(pos), idx: new Uint32Array(idx) };
-      box.h = [box.h[0] * 0.8, box.h[1] * 0.7, box.h[2] * 0.8];
+      solid.push({ c: sb.c as [number, number, number], h: [sb.h[0] * 0.8, sb.h[1] * 0.7, sb.h[2] * 0.8], ry: p.ry, id: p.id, tris: { pos: new Float32Array(pos), idx: new Uint32Array(idx) } });
+      continue;
     }
-    solid.push(box);
+    const fb = col[p.id];
+    if (fb?.length) { for (const b of fittedBoxes(p.id, fb, p)) solid.push({ c: b.c as [number, number, number], h: b.h as [number, number, number], ry: p.ry, id: p.id }); continue; }
+    const b = boxes.get(p.id); if (!b) continue;
+    const sb = solidBox(p.id, b.min.toArray(), b.max.toArray(), p);
+    solid.push({ c: sb.c as [number, number, number], h: sb.h as [number, number, number], ry: p.ry, id: p.id });
   }
   return solid;
 }
+
+/** Props that collide with their real mesh: mounds and wrecks, whose sloped and broken surfaces boxes fit badly. */
+const EXACT = /^(rubble_|debris_|veh:.*_wreck|burnt_tyre|market_stall|dome_|minaret|fountain)/;
 
 const IMPOSTOR = new Set(['palm_a', 'palm_b', 'palm_c']);
 /** Interior furniture ids (from the furniture kit); skipped entirely while the kit lacks them. */

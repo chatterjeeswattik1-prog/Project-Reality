@@ -7,7 +7,10 @@ import type { Soldier } from './soldier';
 import { damp } from '../core/rng';
 import { choreo, hand as handTrack, num, vec, type HandAt, type V3 } from '../player/handling';
 
-export interface CharAssets { models: Map<string, THREE.Object3D>; clips: Map<string, THREE.AnimationClip>; weapons: Map<string, THREE.Object3D>; tpWeapons: Map<string, THREE.Object3D> }
+export interface CharAssets {
+  models: Map<string, THREE.Object3D>; clips: Map<string, THREE.AnimationClip>; weapons: Map<string, THREE.Object3D>; tpWeapons: Map<string, THREE.Object3D>;
+  /** First-person rigs by pack id (player/fprig.ts). */ fpRigs: Map<string, { scene: THREE.Object3D; animations: THREE.AnimationClip[] }>;
+}
 
 const _r3: V3 = [0, 0, 0];
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3(), _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
@@ -144,6 +147,7 @@ export function armIK(B: Record<string, THREE.Bone>, side: 'l' | 'r', target: TH
   twoBoneIK(ua, la, hd, target, pole);
 }
 
+const _cq = new THREE.Quaternion(), _cq2 = new THREE.Quaternion(), _cx = new THREE.Vector3(1, 0, 0);
 const CLIP_SPEED: Record<string, number> = { Walk_Loop: 1.45, Jog_Fwd_Loop: 3.4, Sprint_Loop: 5.8, Crouch_Fwd_Loop: 1.3, Prone_Crawl_Loop: 0.6, Walk_Bwd_Loop: 1.3, Strafe_L_Loop: 1.4, Strafe_R_Loop: 1.4 };
 
 export class Rig {
@@ -155,7 +159,7 @@ export class Rig {
   weapon: THREE.Object3D | null = null;
   private weaponId = '';
   private mannequin: THREE.Group | null = null;
-  private acc = 0;
+
   private deathClip = '';
   aimPitch = 0;
   muzzle = new THREE.Vector3();
@@ -215,16 +219,30 @@ export class Rig {
   }
 
   update(dt: number, s: Soldier, camDist: number, now = 0) {
-    // Update rate by distance (full rate within 40 m).
-    this.acc += dt;
-    const interval = camDist < 40 ? 0 : camDist < 120 ? 1 / 20 : 1 / 8;
-    if (this.acc < interval) return;
-    const step = this.acc; this.acc = 0; this.lastDt = step;
+    // Every soldier is animated every frame: reduced update rates at range made runners stutter visibly.
+    const step = dt; this.lastDt = step;
     this.root.position.set(s.pos[0], s.pos[1] + this.lift, s.pos[2]);
     this.root.rotation.set(0, s.yaw, 0);
     this.aimPitch += (s.pitch - this.aimPitch) * damp(12, step);
     if (this.mixer) this.animate(step, s, camDist); else this.poseMannequin(s);
     this.placeWeapon(s, camDist, now);
+  }
+
+  /**
+   * The animation library's locomotion is civilian (shoulders and torso swing as if the hands were free). Pull the spine,
+   * neck, head and shoulders most of the way back to a steady carry posture, leaning into the movement: the legs work,
+   * the upper body stays quiet behind the rifle — as soldiers move in the Project Reality footage.
+   */
+  private soldierCarry(sp: number, crouch: boolean) {
+    const k = Math.min(1, sp / 1.2) * (crouch ? 0.8 : 0.55);
+    if (k <= 0.01) return;
+    const lean = (crouch ? 0.32 : 0.04) + Math.min(1, sp / 5) * 0.1;
+    const B = this.bones;
+    for (const [n, w, l] of [['spine_01', 1, 0.35], ['spine_02', 1, 0.35], ['spine_03', 1, 0.3], ['neck_01', 0.8, -0.4], ['Head', 0.8, -0.5], ['clavicle_l', 0.7, 0], ['clavicle_r', 0.7, 0]] as const) {
+      const b = B[n], q0 = b && this.bind.get(b); if (!b || !q0) continue;
+      _cq.copy(q0); if (l) _cq.multiply(_cq2.setFromAxisAngle(_cx, lean * l));
+      b.quaternion.slerp(_cq, k * w);
+    }
   }
 
   private animate(dt: number, s: Soldier, camDist: number) {
@@ -235,9 +253,12 @@ export class Rig {
     if (s.state === 'dead') clip = this.deathClip ||= ['Death01', 'Death02', 'Death03'][s.id % 3];
     else if (s.state === 'wounded') clip = s.downT < 1.3 && this.actions.has('Death02') ? 'Death02' : 'Wounded_Loop';
     else if (s.stance === 'prone') clip = sp > 0.15 ? 'Prone_Crawl_Loop' : 'Prone_Idle_Loop';
-    else if (s.stance === 'crouch') clip = sp > 0.3 ? (fwd < -0.3 && this.actions.has('Crouch_Bwd_Loop') ? 'Crouch_Bwd_Loop' : 'Crouch_Fwd_Loop') : 'Crouch_Idle_Loop';
+    // Crouched: creeping uses the crouch walk; moving faster, the library's squat-walk looks like a duck walk, so a
+    // walk (or jog) with the torso bent low over the rifle is used instead (soldierCarry adds the bend).
+    else if (s.stance === 'crouch') clip = sp > 0.65 ? (sp > 2.4 ? 'Jog_Fwd_Loop' : 'Walk_Loop') : sp > 0.2 ? (fwd < -0.3 && this.actions.has('Crouch_Bwd_Loop') ? 'Crouch_Bwd_Loop' : 'Crouch_Fwd_Loop') : 'Crouch_Idle_Loop';
     else if (sp > 0.3) {
-      if (s.sprinting) clip = 'Sprint_Loop';
+      // The library's sprint is a hunched cartoon dash: soldiers run with the jog, played faster (see CLIP_SPEED).
+      if (s.sprinting) clip = 'Jog_Fwd_Loop';
       else if (fwd < -0.4 && this.actions.has('Walk_Bwd_Loop')) clip = 'Walk_Bwd_Loop';
       else if (Math.abs(side) > Math.abs(fwd) && this.actions.has('Strafe_L_Loop')) clip = side > 0 ? 'Strafe_R_Loop' : 'Strafe_L_Loop';
       else clip = sp > 2.4 ? 'Jog_Fwd_Loop' : 'Walk_Loop';
@@ -247,6 +268,7 @@ export class Rig {
     this.play(clip, falling ? 0.08 : 0.22, falling ? 1 + this.fallBoost : cs ? Math.max(0.4, Math.min(2, sp / cs)) : 1);
     this.fallBoost = Math.max(0, this.fallBoost - dt * 1.2);
     this.mixer!.update(dt);
+    if (s.state === 'alive' && s.stance !== 'prone') this.soldierCarry(sp, s.stance === 'crouch' && sp > 0.65);
     // Stagger spring (ω ≈ 14 rad/s, ζ ≈ 0.35), added to the spine on top of the clip.
     for (let i = 0, n = Math.max(1, Math.ceil(dt * 120)), h = dt / n; i < n; i++) { this.stagV.addScaledVector(this.stag, -196 * h).multiplyScalar(1 - 10 * h); this.stag.addScaledVector(this.stagV, h); }
     if (s.state === 'alive' && this.stag.lengthSq() > 1e-6) {
@@ -303,7 +325,8 @@ export class Rig {
   }
 
   /** Went down from a hit: the fall starts fast. */
-  fall(power = 1) { this.fallBoost = 0.6 + power * 0.5; }
+  /** Going down: the death clip plays a little faster for a hard hit (a body drops; it does not slam flat). */
+  fall(power = 1) { this.fallBoost = 0.1 + power * 0.18; }
 
   private poseMannequin(s: Soldier) {
     const g = this.mannequin!, torso = g.getObjectByName('torso')!, head = g.getObjectByName('head')!, lL = g.getObjectByName('legL')!, lR = g.getObjectByName('legR')!;
@@ -357,7 +380,7 @@ export class Rig {
     w.updateMatrixWorld(true);
     w.getObjectByName('muzzle')?.getWorldPosition(this.muzzle);
     // Hands on the grips, elbows down/out, fingers wrapped.
-    if (!this.mixer || camDist > 70) return;
+    if (!this.mixer || camDist > 300) return;
     const b = this.bones, gr = w.getObjectByName('grip_r'), gl = w.getObjectByName('grip_l');
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(yawQ);
     if (b.upperarm_r && b.lowerarm_r && b.hand_r && gr) {

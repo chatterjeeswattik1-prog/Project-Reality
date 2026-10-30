@@ -37,7 +37,13 @@ All models: real-world dimensions, origin as stated, applied transforms, PBR mat
   - Belt-fed (`m249`, `m240b`, `pkm`): `cover` origin on its real hinge axis. All three real covers hinge at the **front** and lift at the rear latch, so opening = rotating about local X in the sense that raises `hand_cover`; `hand_cover` (empty, child of `cover`) is where the hand lifts it (rear latch).
 - Textures: one material per weapon (base colour + metallic-roughness + tangent-space normal map, tangents exported). Long-gun primaries may use 2048 px base colour + normal (metal-rough ≤ 1024).
 - Budget 2k–15k triangles each (≤ ~30k for detailed first-person primaries).
-- IDs: US `m4a1` (TA31 ACOG), `m4a1_m203`, `m16a4` (RCO), `m249`, `m240b`, `m24`, `m136` (AT4), `m9`, `m67`, `m18` (smoke). Insurgents `akm`, `ak47`, `aks74u`, `rpk`, `pkm`, `svd`, `rpg7`, `makarov`, `f1`, `ied`. Vehicle guns `m2`, `dshk`.
+- IDs: US `m4a1`, `m4a1_m203`, `m16a4` (all iron sights), `m249`, `m240b`, `m24`, `m136` (AT4), `m9`, `m67`, `m18` (smoke), `c4`. Insurgents `akm`, `ak47`, `aks74u`, `rpk`, `rpd`, `pkm`, `svd`, `rpg7`, `makarov`, `f1`, `ied`. Vehicle guns `m2`, `dshk`.
+- Sights: `eye` = rear aperture centre / notch top (AK picture: post tip level with the notch shoulders) or eyepiece axis, `front_post` = post tip, `cheek` = eye point when aiming (the game moves it onto the eye→front_post line and turns that line onto the view axis). Check with `tools/blender/sightcheck.py` (renders from the game's eye point).
+- Two files per converted weapon: `<id>.glb` full detail (first person, loaded on demand for the player's own weapons) and `<id>_lod.glb` (≤ 12k tris, 512 px; bots / third person). `ucommon.HI` (env `UQ`) controls it.
+- Most weapons are converted from the user's models (E:/Terraform_Automation/New) by `tools/blender/uweapons_us.py` / `uweapons_ins.py` (helpers `ucommon.py`, `uexplore.py`); `m4a1` and `aks74u` are cut from the animated packs by `fpweapons.py`. `rpk`, `m240b`, `makarov`, `m2`, `dshk` are still the procedural builds.
+
+### First-person rigs: `public/models/fp/fp_<pack>.glb`
+- Built by `node scripts/fprig.mjs` (glTF-Transform, not Blender: its importer breaks these skins) from the user's animated packs: arms + weapon bones + clips `fire` (idle = t 0), `reload`, `reload_empty`, `draw`, `holster`. The packs' own weapon meshes are removed; `src/player/fprig.ts` hangs the contract weapon on the weapon bone (`PACKS`, `PACK_OF`: M4 rig for m4a1/m4a1_m203/m16a4, AK rig for aks74u/akm/ak47/rpk/svd) using the contract frame printed by `fpweapons.py` (`FRAME`).
 
 ### Vehicles: `public/models/vehicles/<id>.glb`
 - Root `<id>`, **+Y forward**, origin on the ground at the centre of the wheelbase (tyres touch z = 0).
@@ -49,6 +55,7 @@ All models: real-world dimensions, origin as stated, applied transforms, PBR mat
 
 ### Props kit: `public/models/props.glb`
 - One file, many root objects, each named by its prop id, origin at the base centre, +Y forward. The game instances them by name.
+- Collision: `node scripts/propcol.mjs` fits a few boxes to every prop and vehicle model → `public/models/props_col.json` (indoor furniture and small items: one tight box; lines/masts: posts only). Used by the game and the navmesh baker; mounds, wrecks, stalls and the dome use their real mesh (`EXACT` in world/render.ts). Re-run it, then `npm run navmesh` (~30 s), after changing props.glb, vehicles or the city generator.
 
 ### Characters: `public/models/chars/<id>.glb`, animations `public/models/chars/anims.glb`
 - Quaternius Universal Base Characters + Universal Animation Library (CC0). Unreal-style skeleton (`root`, `pelvis`, `spine_01..03`, `neck_01`, `Head`, `clavicle_l/r`, `upperarm_l/r`, `lowerarm_l/r`, `hand_l/r`, `thigh_l/r`, `calf_l/r`, `foot_l/r`, …). Every character and the animation file share it, so clips play on any character by bone name.

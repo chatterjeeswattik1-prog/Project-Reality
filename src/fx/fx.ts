@@ -1,6 +1,7 @@
 // Visual effects: muzzle flashes (with a small pool of lights so shaders never recompile), tracers, particle puffs
 // (dust, sparks, blood, smoke, fire), bullet-hole and scorch decals, explosions and smoke screens.
 import * as THREE from 'three';
+const _v3 = new THREE.Vector3();
 import type { Surface } from '../world/sink';
 
 type V3 = [number, number, number];
@@ -51,17 +52,17 @@ function bloodTexture(): THREE.Texture {
   // Irregular splatter: a dense core, satellite drops and a few streaks (dark arterial red).
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const x = c.getContext('2d')!;
-  const blob = (bx: number, by: number, r: number, a: number) => { const g = x.createRadialGradient(bx, by, 0, bx, by, r); g.addColorStop(0, `rgba(70,4,4,${a})`); g.addColorStop(0.7, `rgba(90,8,6,${a * 0.9})`); g.addColorStop(1, 'rgba(90,8,6,0)'); x.fillStyle = g; x.beginPath(); x.arc(bx, by, r, 0, 7); x.fill(); };
+  const blob = (bx: number, by: number, r: number, a: number) => { const g = x.createRadialGradient(bx, by, 0, bx, by, r); g.addColorStop(0, `rgba(96,6,4,${a})`); g.addColorStop(0.7, `rgba(122,10,6,${a * 0.9})`); g.addColorStop(1, 'rgba(122,10,6,0)'); x.fillStyle = g; x.beginPath(); x.arc(bx, by, r, 0, 7); x.fill(); };
   for (let i = 0; i < 9; i++) blob(64 + (Math.random() - 0.5) * 30, 64 + (Math.random() - 0.5) * 30, 14 + Math.random() * 16, 0.95);
   for (let i = 0; i < 26; i++) { const a = Math.random() * 6.28, d = 25 + Math.random() * 36; blob(64 + Math.cos(a) * d, 64 + Math.sin(a) * d, 1.5 + Math.random() * 4, 0.9); }
-  x.strokeStyle = 'rgba(80,6,5,0.8)'; x.lineCap = 'round';
+  x.strokeStyle = 'rgba(110,8,5,0.8)'; x.lineCap = 'round';
   for (let i = 0; i < 6; i++) { const a = Math.random() * 6.28, d = 20 + Math.random() * 30; x.lineWidth = 1 + Math.random() * 3; x.beginPath(); x.moveTo(64 + Math.cos(a) * 12, 64 + Math.sin(a) * 12); x.lineTo(64 + Math.cos(a) * d, 64 + Math.sin(a) * d); x.stroke(); }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 function poolTexture(): THREE.Texture {
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const x = c.getContext('2d')!;
-  for (let i = 0; i < 7; i++) { const bx = 64 + (Math.random() - 0.5) * 34, by = 64 + (Math.random() - 0.5) * 34, r = 22 + Math.random() * 18; const g = x.createRadialGradient(bx, by, 0, bx, by, r); g.addColorStop(0, 'rgba(45,2,2,0.97)'); g.addColorStop(0.8, 'rgba(60,4,3,0.9)'); g.addColorStop(1, 'rgba(60,4,3,0)'); x.fillStyle = g; x.beginPath(); x.arc(bx, by, r, 0, 7); x.fill(); }
+  for (let i = 0; i < 7; i++) { const bx = 64 + (Math.random() - 0.5) * 34, by = 64 + (Math.random() - 0.5) * 34, r = 22 + Math.random() * 18; const g = x.createRadialGradient(bx, by, 0, bx, by, r); g.addColorStop(0, 'rgba(62,3,2,0.97)'); g.addColorStop(0.8, 'rgba(84,6,4,0.9)'); g.addColorStop(1, 'rgba(84,6,4,0)'); x.fillStyle = g; x.beginPath(); x.arc(bx, by, r, 0, 7); x.fill(); }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
@@ -157,6 +158,8 @@ export class FX {
   private cs: { p: THREE.Vector3; v: THREE.Vector3; q: THREE.Quaternion; w: THREE.Vector3; floor: number; t: number; rest: boolean }[] = [];
   /** Ground height below a point (set by the game; null = no ground found). */
   floorAt: (p: V3) => number | null = () => null;
+  /** First static-world hit along a segment (set by the game): distance and surface normal, or null. */
+  sweep: (a: V3, d: V3, len: number) => { dist: number; normal: V3 } | null = () => null;
   /** Sound when a case lands (set by the game). */
   onCaseLand: (p: V3) => void = () => undefined;
   private rings: { m: THREE.Mesh; t: number; r: number }[] = [];
@@ -172,7 +175,8 @@ export class FX {
     const st = new THREE.CanvasTexture(sc); st.colorSpace = THREE.SRGBColorSpace;
     this.scorch = new THREE.InstancedMesh(dg, new THREE.MeshStandardMaterial({ map: st, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, roughness: 1 }), 120);
     this.scorch.count = 0; this.scorch.frustumCulled = false; scene.add(this.scorch);
-    const bm = (map: THREE.Texture, o: number) => new THREE.MeshStandardMaterial({ map, color: 0x8c8c8c, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: o, polygonOffsetUnits: o, roughness: 0.55, metalness: 0, envMapIntensity: 0.3 });
+    // Blood: lit by the sun but not reflecting the sky (a blue sky reflection on dark red read as purple).
+    const bm = (map: THREE.Texture, o: number) => new THREE.MeshLambertMaterial({ map, color: 0xb0b0b0, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: o, polygonOffsetUnits: o });
     this.splats = new THREE.InstancedMesh(dg, bm(bloodTexture(), -5), 400); this.splats.count = 0; this.splats.frustumCulled = false; scene.add(this.splats);
     this.pools = new THREE.InstancedMesh(dg, bm(poolTexture(), -6), 60); this.pools.count = 0; this.pools.frustumCulled = false; scene.add(this.pools);
     const tg = new THREE.BufferGeometry();
@@ -197,6 +201,8 @@ export class FX {
     let k = 0; for (let i = 1; i < this.lights.length; i++) if (this.lightT[i] < this.lightT[k]) k = i;
     const l = this.lights[k]; l.position.set(p[0], p[1], p[2]); l.intensity = intensity; l.distance = range; this.lightT[k] = dur;
   }
+  /** Camera position (set by the game each frame) for distance-aware effects. */
+  cam = new THREE.Vector3();
   muzzle(p: V3, dir: V3, big: number, firstPerson: boolean) {
     let k = this.flashT.indexOf(Math.min(...this.flashT));
     if (k < 0) k = 0;
@@ -206,6 +212,15 @@ export class FX {
     this.flashT[k] = 0.035;
     this.light(p, 6 * big, 0.05);
     for (let i = 0; i < 3; i++) this.smoke.spawn([p[0] + dir[0] * 0.2, p[1] + dir[1] * 0.2, p[2] + dir[2] * 0.2], [dir[0] * 1.5 + (Math.random() - 0.5) * 0.5, dir[1] * 1.5 + 0.3, dir[2] * 1.5 + (Math.random() - 0.5) * 0.5], 0.15 * big, 0.6, 0.8, 0.18, [0.8, 0.78, 0.74], 2.5, -0.2);
+    if (firstPerson) return;
+    // Seen from afar a real muzzle flash and its blast of dust still give a shooter away (Project Reality): keep the flash
+    // at least ~7 px on screen and kick up a puff of dust round the muzzle that grows with the distance.
+    const d = this.cam.distanceTo(_v3.set(p[0], p[1], p[2]));
+    if (d > 25) {
+      this.glow.spawn([p[0] + dir[0] * 0.15, p[1] + dir[1] * 0.15, p[2] + dir[2] * 0.15], [0, 0, 0], Math.max(0.5 * big, d * 0.0095) * (0.8 + Math.random() * 0.4), 0, 0.05, 1, [1, 0.78, 0.42]);
+      const ds = Math.min(2.5, Math.max(0.35, d * 0.006)) * big;
+      for (let i = 0; i < 2; i++) this.smoke.spawn([p[0] + dir[0] * 0.4, p[1] - 0.1, p[2] + dir[2] * 0.4], [dir[0] * 2.5 + (Math.random() - 0.5), 0.4 + Math.random() * 0.4, dir[2] * 2.5 + (Math.random() - 0.5)], ds, ds * 1.4, 1.1, 0.22, [0.78, 0.72, 0.62], 3, -0.1);
+    }
   }
   /** Throw out a spent case from the ejection port with velocity v (m/s). */
   casing(p: V3, v: V3, link = false) {
@@ -243,7 +258,8 @@ export class FX {
   blood(p: V3, dir: V3, big = 1) {
     // Entry puff (towards the shooter), the exit mist along the bullet's path, and droplets.
     for (let i = 0; i < 5 * big; i++) this.smoke.spawn(p, [-dir[0] * (0.5 + Math.random()) + (Math.random() - 0.5) * 0.6, 0.3 + Math.random() * 0.5, -dir[2] * (0.5 + Math.random()) + (Math.random() - 0.5) * 0.6], 0.2, 0.8, 0.3 + Math.random() * 0.2, 0.8, [0.5, 0.06, 0.05], 5, 1);
-    for (let i = 0; i < 14 * big; i++) this.smoke.spawn(p, [dir[0] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1, dir[1] * 1.2 + (Math.random() - 0.3) * 0.8, dir[2] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1], 0.24, 1.3, 0.45 + Math.random() * 0.35, 0.9, [0.45, 0.03, 0.03], 3.5, 1.2, [0.3, 0.05, 0.04]);
+    // Exit mist: fine and translucent (a few overlapping opaque puffs read as a red cartoon cloud).
+    for (let i = 0; i < 9 * big; i++) this.smoke.spawn(p, [dir[0] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1, dir[1] * 1.2 + (Math.random() - 0.3) * 0.8, dir[2] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1], 0.14, 1.1, 0.35 + Math.random() * 0.3, 0.45, [0.42, 0.03, 0.03], 3.5, 1.2, [0.3, 0.05, 0.04]);
     for (let i = 0; i < 18 * big; i++) this.smoke.spawn(p, [dir[0] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2, dir[1] * 2 + Math.random() * 1.5, dir[2] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2], 0.025 + Math.random() * 0.02, 0, 0.5 + Math.random() * 0.4, 1, [0.32, 0.01, 0.01], 0.4, 9.8);
   }
   /** Splatter on a surface (wall behind the victim, the ground below). */
@@ -257,7 +273,7 @@ export class FX {
   bloodPool(p: V3, max = 1.3) {
     const i = this.poolN % 60; this.poolN++;
     this.growing = this.growing.filter((g) => g.i !== i);
-    this.growing.push({ i, p, r: 0.15, max: max * (0.8 + Math.random() * 0.4), rot: Math.random() * 6.28 });
+    this.growing.push({ i, p, r: 0.12, max: max * 0.6 * (0.8 + Math.random() * 0.4), rot: Math.random() * 6.28 });
     this.pools.count = Math.min(60, this.poolN);
   }
   decal(p: V3, n: V3, size: number) {
@@ -354,7 +370,7 @@ export class FX {
     }
     for (const g of this.growing) {
       if (g.r >= g.max) continue;
-      g.r = Math.min(g.max, g.r + dt * (g.max - g.r) * 0.25 + dt * 0.01);
+      g.r = Math.min(g.max, g.r + dt * (g.max - g.r) * 0.07 + dt * 0.004);
       this.q.setFromUnitVectors(this.up, new THREE.Vector3(0, 1, 0)).multiply(new THREE.Quaternion().setFromAxisAngle(this.up, g.rot));
       this.m4.compose(new THREE.Vector3(g.p[0], g.p[1] + 0.015, g.p[2]), this.q, new THREE.Vector3(g.r * 2, g.r * 2, 1));
       this.pools.setMatrixAt(g.i, this.m4); this.pools.instanceMatrix.needsUpdate = true;
@@ -363,7 +379,21 @@ export class FX {
     for (let i = 0; i < this.cs.length; i++) {
       const c = this.cs[i]; if (!c || c.rest) continue;
       moved = true; c.t += dt;
-      c.v.y -= 9.81 * dt; c.p.addScaledVector(c.v, dt);
+      c.v.y -= 9.81 * dt;
+      // Swept against the world: walls bounce the case back, any surface below it is a floor (stairs, ledges).
+      const sp = c.v.length(), step = sp * dt;
+      if (step > 1e-5) {
+        const d: V3 = [c.v.x / sp, c.v.y / sp, c.v.z / sp];
+        const h = this.sweep([c.p.x, c.p.y, c.p.z], d, step + 0.01);
+        if (h) {
+          const n = new THREE.Vector3(...h.normal);
+          c.p.addScaledVector(c.v, Math.max(0, h.dist - 0.01) / sp);
+          if (n.y > 0.6) { c.floor = c.p.y - 0.01 * Math.abs(d[1]); c.p.y = c.floor; } // down onto the surface: the landing below bounces or rests it
+          else { const vn = c.v.dot(n); c.v.addScaledVector(n, -1.4 * vn).multiplyScalar(0.45); c.w.multiplyScalar(0.6); c.floor = Math.min(c.floor, this.floorAt([c.p.x, c.p.y, c.p.z]) ?? c.floor); }
+        } else c.p.addScaledVector(c.v, dt);
+      }
+      // The floor under the case as it travels (it may fly off a ledge or down a stairwell).
+      if (c.t < 0.05 || Math.floor(c.t / 0.1) !== Math.floor((c.t - dt) / 0.1)) { const f = this.floorAt([c.p.x, c.p.y + 0.05, c.p.z]); if (f !== null) c.floor = f; }
       c.q.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(c.w.x * dt, c.w.y * dt, c.w.z * dt)));
       if (c.p.y < c.floor + 0.006) {
         c.p.y = c.floor + 0.006;

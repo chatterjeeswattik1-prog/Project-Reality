@@ -4,7 +4,8 @@
 import type { Game } from '../game/game';
 import type { Soldier } from '../game/soldier';
 import type { Nav } from './nav';
-import type { V3 } from '../game/projectiles';
+import { THIN, type V3 } from '../game/projectiles';
+import { AMMO } from '../game/data/weapons';
 import { clamp, damp } from '../core/rng';
 import type { CoverPoint } from './cover';
 
@@ -84,7 +85,9 @@ export class Bot {
 
   // ---------------- perception ----------------
   private think(dt: number) {
-    const g = this.g, s = this.s, e = s.eye;
+    const g = this.g, s = this.s;
+    // A head leaned into (or through) a wall sees nothing beyond it: look from inside the body then.
+    let e = s.eye; if (!g.P.clear(s.core, e)) e = s.core;
     const fx = -Math.sin(s.yaw), fz = -Math.cos(s.yaw);
     const alert = this.target || (this.lastSeen && g.time - this.lastSeen.t < 20) || s.suppress > 0.2;
     let best: Soldier | null = null, bestScore = -Infinity;
@@ -98,7 +101,9 @@ export class Bot {
       const head: V3 = t.eye, chest: V3 = [t.pos[0], t.pos[1] + (t.stance === 'prone' ? 0.25 : t.stance === 'crouch' ? 0.8 : 1.25), t.pos[2]];
       const seen = (g.P.clear(e, head) || g.P.clear(e, chest)) && !g.smokeBlocks(e, chest);
       if (!seen) { this.decay(t.id, dt); continue; }
-      let f = 1 / (1 + d / 55);
+      // Seeing a man falls off with the square of range (his size on the retina): ~0.5 at 60 m, 0.14 at 150 m, 0.08 at
+      // 200 m. Movement and above all muzzle flash still give him away — the fair version of what the player can see.
+      let f = 1 / (1 + (d / 60) ** 2);
       f *= t.stance === 'prone' ? 0.3 : t.stance === 'crouch' ? 0.65 : 1;
       f *= t.moving > 0.5 ? 1.7 : 1;
       if (g.time - t.lastShotT < 1.5) f *= 3;
@@ -248,7 +253,9 @@ export class Bot {
       const c = this.coverPt, rx = Math.cos(s.yaw), rz = -Math.sin(s.yaw);
       s.leanWant = Math.sign((c.peek[0] - c.p[0]) * rx + (c.peek[2] - c.p[2]) * rz);
     }
-    // Stance and movement.
+    // Stance and movement. Covering ground (more than a few metres to go, or running) is done on the feet — soldiers
+    // dash between covers upright and get low when they arrive; the crouch walk is for the last steps and for creeping.
+    if (move && stance === 'crouch' && (run || Math.hypot(move[0] - s.pos[0], move[2] - s.pos[2]) > 4)) stance = 'stand';
     if (s.stance !== stance && s.switchT <= 0) s.setStance(stance, g.time);
     let want: [number, number] = [0, 0];
     if (move) {
@@ -302,6 +309,13 @@ export class Bot {
     const errM = Math.hypot(this.aimErr[0], this.aimErr[1]) * d;
     if (d > 15 && (coneM > 0.9 + (1 - this.skill) * 0.6 || errM > 1.4) && this.burst <= 0) { g.trigger(s, false, false); return; }
     if (def.kind === 'launcher') { if (d < 25 || d > 300) return; }
+    // Never pour fire into a wall: hold fire when something this round cannot go through lies well short of the point
+    // (shooting the cover an enemy just ducked behind is fine; a wall in our own face is not).
+    {
+      const e = s.eye, dx = at[0] - e[0], dy = at[1] - e[1], dz = at[2] - e[2], L = Math.hypot(dx, dy, dz);
+      const hit = L > 0.5 ? g.P.castRay(e, [dx / L, dy / L, dz / L], L) : null;
+      if (hit && hit.dist < L - 1.5 && AMMO[def.ammo].pen < (THIN[hit.surf] ?? 9)) { this.burst = 0; g.trigger(s, false, false); return; }
+    }
     const auto = s.slot.mode === 'auto';
     if (this.burst <= 0) this.burst = auto ? (d < 30 ? 6 : def.kind === 'rifle' ? 3 : 7) : d < 30 ? 3 : 1;
     if (auto) {

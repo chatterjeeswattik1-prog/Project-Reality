@@ -1,7 +1,10 @@
-// Commands the bots. US squads (leader + fire team) move on the revealed caches, search the buildings around the
-// intel marker, and their engineer demolishes a found cache while the rest secure it. Insurgent cells defend the
-// active caches from inside the building and the nearby rooftops; roaming cells patrol and converge on gunfire.
-// Both sides respawn: US at the FOB (costs tickets), insurgents at undiscovered caches or their base.
+// Commands the bots on the full map (Insurgency). The small-unit tactics come from the team brains (ai/team.ts), as in
+// the test area: each US squad is a Fireteam that travels in formation to the intel marker of a revealed cache, reacts
+// to contact (suppress from overwatch, flank through houses, assault, clear rooms), and searches the buildings round the
+// marker one by one; when the cache is found the engineer demolishes it while the rest secure it. Insurgent cells
+// defend the active caches from windows and roofs round them (ambush, shoot and scoot, stalk, fall back); roaming
+// cells hide in houses in the town and hunt when they hear fighting. Both sides respawn: US at the FOB (costs
+// tickets), insurgents at undiscovered caches or their base; reinforcements join their squad's or cell's brain.
 import type { Game } from '../game/game';
 import type { Soldier } from '../game/soldier';
 import type { Insurgency, Cache } from '../game/insurgency';
@@ -12,6 +15,7 @@ import { safeSpawn } from './nav';
 import type { Nav } from './nav';
 import type { V3 } from '../game/projectiles';
 import { mulberry, pick } from '../core/rng';
+import { Cell as CellBrain, Fireteam } from './team';
 
 const US_NAMES = ['Miller', 'Johnson', 'Garcia', 'Rodriguez', 'Davis', 'Martinez', 'Wilson', 'Anderson', 'Taylor', 'Thomas', 'Moore', 'Jackson', 'Martin', 'Lee', 'Harris', 'Clark', 'Lewis', 'Walker', 'Young', 'King', 'Wright', 'Lopez', 'Hill', 'Scott', 'Green', 'Baker', 'Nelson', 'Carter', 'Mitchell', 'Perez'];
 const INS_NAMES = ['Ahmed', 'Omar', 'Yusuf', 'Khalid', 'Hassan', 'Ali', 'Mahmoud', 'Saeed', 'Tariq', 'Hamza', 'Bilal', 'Faisal', 'Karim', 'Nasser', 'Rashid', 'Samir', 'Walid', 'Ziad', 'Jamal', 'Murad', 'Idris', 'Qasim', 'Adnan', 'Fadi'];
@@ -19,8 +23,11 @@ const US_SQUAD = ['us_sl', 'us_rifle', 'us_ar', 'us_medic', 'us_eng', 'us_gren']
 const US_SQUAD2 = ['us_sl', 'us_rifle', 'us_ar', 'us_medic', 'us_eng', 'us_lat'];
 const INS_POOL = ['ins_rifle', 'ins_rifle', 'ins_rifle2', 'ins_rifle', 'ins_at', 'ins_rpk', 'ins_rifle2', 'ins_mg', 'ins_marks', 'ins_rifle', 'ins_cell', 'ins_medic'];
 
-interface Squad { id: number; name: string; team: Faction; members: Soldier[]; leader: Soldier | null; kits: string[]; target: Cache | null; phase: 'move' | 'search' | 'secure'; searchT: number }
-interface Cell { id: number; members: Soldier[]; role: 'defend' | 'roam'; cache: Cache | null; patrol: V3; size: number }
+interface Squad {
+  id: number; name: string; team: Faction; members: Soldier[]; leader: Soldier | null; kits: string[]; target: Cache | null; phase: 'move' | 'search' | 'secure'; searchT: number;
+  brain: Fireteam | null; plan: V3[]; planI: number; wasSearching: boolean; secured: boolean;
+}
+interface Cell { id: number; members: Soldier[]; role: 'defend' | 'roam'; cache: Cache | null; patrol: V3; size: number; brain: CellBrain | null }
 
 export class Director {
   bots = new Map<number, Bot>();
@@ -35,8 +42,9 @@ export class Director {
 
   /** Create the initial forces. `playerSquad` gets 5 bots (the player is the sixth). */
   setup(player: Soldier | null) {
-    const us1: Squad = { id: 1, name: 'Alpha', team: 'us', members: [], leader: null, kits: US_SQUAD, target: null, phase: 'move', searchT: 0 };
-    const us2: Squad = { id: 2, name: 'Bravo', team: 'us', members: [], leader: null, kits: US_SQUAD2, target: null, phase: 'move', searchT: 0 };
+    const sq0 = { leader: null, target: null, phase: 'move' as const, searchT: 0, brain: null, plan: [], planI: 0, wasSearching: false, secured: false };
+    const us1: Squad = { ...sq0, id: 1, name: 'Alpha', team: 'us', members: [], kits: US_SQUAD };
+    const us2: Squad = { ...sq0, id: 2, name: 'Bravo', team: 'us', members: [], kits: US_SQUAD2 };
     this.squads.push(us1, us2);
     if (player?.team === 'us') { us1.members.push(player); player.squad = 1; if (player.kit.leader) us1.leader = player; }
     for (const sq of [us1, us2]) {
@@ -46,10 +54,28 @@ export class Director {
       for (const k of kits) this.spawnUS(sq, k);
     }
     // Insurgent cells: one defending each active cache, the rest roaming.
-    for (const c of this.mode.active) this.cells.push({ id: this.cells.length, members: [], role: 'defend', cache: c, patrol: c.pos, size: 6 });
-    for (let i = 0; i < 2; i++) this.cells.push({ id: this.cells.length, members: [], role: 'roam', cache: null, patrol: this.randomTownPoint(), size: 4 });
+    for (const c of this.mode.active) this.cells.push({ id: this.cells.length, members: [], role: 'defend', cache: c, patrol: c.pos, size: 6, brain: null });
+    for (let i = 0; i < 2; i++) this.cells.push({ id: this.cells.length, members: [], role: 'roam', cache: null, patrol: this.randomTownPoint(), size: 4, brain: null });
     for (const cell of this.cells) for (let i = 0; i < cell.size; i++) this.spawnIns(cell);
     if (player?.team === 'ins') { this.cells[0].members.push(player); player.squad = 100; }
+    // Team brains.
+    const g = this.g;
+    for (const sq of this.squads) {
+      const bots = sq.members.filter((m) => !m.isPlayer).map((m) => this.bots.get(m.id)).filter((b): b is Bot => !!b);
+      const fob = this.city.fob.flag;
+      sq.brain = new Fireteam(g, this.nav, 'us', bots, [fob[0], 0, fob[1]]);
+      sq.brain.playerLed = !!player && sq.members.includes(player);
+      sq.brain.say = (t) => { if (sq.brain!.playerLed) this.mode.say(`${sq.name}: ${t}`, 'us'); };
+      if (sq.brain.playerLed) g.fireteam = sq.brain;
+    }
+    for (const cell of this.cells) {
+      const bots = cell.members.filter((m) => !m.isPlayer).map((m) => this.bots.get(m.id)).filter((b): b is Bot => !!b);
+      cell.brain = new CellBrain(g, this.nav, 'ins', bots, cell.cache ? cell.cache.pos : cell.patrol, this.fobPoint());
+      // Defenders stay on their cache; roaming cells hunt what comes into their part of town.
+      if (cell.role === 'roam') { cell.brain.patience = 60 + this.rng() * 60; cell.brain.huntRange = 250; }
+      else { cell.brain.patience = Infinity; cell.brain.huntRange = 120; }
+      cell.brain.say = (t) => { if (player?.team === 'ins' && cell.members.includes(player)) this.mode.say(t, 'ins'); };
+    }
   }
 
   private name(team: Faction) { this.nameI++; return team === 'us' ? `${pick(this.rng, ['Pvt.', 'PFC', 'Spc.', 'Cpl.'])} ${US_NAMES[this.nameI % US_NAMES.length]}` : INS_NAMES[this.nameI % INS_NAMES.length]; }
@@ -60,7 +86,9 @@ export class Director {
     const kit = kitById(kitId), s = this.g.spawn(kit, 'us', safeSpawn(this.g.P, this.nav, p), (kit.leader ? 'Sgt. ' : '') + this.name('us').replace(/^(Pvt\.|PFC|Spc\.|Cpl\.) /, kit.leader ? '' : '$1 '), Math.PI / 2);
     s.squad = sq.id; sq.members.push(s);
     if (kit.leader && !sq.leader) sq.leader = s;
-    this.bots.set(s.id, new Bot(this.g, s, this.nav, { kind: 'hold', pos: p }, 0.55 + this.rng() * 0.3));
+    const bot = new Bot(this.g, s, this.nav, { kind: 'hold', pos: p }, 0.55 + this.rng() * 0.3);
+    this.bots.set(s.id, bot);
+    sq.brain?.bots.push(bot);
     return s;
   }
 
@@ -77,8 +105,12 @@ export class Director {
     const bot = new Bot(this.g, s, this.nav, { kind: 'hold', pos: p }, 0.4 + this.rng() * 0.35);
     this.bots.set(s.id, bot);
     this.orderIns(cell, s, bot);
+    cell.brain?.join(bot);
     return s;
   }
+
+  /** Where the Americans come from (the FOB), for facing ambush posts. */
+  private fobPoint(): V3 { const f = this.city.fob.flag; return [f[0], 0, f[1]]; }
 
   private randomTownPoint(): V3 {
     const b = this.city.buildings[Math.floor(this.rng() * this.city.buildings.length)];
@@ -116,64 +148,62 @@ export class Director {
     const g = this.g;
     if (this.nav) this.nav.budget = 3;
     for (const b of this.bots.values()) b.update(dt);
-    // US squads.
+    // US squads: the Fireteam brain does the moving and fighting; the director gives it the objective.
     for (const sq of this.squads) {
       sq.members = sq.members.filter((m) => g.soldiers.includes(m));
+      if (sq.brain) sq.brain.bots = sq.brain.bots.filter((b) => g.soldiers.includes(b.s));
       const live = sq.members.filter((m) => m.alive);
       if (!sq.leader || !sq.leader.alive) sq.leader = live.find((m) => m.kit.leader) ?? live.find((m) => !m.isPlayer) ?? null;
-      const L = sq.leader; if (!L) continue;
-      if (!sq.target || sq.target.state !== 'active') { sq.target = this.nearestCache(L.pos, true); sq.phase = 'move'; }
-      const lb = this.bots.get(L.id);
-      const tgt = sq.target;
-      if (lb && tgt) {
-        const markerP: V3 = [tgt.marker[0], tgt.pos[1], tgt.marker[1]];
-        const dm = Math.hypot(markerP[0] - L.pos[0], markerP[2] - L.pos[2]);
-        if (tgt.found) sq.phase = 'secure';
-        else if (sq.phase === 'move' && dm < 60) { sq.phase = 'search'; sq.searchT = 0; }
-        if (sq.phase === 'move') lb.setOrder({ kind: 'move', pos: this.nav?.closest(markerP, 20) ?? markerP });
-        else if (sq.phase === 'search') {
-          sq.searchT += dt;
-          if (lb.order.kind !== 'search') {
-            // Search plan: doors and rooms of buildings within 80 m of the marker, nearest first.
-            const spots = this.city.buildings.filter((b) => Math.hypot((b.spec.x0 + b.spec.x1) / 2 - markerP[0], (b.spec.z0 + b.spec.z1) / 2 - markerP[2]) < REVEAL_R).flatMap((b) => b.spots.filter((s) => s[3] === 0).slice(0, 2).map((s) => [s[0], s[1], s[2]] as V3));
-            spots.sort((a, b) => Math.hypot(a[0] - L.pos[0], a[2] - L.pos[2]) - Math.hypot(b[0] - L.pos[0], b[2] - L.pos[2]));
-            lb.setOrder({ kind: 'search', pos: markerP, radius: 60 }); lb.searchSpots = spots.filter((_, i) => i % 2 === 0);
-            // Members split the other half.
-            const others = spots.filter((_, i) => i % 2 === 1);
-            live.filter((m) => m !== L && !m.isPlayer).forEach((m, i) => { const b = this.bots.get(m.id); if (b) { b.setOrder({ kind: 'search', pos: markerP, radius: 60 }); b.searchSpots = others.filter((_, k) => k % Math.max(1, live.length - 1) === i % Math.max(1, live.length - 1)); } });
-          }
-          if (sq.searchT > 240) { tgt.found = true; } // they eventually stumble on it
-        } else if (sq.phase === 'secure') {
-          // Engineer demolishes; everyone else sets up around the cache.
-          for (const m of live) {
-            const b = this.bots.get(m.id); if (!b) continue;
-            if (m.kit.role === 'engineer' && m.slots.some((x) => x.def.id === 'c4' && (x.loaded > 0 || x.mags.length))) { if (b.order.kind !== 'demolish') b.setOrder({ kind: 'demolish', pos: tgt.pos }); }
-            else if (b.order.kind !== 'defend') b.setOrder({ kind: 'defend', pos: this.nav?.around(tgt.pos, 18) ?? tgt.pos, stance: 'crouch' });
-          }
+      const L = sq.brain?.leader() ?? sq.leader; if (!L || !sq.brain) continue;
+      if (!sq.target || sq.target.state !== 'active') { sq.target = this.nearestCache(L.pos, true); sq.phase = 'move'; sq.plan = []; sq.secured = false; }
+      const tgt = sq.target, B = sq.brain;
+      if (!tgt) { B.objective = this.nav?.closest(this.randomTownPoint(), 10) ?? B.objective; B.update(dt); continue; }
+      const markerP: V3 = [tgt.marker[0], tgt.pos[1], tgt.marker[1]];
+      if (tgt.found) sq.phase = 'secure';
+      else if (sq.phase === 'move' && Math.hypot(markerP[0] - L.pos[0], markerP[2] - L.pos[2]) < 60) {
+        // Search plan: the buildings round the marker, nearest first (the team clears each one's rooms).
+        sq.phase = 'search'; sq.searchT = 0; sq.planI = 0;
+        sq.plan = this.city.buildings
+          .filter((b) => Math.hypot((b.spec.x0 + b.spec.x1) / 2 - markerP[0], (b.spec.z0 + b.spec.z1) / 2 - markerP[2]) < REVEAL_R && b.doors.length)
+          .map((b) => [b.doors[0][0], b.doors[0][1], b.doors[0][2]] as V3)
+          // The 12 houses nearest the marker (the cache is within REVEAL_OFFSET of it), visited nearest-first from the team.
+          .sort((a, b) => Math.hypot(a[0] - markerP[0], a[2] - markerP[2]) - Math.hypot(b[0] - markerP[0], b[2] - markerP[2])).slice(0, 12)
+          .sort((a, b) => Math.hypot(a[0] - L.pos[0], a[2] - L.pos[2]) - Math.hypot(b[0] - L.pos[0], b[2] - L.pos[2]));
+      }
+      if (sq.phase === 'move') { B.objective = this.nav?.closest(markerP, 20) ?? markerP; B.update(dt); }
+      else if (sq.phase === 'search') {
+        sq.searchT += dt;
+        // Next building when the team finished clearing this one (its search ended and it is moving again).
+        const searching = B.state === 'search';
+        if (sq.wasSearching && !searching && B.state === 'move') sq.planI++;
+        sq.wasSearching = searching;
+        const obj = sq.plan[sq.planI % Math.max(1, sq.plan.length)] ?? markerP;
+        B.objective = this.nav?.closest(obj, 6) ?? obj;
+        B.update(dt);
+        if (sq.searchT > 300 || (sq.plan.length && sq.planI >= sq.plan.length * 2)) tgt.found = true; // they eventually stumble on it
+      } else {
+        // Secure: the engineer demolishes, the rest hold round the cache (orders, not brain tasks).
+        if (!sq.secured) { sq.secured = true; for (const b of B.bots) b.setTask(null); if (B.playerLed) this.mode.say(`${sq.name}: cache found — securing it, engineer to the cache!`, 'us'); }
+        for (const m of live) {
+          const b = this.bots.get(m.id); if (!b) continue;
+          if (m.kit.role === 'engineer' && m.slots.some((x) => x.def.id === 'c4' && (x.loaded > 0 || x.mags.length))) { if (b.order.kind !== 'demolish') b.setOrder({ kind: 'demolish', pos: tgt.pos }); }
+          else if (b.order.kind !== 'defend') b.setOrder({ kind: 'defend', pos: this.nav?.around(tgt.pos, 18) ?? tgt.pos, stance: 'crouch' });
         }
-      } else if (lb && !tgt) lb.setOrder({ kind: 'patrol', pos: [0, 0, -150], radius: 200 });
-      if (sq.phase === 'move' || !tgt) {
-        // Fire team follows the leader in a staggered column.
-        live.forEach((m, i) => {
-          if (m === L || m.isPlayer) return;
-          const b = this.bots.get(m.id); if (!b) return;
-          const k = i + 1, side = k % 2 ? 1 : -1;
-          b.setOrder({ kind: 'follow', pos: L.pos, leader: L, offset: [side * (2 + (k % 3)), -3 - k * 2.2] });
-        });
+        // Still fight back: contact runs the brain's drill (it hands back when the fight is over).
+        if (live.some((m) => this.bots.get(m.id)?.target)) { sq.secured = false; B.update(dt); }
       }
     }
-    // Insurgent cells: reassign defenders of destroyed/discovered caches; roamers converge on nearby gunfire.
+    // Insurgent cells: the Cell brain fights; the director moves defenders to the next cache when theirs is gone.
     for (const cell of this.cells) {
       cell.members = cell.members.filter((m) => g.soldiers.includes(m));
+      if (cell.brain) cell.brain.bots = cell.brain.bots.filter((b) => g.soldiers.includes(b.s));
       if (cell.role === 'defend' && (!cell.cache || cell.cache.state !== 'active')) {
         cell.cache = this.mode.active.find((c) => !this.cells.some((o) => o !== cell && o.cache === c)) ?? null;
-        if (!cell.cache) cell.role = 'roam';
+        if (!cell.cache) { cell.role = 'roam'; if (cell.brain) { cell.brain.patience = 30; cell.brain.huntRange = 250; } }
+        else cell.brain?.rehome(cell.cache.pos, this.fobPoint());
         for (const m of cell.members) { const b = this.bots.get(m.id); if (b) this.orderIns(cell, m, b); }
       }
-      if (cell.role === 'roam') {
-        const heard = cell.members.map((m) => m.heard).find((h) => h && g.time - h.t < 5);
-        if (heard && Math.hypot(heard.p[0] - cell.patrol[0], heard.p[2] - cell.patrol[2]) > 30) { cell.patrol = heard.p; for (const m of cell.members) this.bots.get(m.id)?.setOrder({ kind: 'patrol', pos: heard.p, radius: 35 }); }
-      }
+      cell.brain?.update(dt);
     }
     // Deaths → respawn queue.
     for (const s of [...g.soldiers]) {

@@ -11,7 +11,7 @@ import { CANAL_W, canalX, groundH, HALF } from './terrain';
 export interface Rect { x0: number; z0: number; x1: number; z1: number }
 export type RoadKind = 'boulevard' | 'avenue' | 'street' | 'lane' | 'alley' | 'dirt' | 'market';
 export interface Road extends Rect { kind: RoadKind }
-export interface Prop { id: string; x: number; y: number; z: number; ry: number; s?: number; solid?: boolean }
+export interface Prop { id: string; x: number; y: number; z: number; ry: number; s?: number; solid?: boolean; /** Placed on the ground (no explicit height). */ ground?: boolean }
 export type District = 'old' | 'ruins' | 'new' | 'civic' | 'industrial' | 'outskirts' | 'rural' | 'fob';
 export interface Spot { x: number; y: number; z: number; b: number; district: District; floor: number }
 export interface City {
@@ -84,7 +84,7 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
   const H = (x: number, z: number) => groundH(x, z);
   const prop = (id: string, x: number, z: number, ry = 0, s = 1, y?: number, solid = false) => {
     if (area && (x < area.x0 - GROW || x > area.x1 + GROW || z < area.z0 - GROW || z > area.z1 + GROW)) return;
-    props.push({ id, x, y: y ?? H(x, z), z, ry, s, solid });
+    props.push({ id, x, y: y ?? H(x, z), z, ry, s, solid, ...(y === undefined ? { ground: true } : {}) });
   };
   const footY = (r: Rect) => Math.max(H(r.x0, r.z0), H(r.x1, r.z0), H(r.x0, r.z1), H(r.x1, r.z1), H((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2));
   const tintFor = (id: number): [number, number, number] => hash2(id, 3) < 0.07 ? pick(() => hash2(id, 4), RARE_TINTS) : pick(() => hash2(id, 5), TINTS);
@@ -170,7 +170,14 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
     // drawn, so the rest of the town still stands on the horizon.
     const shellTop = info.roofY + spec.parapet * (spec.damage > 0.5 ? 0 : 1) - (spec.damage > 0.6 ? spec.fh * 0.6 : 0);
     S.shell([spec.x0, spec.y0 - 0.5, spec.z0], [spec.x1, shellTop, spec.z1], spec.wall, spec.tint, 'roof', S.cx, S.cz, inArea ? 3 : 0);
-    if (!inArea) { districtOf.set(id, district); return info; }
+    if (!inArea) {
+      // Outside a test area the building is only its shell: make it a solid block, or players and bullets would pass
+      // through the walls they can see (some shells reach into the play area).
+      const ext = S.clip; S.clip = null;
+      S.solid([(spec.x0 + spec.x1) / 2, (spec.y0 - 0.5 + shellTop) / 2, (spec.z0 + spec.z1) / 2], [(spec.x1 - spec.x0) / 2, (shellTop - spec.y0 + 0.5) / 2, (spec.z1 - spec.z0) / 2], 'masonry');
+      S.clip = ext;
+      districtOf.set(id, district); return info;
+    }
     furnish(info);
     // Rubble where the building has partly collapsed.
     for (const [x, y, z, out] of info.debris) prop(out ? pick(rng, ['rubble_c', 'rubble_b']) : pick(rng, ['rubble_a', 'rubble_b', 'debris_slab']), x, z, rng() * 6.28, out ? range(rng, 0.7, 1.0) : range(rng, 0.55, 0.8), out ? undefined : y, true);
@@ -256,6 +263,18 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
           if (r() < 0.3) wallItem('prayer_mat', 0.7, 1.2, false);
           if (r() < 0.4) prop('ceiling_fan', (room.x0 + room.x1) / 2, (room.z0 + room.z1) / 2, 0, 1, ceiling);
           break;
+        case 'shop':
+          // A grocer's / general store: shelves of goods along the walls, a counter, stock in crates and boxes.
+          wallItem('kitchen_counter', 2.05, 0.62);
+          wallItem('kitchen_shelf', 0.9, 0.35); wallItem('kitchen_shelf', 0.9, 0.35);
+          if (r() < 0.7) wallItem('kitchen_shelf', 0.9, 0.35);
+          wallItem('plastic_crates', 1.2, 0.95);
+          wallItem('cardboard_boxes', 1.7, 0.6);
+          if (r() < 0.6) wallItem('water_cooler', 0.35, 0.4);
+          if (r() < 0.5) wallItem('gas_cylinder', 0.35, 0.35);
+          if (r() < 0.5) wallItem('fridge_old', 0.7, 0.7);
+          if (r() < 0.6) prop('bulb_hanging', (room.x0 + room.x1) / 2, (room.z0 + room.z1) / 2, 0, 1, ceiling);
+          break;
         case 'store':
           wallItem('cardboard_boxes', 1.7, 0.6);
           if (r() < 0.6) wallItem('plastic_crates', 1.2, 0.95);
@@ -269,6 +288,7 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
         kitchen: [['plastic_crates', 1.2, 0.95, true], ['cardboard_boxes', 1.7, 0.6, true], ['gas_cylinder', 0.35, 0.35, true], ['water_cooler', 0.35, 0.4, true]],
         bedroom: [['mattress_floor', 0.95, 1.95, true], ['clothes_pile', 1.15, 0.9, false], ['cardboard_boxes', 1.7, 0.6, true], ['prayer_mat', 0.7, 1.2, false]],
         store: [['cardboard_boxes', 1.7, 0.6, true], ['plastic_crates', 1.2, 0.95, true], ['broken_furniture', 2.0, 1.5, true], ['gas_cylinder', 0.35, 0.35, true]],
+        shop: [['kitchen_shelf', 0.9, 0.35, true], ['cardboard_boxes', 1.7, 0.6, true], ['plastic_crates', 1.2, 0.95, true], ['oil_drum', 0.6, 0.6, true]],
       };
       const fill = FILL[room.kind] ?? [], extra = Math.floor(((room.x1 - room.x0) * (room.z1 - room.z0)) / 12) - 1 + (sp.damage > 0.3 ? 1 : 0);
       for (let i = 0; i < extra && fill.length; i++) {
@@ -658,6 +678,7 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
       }
     }
   }
+  unstickProps(props, S.colliders);
   return {
     area: play ?? undefined,
     seed, sink: S, buildings, districtOf, roads, props, mask, bridges, landmarks, cacheSpots, roofSpots,
@@ -672,4 +693,43 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
       vehicles: [{ id: 'hilux_dshk', x: -528, z: -48, ry: Math.PI / 2 }, { id: 'pickup', x: -528, z: -35, ry: Math.PI / 2 }],
     },
   };
+}
+
+/** Approximate footprint radius (m) of outdoor props, for keeping them out of walls. */
+const PROP_R: [RegExp, number][] = [[/^veh:/, 2.4], [/^sandbag_bunker|^guard_tower/, 1.8], [/^market_stall|^jersey|^hesco/, 1.2], [/^cart_|^trash_|^tyres|^oil_drum|^generator/, 0.7], [/^street_light|^power_pole|^palm|^dead_tree|^antenna/, 0.25]];
+/**
+ * Ground-standing outdoor props must not stand in walls: a prop whose footprint overlaps a city collider between knee and
+ * head height is moved out along a free direction (up to 2.5 m), or dropped. Rubble and debris lie against breached
+ * walls on purpose; interior furniture and roof clutter have an explicit height and are not touched.
+ */
+function unstickProps(props: Prop[], cols: { c: number[]; h: number[]; q?: number[] }[]) {
+  const C = 4, grid = new Map<number, number[]>(), key = (ix: number, iz: number) => (ix + 1024) * 2048 + (iz + 1024);
+  cols.forEach((c, i) => {
+    if (c.q || c.h[1] < 0.35) return; // floors, kerbs, ramps
+    for (let ix = Math.floor((c.c[0] - c.h[0]) / C); ix <= Math.floor((c.c[0] + c.h[0]) / C); ix++) for (let iz = Math.floor((c.c[2] - c.h[2]) / C); iz <= Math.floor((c.c[2] + c.h[2]) / C); iz++) {
+      const k = key(ix, iz); (grid.get(k) ?? grid.set(k, []).get(k)!).push(i);
+    }
+  });
+  const blocked = (x: number, y: number, z: number, r: number) => {
+    for (let ix = Math.floor((x - r) / C); ix <= Math.floor((x + r) / C); ix++) for (let iz = Math.floor((z - r) / C); iz <= Math.floor((z + r) / C); iz++) for (const i of grid.get(key(ix, iz)) ?? []) {
+      const c = cols[i];
+      if (y + 1.6 < c.c[1] - c.h[1] || y + 0.3 > c.c[1] + c.h[1]) continue;
+      if (Math.abs(x - c.c[0]) < c.h[0] + r && Math.abs(z - c.c[2]) < c.h[2] + r) return true;
+    }
+    return false;
+  };
+  let moved = 0, dropped = 0;
+  for (let i = props.length - 1; i >= 0; i--) {
+    const q = props[i];
+    if (!q.ground || /^(rubble|debris|grass|reeds|bush)/.test(q.id)) continue;
+    const r = (PROP_R.find(([re]) => re.test(q.id))?.[1] ?? 0.5) * (q.s ?? 1);
+    if (!blocked(q.x, q.y, q.z, r)) continue;
+    let ok = false;
+    for (let d = 0.5; d <= 2.5 && !ok; d += 0.5) for (let a = 0; a < 8 && !ok; a++) {
+      const x = q.x + Math.cos(a * Math.PI / 4) * d, z = q.z + Math.sin(a * Math.PI / 4) * d;
+      if (!blocked(x, q.y, z, r)) { q.x = x; q.z = z; ok = true; }
+    }
+    if (ok) moved++; else { props.splice(i, 1); dropped++; }
+  }
+  if (typeof console !== 'undefined') console.log(`props out of walls: ${moved} moved, ${dropped} dropped`);
 }

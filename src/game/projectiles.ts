@@ -21,7 +21,8 @@ export interface ProjectileHooks {
 interface Bullet { cracked?: Set<number>; id: number; p: V3; v: V3; ammo: Ammo; owner: Soldier; t: number; dist: number; tracer: boolean; pens: number; armed: number; boostT: number }
 interface Thrown { id: number; body: import('@dimforge/rapier3d-compat').RigidBody; ammo: Ammo; owner: Soldier; fuse: number; kind: 'grenade' | 'smoke' | 'c4'; smoking: number }
 
-const THIN: Partial<Record<Surface, number>> = { glass: 0, wood: 1, metal: 2, sandbag: 9, masonry: 3, concrete: 4 };
+/** Penetration class an ammunition needs to go through a surface (see Ammo.pen). */
+export const THIN: Partial<Record<Surface, number>> = { glass: 0, wood: 1, metal: 2, sandbag: 9, masonry: 3, concrete: 4 };
 let pid = 1;
 
 export class Projectiles {

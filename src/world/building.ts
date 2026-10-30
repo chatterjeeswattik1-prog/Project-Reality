@@ -46,7 +46,7 @@ export interface BuildingInfo {
   /** Doorways for door leaves: centre on the floor, opening width/height, the axis the wall runs along, floor, outside? */
   doorways: { x: number; y: number; z: number; w: number; h: number; axis: 'x' | 'z'; floor: number; exterior: boolean }[];
   /** Room floor rectangles (world, axis aligned) per floor for furnishing; `kind` suggests the use. */
-  rooms: { x0: number; z0: number; x1: number; z1: number; y: number; floor: number; kind: 'living' | 'kitchen' | 'bedroom' | 'store' }[];
+  rooms: { x0: number; z0: number; x1: number; z1: number; y: number; floor: number; kind: 'living' | 'kitchen' | 'bedroom' | 'store' | 'shop' }[];
   /** Interior paint colour (vertex tint for interior wall faces). */
   paint: [number, number, number];
   /** Window openings as firing positions: a point inside the room ~0.6 m from the wall (on the floor), the outward
@@ -185,6 +185,7 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
     ['front', false, 0, W, 0], ['back', false, 0, W, D - t], ['left', true, t, D - t, 0], ['right', true, t, D - t, W - t],
   ];
   const winH = sp.modern ? 1.35 : 1.15, winW = sp.modern ? 1.3 : 0.95, sill = sp.modern ? 0.95 : 1.1;
+  const shutters: Opening[] = [];
   for (const [side, alongV, a0, a1, c0] of sides) {
     const ops: Opening[] = [];
     const party = sp.party.includes(side), len = a1 - a0;
@@ -195,7 +196,13 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
         if (sp.shops) {
           const bays = Math.max(1, Math.floor((W - 2 * t - (hasStairs ? WELL_W + 1.5 : 0)) / 3.6));
           const startU = hasStairs ? wellU1 + 1.4 : t + 0.4;
-          for (let b = 0; b < bays; b++) { const u0 = startU + b * 3.6 + 0.3; if (u0 + 2.8 < W - t - 0.2) ops.push({ u0, u1: u0 + 2.8, y0: G, y1: G + 2.6 }); }
+          for (let b = 0; b < bays; b++) {
+            const u0 = startU + b * 3.6 + 0.3; if (u0 + 2.8 >= W - t - 0.2) continue;
+            ops.push({ u0, u1: u0 + 2.8, y0: G, y1: G + 2.6 });
+            // Roller shutters: about half the shops are shut (fully down), some half open, the rest open.
+            const roll = hash2(sp.id * 7 + b, 77), bottom = roll < 0.35 ? G : roll < 0.55 ? G + 1.1 + hash2(sp.id, b + 40) * 0.6 : G + 2.45;
+            shutters.push({ u0, u1: u0 + 2.8, y0: bottom, y1: G + 2.6 });
+          }
           if (hasStairs) ops.push({ u0: wellU1 + 0.15, u1: wellU1 + 1.15, y0: G, y1: G + 2.15 });
         } else {
           const du = hasStairs ? wellU1 + 0.35 : W / 2 - 0.55, dw = sp.hall ? 3.0 : 1.1;
@@ -229,9 +236,16 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
       }
     }
     void len;
-    for (const b of breaches) if (b.side === side) ops.push(...b.ops);
+    // A breach through a door would leave the door leaf hanging in a hole: those breaches are left out.
+    const doorOps = ops.filter((o) => o.y0 <= G + 0.01);
+    for (const b of breaches) if (b.side === side && !b.ops.some((o) => doorOps.some((d) => o.u0 < d.u1 + 0.6 && o.u1 > d.u0 - 0.6 && o.y0 < d.y1 + 0.5))) ops.push(...b.ops);
     ops.push(...collapseOps(side));
     wall(alongV, a0, a1, c0, t, sp.y0 - 0.6, top, ops, sp.wall, !alongV);
+    // Roller shutters in the shop bays (front wall): corrugated steel just inside the outer face, the roll box on top.
+    if (side === 'front') for (const sh of shutters) {
+      if (sh.y1 - sh.y0 > 0.2) lbox(sh.u0, sh.u1, sh.y0, sh.y1, 0.05, 0.09, 'metal', 63, [0.62, 0.64, 0.6]);
+      lbox(sh.u0 - 0.05, sh.u1 + 0.05, G + 2.6, G + 2.85, -0.12, 0.12, 'metal', 63, [0.55, 0.57, 0.54]);
+    }
     for (const o of ops) if (o.y0 <= G + 0.01 && o.y1 - o.y0 < 3) { const [x, z] = W2((o.u0 + o.u1) / 2, alongV ? 0 : c0 < 1 ? -0.6 : D + 0.6); info.doors.push([x, G, z]); if (o.u1 - o.u0 < 1.6) doorway(alongV, c0, t, o, 0, true); }
   }
   // Parapet coping (a thin cap with a small overhang) for a finished look.
@@ -329,14 +343,16 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
       lbox(wellU0, wellU1 + 0.14, yb, yt, wellV1, wellV1 + 0.14, sp.wall, 63);
     }
     // Roof hut over the stairwell with a door onto the roof at the landing.
-    const hy0 = roofY, hy1 = roofY + 2.5;
-    wall(true, wellV0 - t, wellV1 + 0.14, wellU1, 0.16, hy0 - 0.22, hy1, [{ u0: wellV0 + 0.05, u1: wellV0 + LANDING - 0.05, y0: hy0, y1: hy0 + 2.1 }], sp.wall, true);
-    wall(false, wellU0 - t, wellU1 + 0.16, wellV1 + 0.14, 0.16, hy0 - 0.22, hy1, [], sp.wall, true);
+    // All four walls share the outer wall thickness so their faces line up at the corners; the doorway keeps a solid pier
+    // of ~0.5 m from the building edge (a jamb flush with the parapet looked like a slab sticking out of the hut).
+    const hy0 = roofY, hy1 = roofY + 2.5, ht = t, hu1 = wellU1 + ht, hv1 = wellV1 + 0.14 + ht;
+    wall(true, wellV0 - t, hv1, wellU1, ht, hy0 - 0.22, hy1, [{ u0: wellV0 + 0.2, u1: Math.min(wellV0 + 0.2 + 0.95, wellV1 - 0.2), y0: hy0, y1: hy0 + 2.1 }], sp.wall, true);
+    wall(false, wellU0 - t, wellU1, wellV1 + 0.14, ht, hy0 - 0.22, hy1, [], sp.wall, true);
     if (sp.parapet < 2.4) {
-      wall(false, wellU0 - t, wellU1 + 0.16, -0.0, t, top, hy1, [], sp.wall, true);
-      wall(true, -0.0 + t, wellV1 + 0.3, 0, t, top, hy1, [], sp.wall, true);
+      wall(false, wellU0 - t, wellU1, -0.0, t, top, hy1, [], sp.wall, true);
+      wall(true, -0.0 + t, wellV1 + 0.14, 0, t, top, hy1, [], sp.wall, true);
     }
-    lbox(wellU0 - t, wellU1 + 0.16, hy1, hy1 + 0.18, -0.0, wellV1 + 0.3, 'roof', 63);
+    lbox(wellU0 - t, hu1, hy1, hy1 + 0.18, -0.0, hv1, 'roof', 63);
   }
   // Partitions (not in halls or tiny buildings).
   if (!sp.hall && W > 6 && D > 6) {
@@ -364,9 +380,11 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
         if (k === floors - 1 && collapse && inCollapse((u0 + u1) / 2, (v0 + v1) / 2)) return;
         info.rooms.push({ ...r, y: yb, floor: k, kind });
       };
-      const front: BuildingInfo['rooms'][number]['kind'] = k === 0 ? 'living' : 'bedroom';
+      // Shop houses: the street-side rooms of the ground floor are shops; the family lives upstairs.
+      const shopFloor = k === 0 && sp.shops;
+      const front: BuildingInfo['rooms'][number]['kind'] = shopFloor ? 'shop' : k === 0 ? 'living' : 'bedroom';
       room(left + 0.1, (hasB ? uBm : iu1) - 0.1, iv0, (hasA ? vA : iv1) - 0.1, front);
-      if (hasB) room(uBm + 0.1, iu1, iv0, (hasA ? vA : iv1) - 0.1, k === 0 ? 'kitchen' : 'bedroom');
+      if (hasB) room(uBm + 0.1, iu1, iv0, (hasA ? vA : iv1) - 0.1, shopFloor ? 'shop' : k === 0 ? 'kitchen' : 'bedroom');
       if (hasA) room(iu0, iu1, vA + 0.15, iv1, k === 0 ? (hasB ? 'store' : 'kitchen') : 'living');
     }
   }

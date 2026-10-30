@@ -59,3 +59,14 @@ export function solidBox(id: string, min: number[], max: number[], p: { x: numbe
   const rx = cx * c + cz * sn, rz = -cx * sn + cz * c;
   return { id, c: [p.x + rx, p.y + cy, p.z + rz], h: [Math.max(0.05, hx), Math.max(0.05, hy), Math.max(0.05, hz)], ry: p.ry };
 }
+
+/** Fitted collision boxes per model id (scripts/propcol.mjs → public/models/props_col.json): [cx, cy, cz, hx, hy, hz]. */
+export type PropCol = Record<string, number[][]>;
+/** World boxes for one prop placement from its model's fitted boxes (scaled, rotated about Y like the instance). */
+export function fittedBoxes(id: string, col: number[][], p: { x: number; y: number; z: number; ry: number; s?: number }): (Box & { id: string })[] {
+  const s = p.s ?? 1, c = Math.cos(p.ry), sn = Math.sin(p.ry);
+  return col.map(([bx, by, bz, hx, hy, hz]) => {
+    const x = bx * s, z = bz * s;
+    return { id, c: [p.x + x * c + z * sn, p.y + by * s, p.z - x * sn + z * c], h: [Math.max(0.03, hx * s), Math.max(0.03, hy * s), Math.max(0.03, hz * s)], ry: p.ry };
+  });
+}

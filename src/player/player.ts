@@ -6,6 +6,8 @@ import type { Game } from '../game/game';
 import { CAM_RECOIL, Viewmodel } from './viewmodel';
 import { WeaponLight, hasLight } from './weaponlight';
 import { clamp, damp } from '../core/rng';
+import { G_WORLD } from '../world/physics';
+type V3 = [number, number, number];
 
 /** Vertical field of view (degrees); PR/BF2 is about 55° vertical (≈ 90° horizontal at 16:9). Set from the menu. */
 export let BASE_FOV = 55;
@@ -24,7 +26,8 @@ export class Player {
   freeYaw = 0; freePitch = 0;
 
   constructor(private g: Game, public s: Soldier, private input: Input) {
-    this.vm = new Viewmodel(g.gfx.camera, g.assets.weapons, s.team === 'us' ? 0x7d7f6c : 0x5a4e3e);
+    this.vm = new Viewmodel(g.gfx.camera, g.assets.weapons, s.team === 'us' ? 0x7d7f6c : 0x5a4e3e, g.assets.fpRigs);
+    this.vm.preload(s.slots.map((x) => x.def.model));
     this.vm.set(s.weapon.model, s);
     this.vm.setBody(g.assets.models.get(s.kit.model[0]));
     this.vm.onCue = (name, gain) => g.audio.play(name, null, { gain });
@@ -33,7 +36,7 @@ export class Player {
     s.isPlayer = true;
   }
 
-  setSoldier(s: Soldier) { this.s = s; s.isPlayer = true; this.vm.set(s.weapon.model, s); this.vm.setBody(this.g.assets.models.get(s.kit.model[0])); }
+  setSoldier(s: Soldier) { this.s = s; s.isPlayer = true; this.vm.preload(s.slots.map((x) => x.def.model)); this.vm.set(s.weapon.model, s); this.vm.setBody(this.g.assets.models.get(s.kit.model[0])); }
 
   /** Per-shot feel: the weapon kicks back into the shoulder and the view shakes a little (the aim itself climbs in Soldier.recoil). */
   onShot(up: number, side: number) {
@@ -137,8 +140,17 @@ export class Player {
     else this.vm.group.quaternion.identity();
     if (wounded || s.state === 'dead') cam.position.y = s.pos[1] + 0.25;
     // Wall distance for the viewmodel pull-back.
-    const d = s.aimDir(); const hit = this.g.P.castRay(e, d, 1.2);
-    this.wallDist = hit ? hit.dist : 2;
+    // The eye line, plus the barrel line at the hip (below and right of the eye) so a lowered rifle does not go
+    // through a parapet the eye looks over.
+    const d = s.aimDir(), hip = 1 - s.ads, dn = (s.stance === 'prone' ? 0.1 : 0.22) * hip, rt = 0.12 * hip;
+    const rgt: V3 = [Math.cos(s.yaw), 0, -Math.sin(s.yaw)];
+    const up: V3 = [rgt[1] * d[2] - rgt[2] * d[1], rgt[2] * d[0] - rgt[0] * d[2], rgt[0] * d[1] - rgt[1] * d[0]];
+    let wd = 2;
+    for (const [a, b] of [[0, 0], [dn, rt], [dn * 0.5, rt * 0.5]]) {
+      const o: V3 = [e[0] - up[0] * a + rgt[0] * b, e[1] - up[1] * a + rgt[1] * b, e[2] - up[2] * a + rgt[2] * b];
+      const hit = this.g.P.castRay(o, d, 1.2, G_WORLD); if (hit) wd = Math.min(wd, hit.dist);
+    }
+    this.wallDist = wd;
     this.vm.set(s.weapon.model, s);
     // Suppression (Squad): the picture drains of colour and, under heavy fire, blurs; it comes back as the fire stops.
     const sup = s.alive ? s.suppress : 0;

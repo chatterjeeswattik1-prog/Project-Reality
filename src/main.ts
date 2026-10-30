@@ -22,7 +22,7 @@ import { Doors } from './game/doors';
 import type { Rect } from './world/citygen';
 import { Nav, safeSpawn } from './ai/nav';
 import { kitById, type Faction } from './game/data/kits';
-import { AMMO } from './game/data/weapons';
+import { AMMO, WEAPONS } from './game/data/weapons';
 import type { Soldier } from './game/soldier';
 import { groundH } from './world/terrain';
 
@@ -58,7 +58,10 @@ async function boot() {
   const test = choice.mode === 'test';
   const areaArg = params.get('area')?.split(',').map(Number);
   const area: Rect | undefined = test ? (areaArg?.length === 4 ? { x0: areaArg[0], z0: areaArg[1], x1: areaArg[2], z1: areaArg[3] } : TEST_AREA) : undefined;
-  const L = loadingScreen();
+  const L0 = loadingScreen();
+  // Heap at each loading stage (window.__mem, for profiling memory on the full map).
+  const memLog: [string, number][] = []; (window as unknown as Record<string, unknown>).__mem = memLog;
+  const L = { ...L0, set: (k: number, t: string) => { memLog.push([t, Math.round(((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6)]); L0.set(k, t); } };
   L.set(0.03, test ? 'Building the test area…' : 'Generating Al Zahran…'); await frame();
   const city = generateCity(seed, { area });
   L.set(0.3, `Building the world… (${gpu})`); await frame();
@@ -73,10 +76,12 @@ async function boot() {
   P.checkTerrain();
   L.set(0.72, 'Navigation, soldiers and weapons…'); await frame();
   const [nav, assets, cacheGltf] = await Promise.all([test ? Nav.generate(city, propBoxes) : Nav.load(seed), loadCharAssets(), gltf('models/props.glb')]);
+  // Static colliders now live in the physics world (and the navmesh is built): drop the generator's copy.
+  city.sink.colliders.length = 0;
   const game = new Game(G, P, city, world, assets, quality);
   game.cover = new CoverIndex(P, nav);
-  // Doors (test area for now: thousands on the full map would need streaming).
-  if (test) game.doors = new Doors(P, G.scene, city, area);
+  // Doors in every house (instanced, grid-indexed: see game/doors.ts).
+  game.doors = new Doors(P, G.scene, city, area);
   G.scene.add(G.camera);
   L.set(0.85, 'Sound…'); await frame();
   await game.audio.load();
@@ -100,7 +105,7 @@ async function boot() {
   const skirm = test ? new SkirmishDirector(game, mode as Skirmish, nav, params.has('shot') || params.has('fly') ? null : choice.faction) : null;
   const director = { update: (dt: number) => (full ?? skirm)!.update(dt), setup: () => (full ? full.setup(null) : skirm!.startRound()) };
   if (test) (mode as Skirmish).onRound = () => skirm!.startRound(); // the game section adds the player's respawn
-  W.__game = game; W.__skirm = skirm; W.__G = G; W.__input = input;
+  W.__game = game; W.__skirm = skirm; W.__G = G; W.__input = input; W.__WEAPONS = WEAPONS; W.__nav = nav; W.__city = city; W.__world = world; W.__THREE = THREE; W.__fullDirector = full;
   L.done();
 
   // ---------- free camera / screenshot mode ----------

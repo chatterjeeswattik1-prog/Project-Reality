@@ -5,7 +5,7 @@
 import type RAPIER from '@dimforge/rapier3d-compat';
 import { AMMO, WEAPONS, type FireMode, type WeaponDef } from './data/weapons';
 import { type Faction, type Kit } from './data/kits';
-import { G_CHAR, G_VEH, G_WORLD, groups, type Physics } from '../world/physics';
+import { G_BOUND, G_CHAR, G_VEH, G_WORLD, groups, type Physics } from '../world/physics';
 import { clamp, damp } from '../core/rng';
 
 export type Stance = 'stand' | 'crouch' | 'prone';
@@ -101,7 +101,7 @@ export class Soldier {
     }
     const R = P.R;
     this.body = P.world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(pos[0], pos[1] + CAP_R + CAP_HH.stand, pos[2]));
-    this.collider = P.world.createCollider(R.ColliderDesc.capsule(CAP_HH.stand, CAP_R).setCollisionGroups(groups(G_CHAR, G_WORLD | G_VEH | G_CHAR)), this.body);
+    this.collider = P.world.createCollider(R.ColliderDesc.capsule(CAP_HH.stand, CAP_R).setCollisionGroups(groups(G_CHAR, G_WORLD | G_VEH | G_CHAR | G_BOUND)), this.body);
   }
 
   get slot(): Slot { return this.slots[this.cur]; }
@@ -115,6 +115,9 @@ export class Soldier {
     const lx = this.leanX;
     return [this.pos[0] + Math.cos(this.yaw) * lx, this.pos[1] + this.eyeH - Math.abs(this.lean) * 0.07, this.pos[2] - Math.sin(this.yaw) * lx];
   }
+  /** A point inside the body (no lean) at about chest height: a sight line or shot that starts at the eye or muzzle is only
+   *  valid when nothing solid lies between this point and it (a head or muzzle pushed into or through a wall). */
+  get core(): [number, number, number] { return [this.pos[0], this.pos[1] + Math.max(0.2, this.eyeH * 0.8), this.pos[2]]; }
   /** Aim direction (unit) from yaw/pitch: yaw 0 looks −z (north). */
   aimDir(yaw = this.yaw, pitch = this.pitch): [number, number, number] {
     const c = Math.cos(pitch); return [-Math.sin(yaw) * c, Math.sin(pitch), -Math.cos(yaw) * c];
@@ -150,7 +153,7 @@ export class Soldier {
     const t = this.body.translation();
     // Keep the body where the feet say (stance changes move the centre).
     if (Math.abs(t.y - cy) > 1e-3) this.body.setTranslation({ x: this.pos[0], y: cy, z: this.pos[2] }, true);
-    P.kcc.computeColliderMovement(this.collider, { x: this.vel[0] * dt, y: this.vel[1] * dt, z: this.vel[2] * dt }, undefined, groups(0xffff, G_WORLD | G_VEH | G_CHAR));
+    P.kcc.computeColliderMovement(this.collider, { x: this.vel[0] * dt, y: this.vel[1] * dt, z: this.vel[2] * dt }, undefined, groups(0xffff, G_WORLD | G_VEH | G_CHAR | G_BOUND));
     const m = P.kcc.computedMovement();
     const grounded = P.kcc.computedGrounded();
     const nx = this.pos[0] + m.x, ny = this.pos[1] + m.y, nz = this.pos[2] + m.z;

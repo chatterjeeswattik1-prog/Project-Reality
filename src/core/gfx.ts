@@ -1,7 +1,7 @@
 // Renderer, sky, sun and post-processing, scaled by a quality preset. Low = no post-processing, small shadow map
 // (integrated GPUs such as Intel HD 5500); High = N8AO ambient occlusion, bloom, 4k shadows.
 import * as THREE from 'three';
-import { BloomEffect, EffectComposer, EffectPass, RenderPass, ToneMappingEffect, ToneMappingMode, SMAAEffect, VignetteEffect } from 'postprocessing';
+import { BloomEffect, BrightnessContrastEffect, EffectComposer, EffectPass, HueSaturationEffect, RenderPass, ToneMappingEffect, ToneMappingMode, SMAAEffect, VignetteEffect } from 'postprocessing';
 import { N8AOPostPass } from 'n8ao';
 import { hdr, setAniso } from './assets';
 
@@ -30,8 +30,10 @@ export async function createGfx(host: HTMLElement, quality: Quality): Promise<Gf
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(70, 1, 0.05, quality === 'low' ? 1100 : 2600);
-  const fogCol = new THREE.Color(0xc9bfa9);
-  scene.fog = new THREE.FogExp2(fogCol, quality === 'low' ? 0.0016 : 0.0011);
+  // Look (after the Project Reality footage): warm sun, sandy haze that layers the depth of the town, filmic contrast.
+  // The haze stays light enough that a man at 200 m is still clear of it (~10 %).
+  const fogCol = new THREE.Color(0xcdb995);
+  scene.fog = new THREE.FogExp2(fogCol, quality === 'low' ? 0.0019 : 0.0016);
   scene.background = fogCol;
 
   const sky = await hdr('day');
@@ -42,9 +44,9 @@ export async function createGfx(host: HTMLElement, quality: Quality): Promise<Gf
     scene.backgroundBlurriness = 0.0;
     pm.dispose();
   }
-  const hemi = new THREE.HemisphereLight(0xd8e4f0, 0x8a7a5e, sky ? 0.35 : 1.0);
+  const hemi = new THREE.HemisphereLight(0xd6dfe8, 0x9a7d58, sky ? 0.4 : 1.0);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xfff1dc, 3.2);
+  const sun = new THREE.DirectionalLight(0xffe4bd, 3.4);
   sun.position.copy(SUN_DIR).multiplyScalar(300);
   sun.castShadow = true;
   const sm = quality === 'low' ? 2048 : 4096, ext = quality === 'low' ? 70 : 110;
@@ -64,11 +66,12 @@ export async function createGfx(host: HTMLElement, quality: Quality): Promise<Gf
     n8.setQualityMode(quality === 'high' ? 'Medium' : 'Low');
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(n8);
-    const effects = [new BloomEffect({ intensity: 0.6, luminanceThreshold: 0.92, mipmapBlur: true }), new VignetteEffect({ darkness: 0.35, offset: 0.35 }), new ToneMappingEffect({ mode: ToneMappingMode.AGX })];
+    const effects = [new BloomEffect({ intensity: 0.6, luminanceThreshold: 0.92, mipmapBlur: true }), new VignetteEffect({ darkness: 0.42, offset: 0.3 }), new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC }),
+      new BrightnessContrastEffect({ brightness: 0.0, contrast: 0.08 }), new HueSaturationEffect({ saturation: 0.06 })];
     if (quality === 'high') effects.push(new SMAAEffect() as never);
     composer.addPass(new EffectPass(camera, ...effects));
   } else {
-    renderer.toneMapping = THREE.AgXToneMapping;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
   }
   renderer.toneMappingExposure = 1.0;
 

@@ -81,7 +81,7 @@ const AR_EMPTY: Choreo = {
   cues: [...AR.cues, [0.85, 'bolt_release']],
 };
 
-const BELT_ROT: V3 = [0.18, 0.08, 0.2], BELT_POS: V3 = [-0.04, 0.03, 0.04];
+const BELT_ROT: V3 = [0.16, 0.08, 0.2], BELT_POS: V3 = [-0.01, -0.03, -0.06];
 const BELT: Choreo = {
   pos: [[0, Z], [0.1, BELT_POS], [0.88, BELT_POS], [1, Z]],
   rot: [[0, Z], [0.1, BELT_ROT], [0.88, BELT_ROT], [1, Z]],
@@ -100,7 +100,7 @@ const BELT_EMPTY: Choreo = {
 
 /** Bolt rifle: bolt up and back, rounds pressed in through the port, bolt forward and down. */
 const BOLT: Choreo = {
-  pos: [[0, Z], [0.1, [-0.03, 0.03, 0.02]], [0.9, [-0.03, 0.03, 0.02]], [1, Z]],
+  pos: [[0, Z], [0.1, [0.02, -0.07, -0.1]], [0.9, [0.02, -0.07, -0.1]], [1, Z]],
   rot: [[0, Z], [0.1, [0.15, 0.05, -0.35]], [0.9, [0.15, 0.05, -0.35]], [1, Z]],
   magPos: [[0, Z]], magRock: [[0, 0]], magShow: [[0, 1]],
   hand: [[0.04, 'grip'], [0.14, 'catch'], [0.3, 'away'], [0.4, 'catch'], [0.5, 'away'], [0.6, 'catch'], [0.7, 'away'], [0.8, 'catch'], [0.92, 'grip']],

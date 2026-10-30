@@ -8,15 +8,20 @@ import { damp } from '../core/rng';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { armIK, wrapHand, wristTarget } from '../game/rig';
 import { choreo, hand as handTrack, num, step, styleOf, vec, type Choreo, type HandAt, type Style, type V3 } from './handling';
+import { FpRig, PACKS, PACK_OF, type ClipName } from './fprig';
+import { gltf } from '../core/assets';
 
 /** Share of the recoil climb that moves the camera; the weapon shows the rest (it turns about the eye). */
 export const CAM_RECOIL = 0.6;
+/** Vertical field of view the first-person weapon and arms are drawn with (degrees). */
+export const VM_FOV = 55;
 const EYE_RELIEF: Record<string, number> = { acog: 0.07, rco: 0.07, scope10: 0.09, pso1: 0.08, pgo7: 0.07, irons: 0.17, none: 0.2 };
 /** Charging handle / slide / bolt travel when the model has no `charge_back` empty (m, rearwards). */
 const TRAVEL: Record<Style, number> = { ak: 0.09, ar: 0.07, belt: 0.08, bolt: 0.1, pistol: 0.035, rpg: 0, none: 0 };
 /** Support-hand frame per target, relative to the weapon (a roll about the bore turns the palm-up handguard grip). */
 const HAND_ROLL: Record<HandAt, number> = { grip: 0, mag: -Math.PI / 2, catch: -Math.PI / 2, away: -Math.PI / 2, charge: Math.PI / 2, cover: Math.PI };
-const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3(), _z = new THREE.Vector3(0, 0, 1);
+const _M = new THREE.Matrix4(), _M2 = new THREE.Matrix4(), _s = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
+const _q3 = new THREE.Quaternion(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3(), _z = new THREE.Vector3(0, 0, 1);
 
 export class Viewmodel {
   group = new THREE.Group();
@@ -39,6 +44,8 @@ export class Viewmodel {
   private sprintK = 0; private switchK = 0;
   private cheekLocal: THREE.Vector3 | null = null;
   private cheekGl: THREE.Vector3 | null = null; private glTilt = 0;
+  /** Sight line (eye -> front post) angles in the model: turned onto the view axis when aiming. */
+  private sightPitch = 0; private sightYaw = 0;
   /** Per-shot action cycle (s since the shot) and bolt-action cycle progress. */
   private cycleT = 9; private boltT = 9;
   private reloadWas = 0; private lastP = 0;
@@ -49,8 +56,17 @@ export class Viewmodel {
   private body: THREE.Object3D | null = null;
   private bones: Record<string, THREE.Bone> = {};
   private bind = new Map<THREE.Bone, THREE.Quaternion>();
+  /** Animated first-person rig (fprig.ts) for weapons of the M4 / AK families: replaces the IK arms and choreography. */
+  private rig: FpRig | null = null; private rigs = new Map<string, FpRig>();
+  private magRest = new THREE.Matrix4(); private chargeHomeQ = new THREE.Quaternion(); private chargeFollows = false;
+  private drawT = 9; private drawRate = 1;
+  /** The packs swap magazines by snapping one magazine bone from the dropped mag to the hand at the pouch: when it
+   *  jumps, a copy of the old magazine keeps falling out of view instead of vanishing in mid-air. */
+  private magPrev = new THREE.Vector3(); private magPrevQ = new THREE.Quaternion(); private magVel = new THREE.Vector3(); private magSeen = false;
+  private drop: { o: THREE.Object3D; v: THREE.Vector3; spin: THREE.Vector3; t: number } | null = null;
 
-  constructor(camera: THREE.PerspectiveCamera, private weapons: Map<string, THREE.Object3D>, sleeve: number) {
+  constructor(camera: THREE.PerspectiveCamera, private weapons: Map<string, THREE.Object3D>, sleeve: number,
+    private rigSrc: Map<string, { scene: THREE.Object3D; animations: THREE.AnimationClip[] }> = new Map()) {
     camera.add(this.group);
     const sleeveM = new THREE.MeshStandardMaterial({ color: sleeve, roughness: 0.9 }), glove = new THREE.MeshStandardMaterial({ color: 0x5a4a36, roughness: 0.8 });
     this.arms = new THREE.Group();
@@ -86,11 +102,28 @@ export class Viewmodel {
     this.body = b;
   }
 
+  /** Full-detail first-person models (models/weapons/<id>.glb), loaded on demand for the player's own weapons. */
+  private full = new Map<string, THREE.Object3D | null>();
+  private lastS: Soldier | undefined;
+  preload(ids: string[]) {
+    for (const id of ids) {
+      if (this.full.has(id)) continue;
+      this.full.set(id, null);
+      void gltf(`models/weapons/${id}.glb`).then((g) => {
+        if (!g) return;
+        this.full.set(id, g.scene.getObjectByName(id) ?? g.scene);
+        // Swap in the detailed model if this weapon is in hand.
+        if (this.id === id) { this.id = ''; this.set(id, this.lastS); }
+      });
+    }
+  }
+
   set(id: string, s?: Soldier) {
     if (id === this.id) return;
-    this.id = id;
+    this.id = id; this.lastS = s;
+    this.preload([id]);
     if (this.model) this.group.remove(this.model);
-    const src = this.weapons.get(id);
+    const src = this.full.get(id) ?? this.weapons.get(id);
     this.model = src ? src.clone() : this.placeholder();
     this.model.position.set(0, 0, 0); this.model.quaternion.identity(); this.model.updateMatrixWorld(true);
     // Own material copies: their sky reflection is turned down indoors (see setEnv), where blued steel otherwise
@@ -116,6 +149,15 @@ export class Viewmodel {
     this.cheekGl = cg ? cg.position.clone() : null;
     this.glTilt = eg && fg ? Math.atan2(fg.position.y - eg.position.y, -(fg.position.z - eg.position.z)) : 0;
     this.muzzleLocal = e('muzzle', new THREE.Vector3(0, 0.08, -0.6));
+    const fp = node('front_post'), ey = node('eye');
+    const d = fp && ey ? fp.position.clone().sub(ey.position) : null;
+    this.sightPitch = d ? Math.atan2(d.y, -d.z) : 0; this.sightYaw = d ? Math.atan2(d.x, -d.z) : 0;
+    // The aim point must lie on the sight line, or the rear and front sights part when the line is turned onto the view:
+    // keep the cheek's distance behind the eye but put it on the line.
+    if (d && ey) {
+      const u = d.clone().normalize(), back = this.cheekLocal ? Math.max(0.05, ey.position.clone().sub(this.cheekLocal).dot(u)) : 0.13;
+      this.cheekLocal = ey.position.clone().addScaledVector(u, -back);
+    }
     this.eject = e('eject', new THREE.Vector3(0.02, 0.05, -0.05));
     this.gripR = e('grip_r', new THREE.Vector3()); this.gripL = e('grip_l', new THREE.Vector3(0, 0.03, -0.3));
     this.style = s ? styleOf(s.weapon) : 'none';
@@ -147,6 +189,18 @@ export class Viewmodel {
       else { const b = box(this.cover); this.handCover.set((b.min.x + b.max.x) / 2, b.max.y + 0.01, b.min.z + (b.max.z - b.min.z) * 0.3).sub(this.cover.position); }
     }
     this.recoil = 0; this.ads = 0; this.cycleT = this.boltT = 9;
+    // Animated rig for this weapon family, if its pack is loaded.
+    this.rig?.root.removeFromParent();
+    const pk = PACK_OF[M.name] ?? PACK_OF[id];
+    const rs = pk ? this.rigSrc.get(pk) : undefined;
+    this.rig = rs ? (this.rigs.get(pk) ?? this.rigs.set(pk, new FpRig(rs, PACKS[pk])).get(pk)!) : null;
+    if (this.rig) {
+      this.group.add(this.rig.root);
+      if (this.mag) this.magRest.compose(this.magHome, this.magHomeQ, this.mag.scale);
+      this.chargeFollows = !!this.charge && this.rig.def.chargeFollows.includes(M.name);
+      if (this.charge) this.chargeHomeQ.copy(this.charge.quaternion);
+      this.drawT = 0; this.drawRate = s && s.switchT > 0 ? this.rig.duration('draw') / s.switchT : 1e9;
+    }
   }
   private placeholder(): THREE.Object3D {
     const g = new THREE.Group(), m = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.5, metalness: 0.4 });
@@ -185,6 +239,12 @@ export class Viewmodel {
   update(dt: number, s: Soldier, mouse: [number, number], wallDist: number, optic: string) {
     if (!this.model) return;
     this.ads = s.ads;
+    // Viewmodel field of view: the weapon and arms are drawn as through a camera of VM_FOV (the arm meshes of the
+    // animated packs end above the elbow; a wide view shows the cut ends). Scaling the camera-attached group by k in x
+    // and y is exactly a narrower projection for it; the screen centre (the sights) does not move.
+    const cam = this.group.parent as THREE.PerspectiveCamera | null;
+    const k = cam?.isPerspectiveCamera ? Math.max(1, Math.tan((cam.fov * Math.PI) / 360) / Math.tan((VM_FOV * Math.PI) / 360)) : 1;
+    this.group.scale.set(k, k, 1);
     const t = performance.now() / 1000, ads = THREE.MathUtils.smoothstep(this.ads, 0, 1);
     // The weapon lags behind fast mouse motion. Springs are integrated in fixed 240 Hz substeps (semi-implicit Euler),
     // so they behave the same at 20 or 144 FPS — a single explicit step per frame went unstable at low frame rates and
@@ -211,15 +271,22 @@ export class Viewmodel {
     // Poses: hip (low right, canted in a touch), aimed (cheek weld at the camera), sprint (canted down), reload.
     const relief = EYE_RELIEF[optic] ?? 0.15;
     const gl = s.underSel && this.cheekGl;
-    const hip = new THREE.Vector3(0.07, -0.13, -0.17), aim = gl ? this.cheekGl!.clone().applyEuler(new THREE.Euler(-this.glTilt, 0, 0, 'YXZ')).negate() : this.cheekLocal ? this.cheekLocal.clone().negate() : new THREE.Vector3(-this.eyeLocal.x, -this.eyeLocal.y, -relief - this.eyeLocal.z);
+    // Aimed: the sight line (eye -> front post) is turned onto the view axis, about the cheek point.
+    const sq = _q3.setFromEuler(_e.set(gl ? -this.glTilt : -this.sightPitch, gl ? 0 : this.sightYaw, 0, 'YXZ'));
+    const aim = gl ? this.cheekGl!.clone().applyQuaternion(sq).negate() : this.cheekLocal ? this.cheekLocal.clone().applyQuaternion(sq).negate() : new THREE.Vector3(-this.eyeLocal.x, -this.eyeLocal.y, -relief - this.eyeLocal.z).applyQuaternion(sq);
+    // Hip: the sights ride ~7 cm below the eye (tall LMG receivers stay out of the face), the grip at least 13 cm down.
+    const hip = new THREE.Vector3(0.07, Math.min(-0.13, -0.07 - this.eyeLocal.y), -0.17);
     const kind = s.weapon.kind;
-    // Launchers ride on the shoulder (just below the aimed position); throwables are held low in the firing hand.
-    // Long guns sit a little closer so the support hand reaches their handguard.
+    // Launchers ride on the shoulder (just below the aimed position); throwables and charges are held low in the firing
+    // hand by their grip point. Long guns sit a little closer so the support hand reaches their handguard.
     hip.z += Math.max(0, -0.3 - this.gripL.z) * 0.7;
-    if (kind === 'launcher') hip.copy(aim).add(new THREE.Vector3(0.1, -0.09, 0.06));
-    else if (kind === 'grenade' || kind === 'charge') hip.set(0.17, -0.2, -0.33);
+    if (kind === 'launcher') hip.copy(aim).add(new THREE.Vector3(0.11, -0.05, 0.04));
+    else if (kind === 'grenade' || kind === 'charge') hip.set(0.17, -0.17, -0.33).sub(this.gripR);
+    const rig = this.rig;
+    if (rig && kind !== 'launcher') hip.fromArray(rig.def.hip);
     const pos = hip.lerp(aim, ads);
-    let rx = 0, ry = 0.035 * (1 - ads), rz = -0.04 * (1 - ads);
+    const hr = rig ? rig.def.hipRot : [0, 0.035, -0.04];
+    let rx = hr[0] * (1 - ads), ry = hr[1] * (1 - ads), rz = hr[2] * (1 - ads);
     // Sprint carry: blended in and out (never snapped) so brief speed changes do not flip the weapon up and down.
     this.sprintK += ((s.sprinting && sp > 0.8 ? 1 : 0) - this.sprintK) * damp(s.sprinting ? 7 : 5, dt);
     const sk = THREE.MathUtils.smoothstep(this.sprintK, 0, 1);
@@ -228,7 +295,7 @@ export class Viewmodel {
     // Reload choreography.
     if (s.reloadT > 0 && this.reloadWas <= 0) this.lastP = 0;
     this.reloadWas = s.reloadT;
-    const cho: Choreo | null = s.reloadT > 0 && !s.underSel ? choreo(s.weapon, s.reloadEmpty) : null;
+    const cho: Choreo | null = s.reloadT > 0 && !s.underSel && !rig ? choreo(s.weapon, s.reloadEmpty) : null;
     const p = s.reloadT > 0 ? THREE.MathUtils.clamp(1 - s.reloadT / Math.max(0.1, s.reloadDur), 0, 1) : 0;
     const tmp: V3 = [0, 0, 0];
     if (cho) {
@@ -241,22 +308,41 @@ export class Viewmodel {
       const k = Math.sin(p * Math.PI); rz -= k * 0.35; rx += k * 0.3; pos.y -= k * 0.03;
     }
     this.switchK += ((s.switchT > 0 ? Math.min(1, s.switchT * 2) : 0) - this.switchK) * damp(12, dt);
-    pos.y -= this.switchK * 0.25;
+    if (!rig) pos.y -= this.switchK * 0.25;
     if (s.bandageT > 0) pos.y -= 0.3;
     // Pull back from walls so the barrel does not poke through.
     this.pull += (Math.max(0, 0.75 - wallDist) - this.pull) * damp(12, dt);
     pos.z += this.pull * 0.45; rx += this.pull * 0.6;
-    pos.x += bx + this.sway.x * (1 - ads * 0.7) + breathe.x; pos.y += by + this.sway.y * (1 - ads * 0.7) + breathe.y;
+    // Hip: lag, breathing and bob slide the weapon. Aimed: they turn it about the eye instead (added to qAim below), so
+    // the rear and front sights stay lined up and only the sight picture moves.
+    const lagX = bx + this.sway.x + breathe.x, lagY = by + this.sway.y + breathe.y;
+    pos.x += lagX * (1 - ads); pos.y += lagY * (1 - ads);
     pos.z += this.recoil * 0.35;
     // Aiming the M203: tilt the rifle down so the leaf sight line (not the bore) points where the camera looks.
     if (gl) rx -= this.glTilt * ads;
+    else { rx -= this.sightPitch * ads; ry += this.sightYaw * ads; }
     rx += this.recoil * 0.5;
     // The sights' sway and the part of the recoil climb the camera does not follow turn the whole weapon about the
     // eye, so the sight picture moves on screen exactly as the aim does.
-    const qAim = _q2.setFromEuler(_e.set(s.wob[1] + s.rcP * (1 - CAM_RECOIL), s.wob[0] + s.rcY * (1 - CAM_RECOIL), 0, 'YXZ'));
+    const qAim = _q2.setFromEuler(_e.set(s.wob[1] + s.rcP * (1 - CAM_RECOIL) + lagY * 2.2 * ads, s.wob[0] + s.rcY * (1 - CAM_RECOIL) - lagX * 2.2 * ads, 0, 'YXZ'));
     this.model.position.copy(pos).applyQuaternion(qAim);
     this.model.quaternion.setFromEuler(_e.set(rx, ry, rz + this.roll, 'YXZ')).premultiply(qAim);
     this.model.updateMatrix();
+    // Animated rig: pick the clip and time, place the rig on this pose and let the clip move the weapon.
+    if (rig) {
+      this.drawT += dt * this.drawRate;
+      let clip: ClipName = 'fire', ct = 0;
+      if (s.reloadT > 0 && !s.underSel) { clip = s.reloadEmpty ? 'reload_empty' : 'reload'; ct = p * rig.duration(clip); }
+      else if (this.drawT < rig.duration('draw')) { clip = 'draw'; ct = this.drawT; }
+      rig.pose(clip, ct);
+      rig.place(this.model.matrix, _M);
+      _M.decompose(this.model.position, this.model.quaternion, _s);
+      this.model.updateMatrix();
+      if (clip === 'reload' || clip === 'reload_empty') {
+        for (const [ct2, name, g] of rig.cues(clip)) if (ct2 > this.lastP && ct2 <= p) this.onCue(name, g ?? 0.7);
+        this.lastP = p;
+      }
+    }
 
     // Animated parts.
     const mag = this.mag;
@@ -268,6 +354,23 @@ export class Viewmodel {
         mag.quaternion.multiply(_q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), num(cho.magRock, p)));
         mag.visible = step(cho.magShow, p) > 0.5;
       } else mag.visible = !(kind === 'launcher' && s.slot.loaded === 0);
+      if (rig) {
+        rig.partLocal('mag', this.magRest, _M).decompose(mag.position, mag.quaternion, mag.scale); mag.visible = true;
+        // Track the magazine in viewmodel-group space; a jump of more than 12 cm in one frame is the bone snapping back.
+        this.model.updateMatrix(); mag.updateMatrix();
+        _M2.multiplyMatrices(this.model.matrix, mag.matrix);
+        const gp = _v.setFromMatrixPosition(_M2);
+        if (this.magSeen && s.reloadT > 0 && dt > 0) {
+          const jump = gp.distanceTo(this.magPrev);
+          if (jump > 0.12 && !this.drop) {
+            const o = mag.clone(); o.matrixAutoUpdate = true;
+            o.position.copy(this.magPrev); o.quaternion.copy(this.magPrevQ); o.scale.copy(mag.scale);
+            this.group.add(o);
+            this.drop = { o, v: this.magVel.clone(), spin: new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 4), t: 0 };
+          } else this.magVel.copy(gp).sub(this.magPrev).divideScalar(dt);
+        }
+        this.magPrev.copy(gp); this.magPrevQ.setFromRotationMatrix(_M2); this.magSeen = s.reloadT > 0;
+      }
     }
     this.cycleT += dt; this.boltT += dt;
     // Charging handle: reload track, the bolt cycle of a bolt-action, or the carrier slamming back per shot (and held
@@ -276,16 +379,32 @@ export class Viewmodel {
     if (!cho) {
       if (this.style === 'bolt') { const b = this.boltT; boltK = b > 0 && b < 1 ? Math.sin(Math.PI * Math.min(1, b / 0.9)) : 0; travel = b > 0.15 && b < 0.85 ? Math.sin(Math.PI * (b - 0.15) / 0.7) : 0; if (b > 0.15 && this.boltT - dt <= 0.15) this.onCue('bolt_action_cycle', 0.8); }
       else { const cyc = Math.min(0.06, (60 / s.weapon.rpm) * 0.8); travel = this.cycleT < cyc ? Math.sin(Math.PI * this.cycleT / cyc) : 0; if (s.slot.loaded === 0 && (this.style === 'ar' || this.style === 'pistol')) travel = 1; }
+      // On the rig, only a part that is the bolt carrier cycles (an AR's T-handle stays put when firing).
+      if (rig && !this.chargeFollows) travel = 0;
     }
     if (this.charge) {
       this.charge.position.lerpVectors(this.chargeHome, this.chargeBack, travel);
       // A bolt-action bolt rotates up (~60°) before it slides back.
       if (this.style === 'bolt') this.charge.quaternion.setFromAxisAngle(_z, -Math.min(1, boltK * 3) * 1.05 * (cho ? Math.min(1, travel * 4) : 1));
+      if (rig && this.chargeFollows) {
+        // The carrier's own cycle, carried by the charge bone's motion in the clip (pulled back and released).
+        _M2.compose(this.charge.position, this.chargeHomeQ, _one);
+        rig.partLocal('charge', _M2, _M).decompose(this.charge.position, this.charge.quaternion, this.charge.scale);
+      }
     }
     // Feed covers hinge at their front: opening lifts the rear (negative angle about +X).
-    if (this.cover && cho?.cover) this.cover.quaternion.copy(this.coverHomeQ).multiply(_q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -num(cho.cover, p) * 1.2));
+    if (this.cover && cho?.cover) this.cover.quaternion.copy(this.coverHomeQ).multiply(_q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -num(cho.cover, p) * 0.95));
 
-    // Arms.
+    if (this.drop) {
+      const d = this.drop; d.t += dt; d.v.y -= 9.81 * dt;
+      d.o.position.addScaledVector(d.v, dt);
+      d.o.rotation.x += d.spin.x * dt; d.o.rotation.y += d.spin.y * dt; d.o.rotation.z += d.spin.z * dt;
+      if (d.t > 0.9) { this.group.remove(d.o); this.drop = null; }
+    }
+    // Arms: the rig's own, or the character's arms by IK.
+    if (this.body) this.body.visible = !rig;
+    this.arms.visible = !this.body && !rig;
+    if (rig) { this.group.visible = s.alive; return; }
     const ht: [HandAt, HandAt, number] = cho ? handTrack(cho.hand, p) : ['grip', 'grip', 0];
     const wq = this.model.getWorldQuaternion(new THREE.Quaternion());
     const targetOf = (at: HandAt): THREE.Vector3 => {

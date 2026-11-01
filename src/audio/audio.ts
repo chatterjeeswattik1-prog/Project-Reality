@@ -9,6 +9,8 @@ import { audioBuffer } from '../core/assets';
 
 type V3 = [number, number, number];
 interface Entry { files: string[]; gain: number; loop?: boolean }
+/** A looping sound whose level the game sets every frame (breathing, heartbeat). */
+export interface LoopVoice { set(level: number): void; stop(): void }
 const BASE = import.meta.env.BASE_URL;
 const SPEED_OF_SOUND = 343;
 
@@ -137,7 +139,10 @@ export class Audio {
    * `far`: name of the distant variant crossfaded in beyond `nearDist`.
    */
   play(name: string, pos: V3 | null, o: { gain?: number; range?: number; far?: string; nearDist?: number; rate?: number; delay?: boolean; loop?: boolean; variant?: number; verb?: number } = {}): AudioBufferSourceNode | null {
-    if (this.ctx.state !== 'running' || this.voices > 40) return null;
+    // Voices: gunfire, cracks and impacts on people always get through; footsteps and handling noise give way first in
+    // a heavy firefight.
+    if (this.ctx.state !== 'running') return null;
+    if (this.voices > (/shot|crack|whiz|explosion|launch|flesh|far|ricochet/.test(name) ? 110 : 56)) return null;
     const ctx = this.ctx, g0 = (o.gain ?? 1) * (this.manifest[name]?.gain ?? 1);
     let dist = 0, t = ctx.currentTime;
     if (pos) {
@@ -179,6 +184,18 @@ export class Audio {
     src.start(t);
     if (!buf) src.stop(t + this.synthLen(name));
     return src;
+  }
+
+  /** A looping non-positional voice, silent until `set` (smoothed over ~0.3 s). */
+  loopVoice(name: string): LoopVoice | null {
+    const b = this.pick(name); if (!b) return null;
+    const ctx = this.ctx, s = ctx.createBufferSource(), g = ctx.createGain(), base = this.manifest[name]?.gain ?? 1;
+    s.buffer = b; s.loop = true; g.gain.value = 0; s.connect(g).connect(this.sfx); s.start();
+    let last = -1;
+    return {
+      set: (v) => { if (Math.abs(v - last) < 0.01) return; last = v; g.gain.setTargetAtTime(v * base, ctx.currentTime, 0.3); },
+      stop: () => { try { s.stop(); } catch { /* already stopped */ } },
+    };
   }
 
   /** Looping ambience bed (non-positional). */

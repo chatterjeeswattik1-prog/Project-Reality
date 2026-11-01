@@ -3,7 +3,7 @@
 // per-shot cycle of the charging handle with ejected brass, and the reload choreography from handling.ts: the
 // magazine (or belt box, rocket) and the charging handle move, and the support hand follows them by IK.
 import * as THREE from 'three';
-import type { Soldier } from '../game/soldier';
+import { glElevation, type Soldier } from '../game/soldier';
 import { damp } from '../core/rng';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { armIK, wrapHand, wristTarget } from '../game/rig';
@@ -21,7 +21,7 @@ const TRAVEL: Record<Style, number> = { ak: 0.09, ar: 0.07, belt: 0.08, bolt: 0.
 /** Support-hand frame per target, relative to the weapon (a roll about the bore turns the palm-up handguard grip). */
 const HAND_ROLL: Record<HandAt, number> = { grip: 0, mag: -Math.PI / 2, catch: -Math.PI / 2, away: -Math.PI / 2, charge: Math.PI / 2, cover: Math.PI };
 const _M = new THREE.Matrix4(), _M2 = new THREE.Matrix4(), _s = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
-const _q3 = new THREE.Quaternion(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3(), _z = new THREE.Vector3(0, 0, 1);
+const _q3 = new THREE.Quaternion(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3(), _z = new THREE.Vector3(0, 0, 1), _x1 = new THREE.Vector3(1, 0, 0);
 
 export class Viewmodel {
   group = new THREE.Group();
@@ -44,6 +44,8 @@ export class Viewmodel {
   private sprintK = 0; private switchK = 0;
   private cheekLocal: THREE.Vector3 | null = null;
   private cheekGl: THREE.Vector3 | null = null; private glTilt = 0;
+  /** M203 quadrant sight part (turns against the rifle by the range's elevation) and its rest rotation. */
+  private quad: THREE.Object3D | null = null; private quadQ = new THREE.Quaternion();
   /** Sight line (eye -> front post) angles in the model: turned onto the view axis when aiming. */
   private sightPitch = 0; private sightYaw = 0;
   /** Per-shot action cycle (s since the shot) and bolt-action cycle progress. */
@@ -147,6 +149,7 @@ export class Viewmodel {
     // M203 leaf sight: its own cheek point and a sight line (eye_gl → front_gl) tilted up from the bore.
     const cg = node('cheek_gl'), eg = node('eye_gl'), fg = node('front_gl');
     this.cheekGl = cg ? cg.position.clone() : null;
+    this.quad = node('quad_sight'); if (this.quad) this.quadQ.copy(this.quad.quaternion);
     this.glTilt = eg && fg ? Math.atan2(fg.position.y - eg.position.y, -(fg.position.z - eg.position.z)) : 0;
     this.muzzleLocal = e('muzzle', new THREE.Vector3(0, 0.08, -0.6));
     const fp = node('front_post'), ey = node('eye');
@@ -226,7 +229,7 @@ export class Viewmodel {
     if (this.style === 'bolt') this.boltT = -0.25;
     else if (this.model && this.style !== 'rpg' && this.style !== 'none') {
       const p = this.model.localToWorld(this.eject.clone()), q = this.model.getWorldQuaternion(_q);
-      const v = new THREE.Vector3(2.2 + Math.random() * 1.2, 1.2 + Math.random() * 1.0, 0.4 + Math.random() * 0.6).applyQuaternion(q);
+      const v = new THREE.Vector3(1.7 + Math.random() * 1.0, 1.1 + Math.random() * 0.8, 0.3 + Math.random() * 0.5).applyQuaternion(q);
       this.onEject([p.x, p.y, p.z], [v.x, v.y, v.z], this.style === 'belt');
     }
   }
@@ -271,9 +274,18 @@ export class Viewmodel {
     // Poses: hip (low right, canted in a touch), aimed (cheek weld at the camera), sprint (canted down), reload.
     const relief = EYE_RELIEF[optic] ?? 0.15;
     const gl = s.underSel && this.cheekGl;
+    // Quadrant sight: its line is parallel to the bore at zero. Set for a range, the sight turns down on its pivot by the
+    // elevation and the rifle (aimed through it) comes up by as much, so the sight line stays on the target.
+    let cheekGl = this.cheekGl;
+    if (this.quad && s.slot.gl !== undefined) {
+      const el = glElevation(s.glRange), q = _q.setFromAxisAngle(_x1, -el);
+      this.quad.quaternion.copy(this.quadQ).premultiply(q);
+      if (gl && cheekGl) cheekGl = cheekGl.clone().sub(this.quad.position).applyQuaternion(q).add(this.quad.position);
+      if (gl) this.glTilt = -el;
+    }
     // Aimed: the sight line (eye -> front post) is turned onto the view axis, about the cheek point.
     const sq = _q3.setFromEuler(_e.set(gl ? -this.glTilt : -this.sightPitch, gl ? 0 : this.sightYaw, 0, 'YXZ'));
-    const aim = gl ? this.cheekGl!.clone().applyQuaternion(sq).negate() : this.cheekLocal ? this.cheekLocal.clone().applyQuaternion(sq).negate() : new THREE.Vector3(-this.eyeLocal.x, -this.eyeLocal.y, -relief - this.eyeLocal.z).applyQuaternion(sq);
+    const aim = gl ? cheekGl!.clone().applyQuaternion(sq).negate() : this.cheekLocal ? this.cheekLocal.clone().applyQuaternion(sq).negate() : new THREE.Vector3(-this.eyeLocal.x, -this.eyeLocal.y, -relief - this.eyeLocal.z).applyQuaternion(sq);
     // Hip: the sights ride ~7 cm below the eye (tall LMG receivers stay out of the face), the grip at least 13 cm down.
     const hip = new THREE.Vector3(0.07, Math.min(-0.13, -0.07 - this.eyeLocal.y), -0.17);
     const kind = s.weapon.kind;
@@ -310,9 +322,13 @@ export class Viewmodel {
     this.switchK += ((s.switchT > 0 ? Math.min(1, s.switchT * 2) : 0) - this.switchK) * damp(12, dt);
     if (!rig) pos.y -= this.switchK * 0.25;
     if (s.bandageT > 0) pos.y -= 0.3;
-    // Pull back from walls so the barrel does not poke through.
-    this.pull += (Math.max(0, 0.75 - wallDist) - this.pull) * damp(12, dt);
-    pos.z += this.pull * 0.45; rx += this.pull * 0.6;
+    // Weapon against a wall: by how much the muzzle would go into it (its reach in front of the eye vs the wall
+    // distance), the weapon comes back and is raised to high port, muzzle up and across to the left, so the barrel never pokes
+    // through.
+    const reach = -(pos.z + this.muzzleLocal.z) + 0.08;
+    this.pull += (THREE.MathUtils.clamp((reach - wallDist) / 0.4, 0, 1) - this.pull) * damp(14, dt);
+    const pk = THREE.MathUtils.smoothstep(this.pull, 0, 1);
+    pos.z += pk * 0.07; pos.y -= pk * 0.07; pos.x += pk * (0.06 * ads - 0.02); rx += pk * 0.95; ry += pk * 0.3; rz += pk * 0.55;
     // Hip: lag, breathing and bob slide the weapon. Aimed: they turn it about the eye instead (added to qAim below), so
     // the rear and front sights stay lined up and only the sight picture moves.
     const lagX = bx + this.sway.x + breathe.x, lagY = by + this.sway.y + breathe.y;

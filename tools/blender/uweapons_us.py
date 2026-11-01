@@ -137,6 +137,56 @@ def along(p, d, dist):
     return tuple(Vector(p) + Vector(d).normalized() * dist)
 
 
+def _box(name, lo, hi, mat):
+    import bpy, bmesh
+    me = bpy.data.meshes.new(name); bm = bmesh.new(); bmesh.ops.create_cube(bm, size=1)
+    for v in bm.verts:
+        v.co = Vector([lo[i] + (v.co[i] + 0.5) * (hi[i] - lo[i]) for i in range(3)])
+    bm.to_mesh(me); bm.free(); me.materials.append(mat)
+    o = bpy.data.objects.new(name, me); bpy.context.scene.collection.objects.link(o)
+    return o
+
+
+def _ring(name, c, r, t, mat):
+    """Aperture ring of radius r (tube t) round the Y axis at c."""
+    import bpy
+    bpy.ops.mesh.primitive_torus_add(major_radius=r, minor_radius=t, major_segments=20, minor_segments=6, location=c, rotation=(math.pi / 2, 0, 0))
+    o = bpy.context.active_object; o.name = name
+    o.data.transform(o.matrix_basis); o.matrix_basis = Matrix.Identity(4)
+    o.data.materials.append(mat)
+    return o
+
+
+def quadrant_sight():
+    """M203 quadrant sight on the left of the carry handle (TM 9-1010-221-10): bracket, housing with the range scale,
+    rear aperture and a front post between protective ears, 65 mm sight radius, its line parallel to the bore at the
+    zero setting. The aperture, front post and ears are one part, `quad_sight`, pivoting about local X on the housing
+    (QUAD_PIVOT): set for a range, the game turns the rifle up by the elevation and the sight back down by it, so the
+    sight line stays on the target. Returns (housing meshes, sight part, eye, front_post)."""
+    import bpy
+    m = bpy.data.materials.new('quadrant'); m.use_nodes = True
+    b = m.node_tree.nodes['Principled BSDF']
+    b.inputs['Base Color'].default_value = (0.035, 0.036, 0.034, 1); b.inputs['Metallic'].default_value = 0.45; b.inputs['Roughness'].default_value = 0.55
+    eye, post = (-0.038, -0.175, 0.2595), (-0.038, -0.110, 0.2595)
+    housing = [
+        _box('q_bracket', (-0.026, -0.172, 0.222), (-0.020, -0.118, 0.250), m),
+        _box('q_housing', (-0.046, -0.181, 0.213), (-0.026, -0.104, 0.246), m),
+        _box('q_scale', (-0.048, -0.174, 0.217), (-0.046, -0.111, 0.243), m),
+    ]
+    sight = U.join([
+        _box('q_rail', (-0.0415, -0.179, 0.2455), (-0.0345, -0.106, 0.2475), m),
+        _box('q_rear_post', (-0.0405, -0.1775, 0.246), (-0.0355, -0.1725, 0.2552), m),
+        _ring('q_rear_ring', eye, 0.0042, 0.0011, m),
+        _box('q_front_ear_l', (-0.0455, -0.1115, 0.246), (-0.0435, -0.1085, 0.2655), m),
+        _box('q_front_ear_r', (-0.0325, -0.1115, 0.246), (-0.0305, -0.1085, 0.2655), m),
+        _box('q_front_post', (-0.0387, -0.1108, 0.246), (-0.0373, -0.1092, post[2]), m),
+    ], 'quad_sight')
+    return housing, sight, eye, post
+
+
+QUAD_PIVOT = (-0.038, -0.142, 0.246)
+
+
 def build_m4a1_m203():
     U.load('US-Forces/a_colt_m4a1m203.glb'); U.flatten()
     # Source: +Y muzzle, +Z up (forward assist on +X), 27.09 units long -> 0.84 m (M4A1, stock extended + M203).
@@ -147,15 +197,21 @@ def build_m4a1_m203():
     body = U.join([o for o in U.meshes() if o is not mag and o not in carrier], 'm4a1_m203_body')
     th = U.split(body, (-0.04, -0.216, 0.19), (0.035, -0.19, 0.216), 'th')   # T charging handle
     charge = U.join(carrier + [th], 'charge')
+    # The leaf sight on the handguard rail is carried folded: hinge it forward flat onto its rail.
+    leaf = U.split(body, (-0.007, 0.0725, 0.2175), (0.007, 0.0785, 0.2935), 'leaf')
+    h = Vector((0, 0.078, 0.2258))
+    U.xform(Matrix.Translation(h) @ Matrix.Rotation(math.radians(-90), 4, 'X') @ Matrix.Translation(-h), [leaf])
+    # The grenadier aims with the quadrant sight on the left of the carry handle.
+    quad, quad_sight, eye_gl, front_gl = quadrant_sight()
+    body = U.join([body, leaf] + quad, 'm4a1_m203_body')
     eye, front = (0, -0.165, 0.252), (0, 0.233, 0.2515)    # A1 aperture centre, front post tip (10000 px/m renders)
-    eye_gl = (0, 0.080, 0.271)                              # M203 leaf middle notch -> same front post
-    gl_dir = Vector(front) - Vector(eye_gl)
+    gl_dir = Vector(front_gl) - Vector(eye_gl)
     mag_o = (0, -0.058, 0.155)
     finish('m4a1_m203', body, (0, -0.185, 0.073),
-           parts=[(mag, mag_o), (charge, (0, -0.203, 0.202))],
+           parts=[(mag, mag_o), (charge, (0, -0.203, 0.202)), (quad_sight, QUAD_PIVOT)],
            nodes={'muzzle': ((0, 0.42, 0.179), None), 'muzzle_gl': ((0, 0.405, 0.12), None),
                   **sight_nodes(eye, front),
-                  'eye_gl': (eye_gl, None), 'front_gl': (front, None), 'cheek_gl': (along(eye_gl, -gl_dir, 0.25), None),
+                  'eye_gl': (eye_gl, None), 'front_gl': (front_gl, None), 'cheek_gl': (along(eye_gl, -gl_dir, 0.13), None),
                   'grip_r': ((0, -0.185, 0.073), None), 'grip_l': ((-0.02, 0.16, 0.10), None),
                   'eject': ((0.016, -0.075, 0.183), None), 'butt': ((0, -0.418, 0.14), None),
                   'mag_dir': (along(mag_o, (0, 0.1, -1), 0.12), None), 'hand_mag': ((-0.016, -0.06, 0.09), 'mag'),

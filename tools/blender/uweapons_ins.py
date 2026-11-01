@@ -140,7 +140,9 @@ def build_rpd():
     U.move((0, 0.15, 0), [charge])
     body = U.join([o for o in U.meshes() if o not in (box, cover, charge)], 'rpd_body')
     grip = (0, -0.292, -0.04)
-    eye, post = Vector((0, -0.149, 0.1111)), Vector((0, 0.44, 0.1064))  # notch bottom per sightcheck.py  # rear notch block; post tip (front slice)
+    # eye on the notch shoulders (0.1130; the notch is ~2 mm deep), not its bottom, so the post shows in it with its tip
+    # level with the shoulders (the AK-pattern picture); post tip from the front slice.
+    eye, post = Vector((0, -0.149, 0.1130)), Vector((0, 0.44, 0.1064))
     cheek = eye + (eye - post) * ((eye.y - (grip[1] - 0.09)) / (post.y - eye.y))
     finish('rpd', body, grip,
            parts=[(box, (0, -0.0855, -0.008)), (cover, (0, -0.0425, 0.082)), (charge, (0.02, -0.031, 0.04))],

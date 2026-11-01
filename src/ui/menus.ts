@@ -21,7 +21,7 @@ export function mainMenu(host: HTMLElement, gpu: string): Promise<MenuChoice> {
       <label>Mouse sensitivity <input name="sens" type="range" min="0.5" max="3" step="0.1"></label>
       <label>Field of view <input name="fov" type="range" min="45" max="75" step="1"> <span class="fovv"></span>°</label>
     </div>
-    <div class="keys"><b>Controls</b> WASD move · Shift sprint · Ctrl/C crouch · Z prone · Space jump · RMB aim · LMB fire · R reload · B fire mode · 1–5 weapons (press 1 again for M203) · Q / E lean (hold) · Alt freelook (hold) · F doors, else field dressing · T weapon light · G bipod (prone, window sill, wall top) · Shift while aiming hold breath · Y team move there · H team hold / form up · U team suppress there · M map · Tab score · Enter give up when wounded · Esc menu</div>
+    <div class="keys"><b>Controls</b> WASD move · Shift sprint · Ctrl/C crouch · Z prone · Space jump · RMB aim · LMB fire · R reload · B fire mode · 1–5 weapons (press 1 again for M203; PgUp / PgDn sets its quadrant sight range) · Q / E lean (hold) · Alt freelook (hold) · F doors, else field dressing · T weapon light · G bipod (prone, window sill, wall top) · Shift while aiming hold breath · Y team move there · H team hold / form up · U team suppress there · M map · Tab score · Enter give up when wounded · Esc menu</div>
     <div class="gpu">Rendering on: ${gpu}</div>
   </div>`;
   host.appendChild(el);

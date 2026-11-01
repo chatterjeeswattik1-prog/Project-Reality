@@ -44,6 +44,8 @@ export class Soldier {
   pos: [number, number, number];
   vel: [number, number, number] = [0, 0, 0];
   yaw = 0; pitch = 0;
+  /** M203 quadrant sight range setting (m). */
+  glRange = 150;
   stance: Stance = 'stand';
   /** Smoothed eye height (m above the feet). */ eyeH = STANCE_H.stand;
   onGround = true;
@@ -142,6 +144,8 @@ export class Soldier {
 
   /** Move with a desired horizontal velocity (m/s, world) and an optional jump. */
   move(dt: number, want: [number, number], jump: boolean) {
+    // Dead: the body's collider is gone (die()); nothing moves any more.
+    if (this.state === 'dead') { this.vel = [0, 0, 0]; return; }
     const P = this.P;
     if (!this.alive) { want = [0, 0]; jump = false; }
     const accel = this.onGround ? 14 : 2;
@@ -172,6 +176,7 @@ export class Soldier {
    * (interpolated along the path's corner points, which lie on walkable surfaces).
    */
   moveOnPath(dt: number, want: [number, number], groundY: number | null) {
+    if (this.state === 'dead') { this.vel = [0, 0, 0]; return; }
     if (!this.alive) want = [0, 0];
     this.vel[0] += (want[0] - this.vel[0]) * damp(14, dt); this.vel[2] += (want[1] - this.vel[2]) * damp(14, dt); this.vel[1] = 0;
     const nx = this.pos[0] + this.vel[0] * dt, nz = this.pos[2] + this.vel[2] * dt, ny = groundY ?? this.pos[1];
@@ -186,6 +191,7 @@ export class Soldier {
    * can never pass through geometry even when its path or goal is bad. Returns the new polygon ref.
    */
   moveNav(dt: number, want: [number, number], nav: { step: (ref: number, a: [number, number, number], b: [number, number, number]) => { p: [number, number, number]; ref: number } | null; ref: (p: [number, number, number]) => number }, ref: number): number {
+    if (this.state === 'dead') { this.vel = [0, 0, 0]; return ref; }
     if (!this.alive) want = [0, 0];
     this.vel[0] += (want[0] - this.vel[0]) * damp(14, dt); this.vel[2] += (want[1] - this.vel[2]) * damp(14, dt); this.vel[1] = 0;
     if (!ref) ref = nav.ref(this.pos);
@@ -422,6 +428,27 @@ export class Soldier {
     return `${this.totalMags()} mag${this.totalMags() === 1 ? '' : 's'}`;
   }
 }
+
+/**
+ * M203 quadrant sight: the elevation (rad above the sight line) set for a range, i.e. the launch angle that lands a 40 mm
+ * grenade at `range` m on level ground, fired from the shoulder (~1.4 m up) (M433: 76 m/s; ~400 m max effective).
+ */
+const glCache = new Map<number, number>();
+export function glElevation(range: number): number {
+  const c = glCache.get(range); if (c !== undefined) return c;
+  const a = AMMO.hedp40;
+  let lo = 0, hi = 0.75;
+  for (let it = 0; it < 28; it++) {
+    const ang = (lo + hi) / 2;
+    let x = 0, y = 0, vx = a.v0 * Math.cos(ang), vy = a.v0 * Math.sin(ang), t = 0;
+    const dt = 0.004;
+    while ((t < 0.05 || y > -1.4) && t < 30) { const v = Math.hypot(vx, vy); vx -= a.k * v * vx * dt; vy -= (a.k * v * vy + 9.81) * dt; x += vx * dt; y += vy * dt; t += dt; }
+    if (x < range) lo = ang; else hi = ang;
+  }
+  const e = (lo + hi) / 2; glCache.set(range, e); return e;
+}
+/** Quadrant sight settings (m). */
+export const GL_RANGES = [50, 75, 100, 125, 150, 200, 250, 300, 350, 400];
 
 /** Ballistic launch angle (rad) above the line of sight so a weapon hits its zero distance. */
 export function zeroAngle(def: WeaponDef, sightHeight = 0.065): number {

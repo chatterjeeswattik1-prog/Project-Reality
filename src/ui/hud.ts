@@ -47,7 +47,7 @@ export class Hud {
     this.flashT -= dt; if (this.flashT <= 0) this.center.style.opacity = '0';
     // Wounded.
     if (s.state === 'wounded') this.down.innerHTML = `<h2>CRITICALLY WOUNDED</h2><p>Wait for a medic, or press <b>Enter</b> to give up. Bleed-out in ${Math.max(0, Math.ceil(300 - s.downT))} s</p>`;
-    else if (s.state === 'dead') this.down.innerHTML = `<h2>KILLED IN ACTION</h2>`;
+    else if (s.state === 'dead') this.down.innerHTML = `<h2>KILLED IN ACTION</h2><p>Choose your kit and spawn point in a moment…</p>`;
     else this.down.innerHTML = '';
     this.down.style.display = s.state === 'alive' ? 'none' : 'flex';
 

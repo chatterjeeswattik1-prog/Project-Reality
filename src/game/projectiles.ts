@@ -7,7 +7,7 @@ import type { Surface } from '../world/sink';
 
 export type V3 = [number, number, number];
 export interface ProjectileHooks {
-  impact: (p: V3, n: V3, surf: Surface, ammo: Ammo) => void;
+  impact: (p: V3, n: V3, surf: Surface, ammo: Ammo, dir?: V3) => void;
   hit: (s: Soldier, p: V3, part: HitPart, ammo: Ammo, by: Soldier) => void;
   crack: (s: Soldier, p: V3, ammo: Ammo, by: Soldier) => void;
   explode: (p: V3, ammo: Ammo, by: Soldier | null, n?: V3) => void;
@@ -123,7 +123,7 @@ export class Projectiles {
           else this.H.impact(wh.point, wh.normal, wh.surf, a); // dud: armed too close
           this.removeBullet(i); continue;
         }
-        this.H.impact(wh.point, wh.normal, wh.surf, a);
+        this.H.impact(wh.point, wh.normal, wh.surf, a, d);
         const cos = -(d[0] * wh.normal[0] + d[1] * wh.normal[1] + d[2] * wh.normal[2]);
         // Ricochet off hard surfaces at grazing angles.
         if (cos < 0.25 && (wh.surf === 'concrete' || wh.surf === 'metal' || wh.surf === 'masonry') && b.pens < 2 && Math.random() < 0.6) {

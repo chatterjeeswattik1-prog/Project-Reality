@@ -105,7 +105,7 @@ async function boot() {
   const skirm = test ? new SkirmishDirector(game, mode as Skirmish, nav, params.has('shot') || params.has('fly') ? null : choice.faction) : null;
   const director = { update: (dt: number) => (full ?? skirm)!.update(dt), setup: () => (full ? full.setup(null) : skirm!.startRound()) };
   if (test) (mode as Skirmish).onRound = () => skirm!.startRound(); // the game section adds the player's respawn
-  W.__game = game; W.__skirm = skirm; W.__G = G; W.__input = input; W.__WEAPONS = WEAPONS; W.__nav = nav; W.__city = city; W.__world = world; W.__THREE = THREE; W.__fullDirector = full;
+  W.__game = game; W.__skirm = skirm; W.__G = G; W.__input = input; W.__WEAPONS = WEAPONS; W.__AMMO = AMMO; W.__nav = nav; W.__city = city; W.__world = world; W.__THREE = THREE; W.__fullDirector = full;
   L.done();
 
   // ---------- free camera / screenshot mode ----------
@@ -179,7 +179,8 @@ async function boot() {
   // Test mode: everybody (the player too) respawns together when a new round starts.
   if (test) (mode as Skirmish).onRound = () => {
     skirm!.startRound();
-    if (me && lastKit) {
+    // (A dead player choosing a kit on the spawn screen deploys from there.)
+    if (me && lastKit && !spawnScreen.visible) {
       if (me.state !== 'dead') me.die(null);
       game.remove(me);
       me = game.spawn(kitById(lastKit), faction, safeSpawn(P, nav, (mode as Skirmish).spawnAt(faction, 0), 1.5), 'You', faction === 'us' ? -Math.PI / 2 : Math.PI / 2);
@@ -216,7 +217,8 @@ async function boot() {
   const loop = () => {
     const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000); last = now; // real time down to 10 FPS
     if (++frames, now - fpsT > 2000) { W.__fps = `${Math.round(frames * 1000 / (now - fpsT))} calls=${G.renderer.info.render.calls} tris=${G.renderer.info.render.triangles}`; frames = 0; fpsT = now; }
-    const paused = !auto && !input.locked && !spawnScreen.visible && !mode.over && !!me;
+    // Dead, the game runs on (the mouse is free and the spawn screen comes up), it is never "paused".
+    const paused = !auto && !input.locked && !spawnScreen.visible && !mode.over && !!me && me.state !== 'dead';
     pause.style.display = paused && !mapView.open ? 'grid' : 'none';
     const T: Record<string, number> = {}; let t0 = performance.now();
     const lap = (k: string) => { const t = performance.now(); T[k] = (T[k] ?? 0) + t - t0; t0 = t; };
@@ -233,7 +235,8 @@ async function boot() {
         if (me.state === 'wounded' && input.hit(BIND.giveUp)) me.die(me.killedBy);
         if (me.state === 'dead' && lastState !== 'dead') { mode.onDown(me, me.killedBy, true); deadT = 0; }
         lastState = me.state;
-        if (me.state === 'dead' && !test) { deadT += dt; if (deadT > 4 && !spawnScreen.visible) { input.unlock(); void deploy(12); } }
+        // Killed: after a few seconds the spawn screen opens (kit and spawn point), with the respawn delay counting down.
+        if (me.state === 'dead') { deadT += dt; if (deadT > 4 && !spawnScreen.visible) { input.unlock(); void deploy(test ? 4 : 12); } }
         if (input.hit(BIND.map)) mapView.toggle();
         score.show(game, input.is(BIND.score));
       }

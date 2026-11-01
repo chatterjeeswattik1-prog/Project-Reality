@@ -12,6 +12,8 @@ import type { V3 } from './projectiles';
 import { mulberry } from '../core/rng';
 import { gridRef } from '../world/terrain';
 import type { GameMode } from './mode';
+import type RAPIER from '@dimforge/rapier3d-compat';
+import { G_WORLD, groups } from '../world/physics';
 
 export const CACHES_TOTAL = 6, CACHES_TO_WIN = 5, MAX_ACTIVE = 2, INTEL_REVEAL = 25, CACHE_TICKETS = 30, REVEAL_OFFSET = 75;
 
@@ -22,6 +24,8 @@ export interface Cache {
   /** Exact position confirmed (seen by a BLUFOR soldier). */ found: boolean;
   marker: [number, number];
   mesh: THREE.Object3D | null;
+  /** Collision box of the crates (bodies, soldiers and bullets stop on it). */
+  body?: RAPIER.RigidBody | null;
 }
 
 export class Insurgency implements GameMode {
@@ -62,10 +66,19 @@ export class Insurgency implements GameMode {
     if (!c) return;
     c.state = 'active';
     const m = this.cacheModel ? this.cacheModel.clone() : (() => { const b = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.1, 1.0), new THREE.MeshStandardMaterial({ color: 0x4f5536, roughness: 0.9 })); b.position.y = 0.55; const gr = new THREE.Group(); gr.add(b); return gr; })();
+    // The crates are solid: one box round the stack (the rifles leaning on it and the rockets on top are left out above
+    // 1.3 m), so bodies fall onto it, soldiers stop at it and rounds strike the wood.
+    m.updateMatrixWorld(true);
+    const bb = new THREE.Box3().setFromObject(m), sz = bb.getSize(new THREE.Vector3()), cc = bb.getCenter(new THREE.Vector3());
+    const hy = Math.min(1.3, sz.y) / 2, P = this.g.P, R = P.R, ry = (c.id * 1.7) % (Math.PI * 2);
     m.position.set(c.pos[0], c.pos[1], c.pos[2]);
-    m.rotation.y = (c.id * 1.7) % (Math.PI * 2);
+    m.rotation.y = ry;
     m.traverse((o) => { if ((o as THREE.Mesh).isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     this.g.gfx.scene.add(m); c.mesh = m;
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry), off = new THREE.Vector3(cc.x, 0, cc.z).applyQuaternion(q);
+    c.body = P.world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(c.pos[0] + off.x, c.pos[1] + bb.min.y + hy, c.pos[2] + off.z).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }));
+    const col = P.world.createCollider(R.ColliderDesc.cuboid(Math.max(0.1, sz.x / 2 * 0.92), hy, Math.max(0.1, sz.z / 2 * 0.92)).setCollisionGroups(groups(G_WORLD, 0xffff)), c.body);
+    P.surf.set(col.handle, 'wood');
   }
 
   reveal(c: Cache) { if (c.revealed) return; c.revealed = true; this.say(`Intel: weapons cache located near ${gridOf(c.marker)}`, 'us'); }
@@ -97,6 +110,7 @@ export class Insurgency implements GameMode {
       if (Math.hypot(p[0] - c.pos[0], p[1] - (c.pos[1] + 0.5), p[2] - c.pos[2]) > 3.5) continue;
       c.state = 'destroyed'; this.destroyed++; this.tickets += CACHE_TICKETS;
       if (c.mesh) { this.g.gfx.scene.remove(c.mesh); c.mesh = null; }
+      if (c.body) { this.g.P.world.removeRigidBody(c.body); c.body = null; }
       // Secondary explosions from the ammunition.
       for (let i = 1; i <= 3; i++) setTimeout(() => this.g.fx.explosion([c.pos[0] + (Math.random() - 0.5) * 2, c.pos[1] + 0.8, c.pos[2] + (Math.random() - 0.5) * 2], 1.2), i * 450);
       if (by) by.score += 50;

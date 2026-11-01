@@ -9,8 +9,10 @@ import type { WorldView } from '../world/render';
 import { G_WORLD, type Physics } from '../world/physics';
 import { FX } from '../fx/fx';
 import { Audio } from '../audio/audio';
+import { Foley } from '../audio/foley';
+import type { Surface } from '../world/sink';
 import { Projectiles, type V3 } from './projectiles';
-import { Soldier, zeroAngle, type HitPart } from './soldier';
+import { Soldier, glElevation, zeroAngle, type HitPart } from './soldier';
 import { Rig, type CharAssets } from './rig';
 import { AMMO, WEAPONS, type Ammo, type WeaponDef } from './data/weapons';
 import { type Faction, type Kit } from './data/kits';
@@ -27,8 +29,10 @@ export interface GameEvents {
   onExplosion?: (p: V3, ammo: Ammo, by: Soldier | null) => void;
 }
 /** The M203 leaf sight looks ~9° below the bore (about the 200–250 m setting), so the grenade leaves above the sight line. */
-const M203_SIGHT_TILT = (9 * Math.PI) / 180;
 interface Charge { p: V3; owner: Soldier; ammo: Ammo; mesh: THREE.Object3D }
+
+/** Ragdolls simulated at once (a settled body costs nothing). */
+const MAX_RAGDOLLS = 12;
 
 export class Game {
   fx: FX; audio: Audio; proj: Projectiles;
@@ -53,6 +57,8 @@ export class Game {
   private zeros = new Map<string, number>();
   rng = mulberry(4242);
   prof: Record<string, number> = {};
+  /** Footsteps, body falls, the player's breathing and heartbeat. */
+  foley = new Foley(this);
 
   constructor(public gfx: Gfx, public P: Physics, public city: City, public world: WorldView, public assets: CharAssets, quality: string) {
     this.fx = new FX(gfx.scene);
@@ -70,7 +76,7 @@ export class Game {
       return false;
     };
     this.proj = new Projectiles(P, () => this.soldiers, {
-      impact: (p, n, surf, a) => { this.fx.impact(p, n, surf, a.pen >= 3 ? 2 : 1); if (Math.random() < 0.5) this.audio.play(surf === 'metal' ? 'impact_metal' : surf === 'dirt' || surf === 'sandbag' ? 'impact_dirt' : 'impact_concrete', p, { range: 40, gain: 0.6 }); },
+      impact: (p, n, surf, a, d) => this.impactSound(p, n, surf, a, d),
       hit: (s, p, part, a, by) => this.hitSoldier(s, p, part, a, by),
       crack: (s, p, a, by) => this.crack(s, p, a, by),
       explode: (p, a, by, n) => this.explode(p, a, by, n),
@@ -89,6 +95,7 @@ export class Game {
     const rig = new Rig(this.assets, model, team === 'us' ? 0x8a8466 : 0x6a5a48);
     this.gfx.scene.add(rig.root);
     this.rigs.set(s.id, rig);
+    rig.P = this.P;
     rig.setWeapon(s.weapon.model);
     return s;
   }
@@ -174,7 +181,7 @@ export class Game {
     // Direction: where the sights point (aim + sway + recoil) + the shot cone (uniform over the disc: mechanical
     // dispersion when aimed, the hip cone otherwise) + the sight's zero angle.
     const r = (s.dev / 1000) * Math.sqrt(Math.random()), th = Math.random() * Math.PI * 2;
-    const yaw = s.yaw + s.wob[0] + s.rcY + r * Math.cos(th) / Math.max(0.2, Math.cos(s.pitch)), pitch = s.pitch + s.wob[1] + s.rcP + r * Math.sin(th) + this.zero(def) + (def.kind === 'gl' ? M203_SIGHT_TILT : 0);
+    const yaw = s.yaw + s.wob[0] + s.rcY + r * Math.cos(th) / Math.max(0.2, Math.cos(s.pitch)), pitch = s.pitch + s.wob[1] + s.rcP + r * Math.sin(th) + (def.kind === 'gl' ? glElevation(s.glRange) : this.zero(def));
     const d = s.aimDir(yaw, pitch);
     const e = s.eye;
     let o: V3 = [e[0] + d[0] * 0.25, e[1] + d[1] * 0.25 - (s.ads > 0.5 ? 0 : 0.08), e[2] + d[2] * 0.25];
@@ -194,6 +201,16 @@ export class Game {
     const mz = s.isPlayer && this.player && !this.player.third ? this.player.vm.muzzleWorld(new THREE.Vector3()) : rig?.muzzle ?? new THREE.Vector3(...o);
     const big = a.pen >= 3 ? 2 : def.kind === 'launcher' ? 2.5 : def.kind === 'pistol' ? 0.6 : 1;
     this.fx.muzzle([mz.x, mz.y, mz.z], d, big, !!s.isPlayer);
+    // Other soldiers' weapons throw their brass too (seen close by: the cases pile up round a firing position).
+    const fp = s.isPlayer && this.player && !this.player.third;
+    if (!fp && rig?.weapon && (def.kind === 'rifle' || def.kind === 'lmg' || def.kind === 'gpmg' || def.kind === 'pistol' || def.kind === 'sniper') && mz.distanceToSquared(this.gfx.camera.position) < 35 * 35) {
+      const ej = rig.weapon.getObjectByName('eject');
+      if (ej) {
+        const ep = ej.getWorldPosition(new THREE.Vector3()), q = rig.weapon.getWorldQuaternion(new THREE.Quaternion());
+        const v = new THREE.Vector3(1.7 + Math.random(), 1.1 + Math.random() * 0.8, 0.3 + Math.random() * 0.5).applyQuaternion(q);
+        this.fx.casing([ep.x, ep.y, ep.z], [v.x + s.vel[0], v.y, v.z + s.vel[2]], !!def.belt);
+      }
+    }
     // Chest thump of a close shot (own weapon full, others by distance).
     const pk = a.pen >= 3 ? 2 : def.kind === 'launcher' ? 1.8 : a.pen >= 2 ? 1.4 : def.kind === 'pistol' ? 0.6 : 1;
     if (s.isPlayer) this.audio.punch(pk);
@@ -238,16 +255,39 @@ export class Game {
     if (back) this.fx.bloodDecal(back.point, back.normal, 0.35 + Math.random() * 0.4 * (a.pen >= 2 ? 1.5 : 1));
     const below = this.P.castRay(p, [dn[0] * 0.3, -1, dn[2] * 0.3].map((v, i, arr) => v / Math.hypot(arr[0], arr[1], arr[2])) as V3, 3);
     if (below) this.fx.bloodDecal(below.point, below.normal, 0.25 + Math.random() * 0.2);
-    // The hit shoves the body: a stagger away from the shot, and whoever goes down falls away from the shooter.
+    // The hit shoves the body: a stagger away from the shot; whoever goes down collapses as a ragdoll pushed by the
+    // round, and a body on the ground jerks when hit again.
     const rig = this.rigs.get(s.id), power = Math.min(1.6, a.dmg / 70) * (part === 'arm' || part === 'leg' ? 0.6 : 1);
+    // Wounds on the body where the round went in, and where it came out for full-power rounds.
+    const cp = this.gfx.camera.position;
+    if (rig && Math.hypot(p[0] - cp.x, p[1] - cp.y, p[2] - cp.z) < 90) {
+      rig.wound(p, dn, false);
+      if (a.pen >= 2 || (a.pen >= 1 && Math.random() < 0.5)) rig.wound(p, dn, true);
+    }
     if (s.state === 'alive') rig?.hit(part, dn, power);
-    else if (wasAlive) { s.yaw = Math.atan2(dn[0], dn[2]) + (Math.random() - 0.5) * 0.6; rig?.fall(power); }
+    else {
+      const k = (wasAlive ? 16 : 7) * power * (part === 'head' ? 1.2 : 1);
+      rig?.shove(s, p, [dn[0] * k, dn[1] * k, dn[2] * k]);
+    }
     this.audio.play('impact_flesh', s.isPlayer ? null : p, { range: 40, gain: 1.2 });
     // A hit knocks the victim's aim off (and the player's view jolts).
     s.rcP += (0.02 + Math.random() * 0.03) * power; s.rcY += (Math.random() - 0.5) * 0.07 * power;
     if (s.isPlayer) { this.player?.onShot(30 * power, (Math.random() - 0.5) * 20); this.player && (this.player.shake += 0.25 * power); this.hud?.hurt(from); }
     if (wasAlive && s.state !== 'alive') this.events.onDown?.(s, by, s.state === 'dead');
     else if (!wasAlive && s.state === 'dead') this.events.onDown?.(s, by, true);
+  }
+
+  /**
+   * A round striking something: the dust and the smack (always heard close by, often at mid range), and on hard
+   * surfaces at a glancing angle the whine of a ricochet going off somewhere.
+   */
+  private impactSound(p: V3, n: V3, surf: Surface, a: Ammo, d?: V3) {
+    this.fx.impact(p, n, surf, a.pen >= 3 ? 2 : 1);
+    const L = this.audio.listener.p, dist = Math.hypot(p[0] - L[0], p[1] - L[1], p[2] - L[2]);
+    if (dist < 18 || Math.random() < 0.55) this.audio.play(surf === 'metal' ? 'impact_metal' : surf === 'dirt' || surf === 'sandbag' ? 'impact_dirt' : 'impact_concrete', p, { range: 45, gain: dist < 18 ? 0.85 : 0.6 });
+    const hard = surf === 'metal' || surf === 'concrete' || surf === 'masonry';
+    const glance = d ? 1 - Math.abs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) : 0.5;
+    if (hard && dist < 70 && Math.random() < 0.08 + glance * 0.35) this.audio.play('ricochet', p, { range: 70, gain: 0.9, rate: 0.85 + Math.random() * 0.3 });
   }
 
   crack(s: Soldier, p: V3, a: Ammo, by: Soldier) {
@@ -265,11 +305,19 @@ export class Game {
     const power = Math.min(3, Math.max(0.6, ex.dmg / 180));
     this.fx.explosion(p, power, n);
     this.audio.play(ex.dmg > 300 ? 'explosion_big' : 'explosion_near', p, { range: 3000, far: 'explosion_far', nearDist: 150, gain: 1 });
+    // Bodies on the ground are thrown by the blast.
+    const throwK = (q: V3) => { const dd = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]); return dd > ex.radius * 0.8 ? 0 : 4.5 * power * (1 - dd / (ex.radius * 0.8)); };
+    for (const r of this.corpses) { const q: V3 = [r.root.position.x, r.root.position.y + 0.3, r.root.position.z], k = throwK(q); if (k > 0 && this.P.clear(p, q, G_WORLD)) r.blast(null, p, k); }
     for (const s of this.soldiers) {
-      if (s.state === 'dead') continue;
+      if (s.state === 'dead') { const q: V3 = [s.pos[0], s.pos[1] + 0.3, s.pos[2]], k = throwK(q); if (k > 0 && this.P.clear(p, q, G_WORLD)) this.rigs.get(s.id)?.blast(s, p, k); continue; }
       const c: V3 = [s.pos[0], s.pos[1] + (s.stance === 'prone' || s.state !== 'alive' ? 0.25 : 1.0), s.pos[2]];
       const dist = Math.hypot(c[0] - p[0], c[1] - p[1], c[2] - p[2]);
-      if (s.isPlayer && dist < ex.radius * 3) { this.player!.shake += Math.max(0, 1.5 - dist / (ex.radius * 2)); this.hud?.blast(Math.max(0, 1 - dist / (ex.radius * 2.5))); }
+      if (s.isPlayer && dist < ex.radius * 3) {
+        const k = Math.max(0, 1 - dist / (ex.radius * 2.5));
+        this.player!.shake += Math.max(0, 1.5 - dist / (ex.radius * 2)); this.hud?.blast(k);
+        // Ears ringing after a close blast (the world goes dull: hud.blast drives the muffle).
+        if (k > 0.25) this.audio.play('tinnitus', null, { gain: 1 + k * 4, verb: 0 });
+      }
       if (dist > ex.radius) { if (dist < ex.radius * 2.5) s.suppress = Math.min(1, s.suppress + 0.5); continue; }
       if (!this.P.clear(p, c, G_WORLD)) continue;
       const wasAlive = s.state === 'alive';
@@ -277,6 +325,7 @@ export class Game {
       // Prone soldiers are much safer from fragments.
       const prone = s.stance === 'prone' && dist > ex.kill ? 0.45 : 1;
       s.damage(ex.dmg * k * prone, 'chest', p, by, this.time, true);
+      if (s.state !== 'alive') { const tk = throwK(c); if (tk > 0) this.rigs.get(s.id)?.blast(s, p, tk); }
       if (wasAlive && s.state !== 'alive') this.events.onDown?.(s, by, (s.state as string) === 'dead');
     }
     this.events.onExplosion?.(p, a, by);
@@ -317,6 +366,11 @@ export class Game {
         this.fx.bloodPool([c[0], s.pos[1], c[2]], s.state === 'dead' ? 1.3 : 0.9);
       }
       if (s.state === 'alive') s.pooled = false;
+      // A bleeding soldier drips blood as he goes (a trail to follow), more the worse he bleeds.
+      if (s.alive && s.bleed > 0 && Math.random() < dt * (0.6 + s.bleed * 0.8) && Math.hypot(s.pos[0] - cam.x, s.pos[2] - cam.z) < 70) {
+        const hgt = s.stance === 'prone' ? 0.25 : s.stance === 'crouch' ? 0.6 : 0.9;
+        this.fx.drip([s.pos[0] + (Math.random() - 0.5) * 0.3, s.pos[1] + hgt, s.pos[2] + (Math.random() - 0.5) * 0.3]);
+      }
       const reloaded = s.tick(dt, this.time);
       if (reloaded && (!s.isPlayer || s.underSel)) this.audio.play(s.weapon.belt ? 'belt_box_open_close' : 'mag_in', s.isPlayer ? null : s.eye, { range: 25, gain: 0.7 });
     }
@@ -332,13 +386,18 @@ export class Game {
       const hide = s.isPlayer && this.player && !this.player.third;
       rig.root.visible = !hide && dist < 700; rig.visible = rig.root.visible;
       rig.setWeapon(s.underSel ? s.weapon.model : s.weapon.model);
-      if (rig.root.visible || s.isPlayer) rig.update(dt, s, dist, this.time);
+      if (rig.root.visible || s.isPlayer || rig.ragged) rig.update(dt, s, dist, this.time);
       else if (rig.weapon) rig.weapon.visible = false;
     }
+    // Corpses still falling; at most MAX_RAGDOLLS simulate at once (the oldest settle where they are).
+    for (const r of this.corpses) if (r.ragActive) r.updateRag(dt);
+    const active = [...this.rigs.values(), ...this.corpses].filter((r) => r.ragActive);
+    if (active.length > MAX_RAGDOLLS) active.sort((x, y) => y.rag!.t - x.rag!.t).slice(0, active.length - MAX_RAGDOLLS).forEach((r) => { r.rag!.finish(); r.rag = null; });
     this.prof.rigs = performance.now() - t0; t0 = performance.now();
     this.doors?.update(dt);
     this.fx.cam.set(cam.x, cam.y, cam.z);
     this.fx.update(dt);
+    this.foley.update(dt);
     this.prof.fx = performance.now() - t0;
     if (this.player) this.audio.setListener([cam.x, cam.y, cam.z], this.player.forward());
   }

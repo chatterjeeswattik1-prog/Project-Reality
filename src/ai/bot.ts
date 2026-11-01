@@ -35,6 +35,9 @@ type Act = { move: V3 | null; stance: 'stand' | 'crouch' | 'prone'; aimAt: V3 | 
 
 const VIEW = 380;
 
+/** How far up a prone soldier can aim (rad). */
+const PRONE_UP = 0.45;
+
 export class Bot {
   order: Order;
   path: V3[] = []; pathI = 0; repathT = 0; goal: V3 | null = null;
@@ -256,6 +259,9 @@ export class Bot {
     // Stance and movement. Covering ground (more than a few metres to go, or running) is done on the feet — soldiers
     // dash between covers upright and get low when they arrive; the crouch walk is for the last steps and for creeping.
     if (move && stance === 'crouch' && (run || Math.hypot(move[0] - s.pos[0], move[2] - s.pos[2]) > 4)) stance = 'stand';
+    // Lying down a rifle cannot be raised more than ~25° (PRONE_UP): a target well above (someone standing over him, an
+    // upper window close by) makes him come up to a crouch to shoot.
+    if (stance === 'prone' && aimAt) { const e = s.eye; if (Math.atan2(aimAt[1] - e[1], Math.hypot(aimAt[0] - e[0], aimAt[2] - e[2])) > PRONE_UP + 0.05) stance = 'crouch'; }
     if (s.stance !== stance && s.switchT <= 0) s.setStance(stance, g.time);
     let want: [number, number] = [0, 0];
     if (move) {
@@ -288,13 +294,14 @@ export class Bot {
     let dy = this.wantYaw - s.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
     s.yaw += clamp(dy, -turn, turn);
     s.pitch += clamp(this.wantPitch - s.pitch, -turn, turn);
+    if (s.stance === 'prone') s.pitch = clamp(s.pitch, -0.35, PRONE_UP);
     s.aiming = ((!!t && Math.hypot(t.pos[0] - s.pos[0], t.pos[2] - s.pos[2]) > 12) || (wantFire && !t)) && s.switchT <= 0 && !s.sprinting;
     // Machine gunners deploy the bipod where they can when they settle into a firing position.
     if (s.weapon.bipod && s.aiming && s.support !== 'bipod' && s.moving < 0.1 && Math.random() < dt * 2) s.toggleBipod();
     s.ads = clamp(s.ads + (s.aiming ? 4 : -6) * dt, 0, 1);
 
     // Fire control.
-    if (wantFire && aimAt && Math.abs(dy) < 0.08) this.fire(t, dt, aimAt);
+    if (wantFire && aimAt && Math.abs(dy) < 0.08 && Math.abs(this.wantPitch - s.pitch) < 0.12) this.fire(t, dt, aimAt);
     else { this.pressPhase = false; g.trigger(s, false, false); }
   }
 
@@ -380,8 +387,9 @@ export class Bot {
         const done = this.tacT <= 0 || s.slot.loaded === 0 || (this.noSightT > 4 && !this.suppressing());
         if (done && cp) { this.tac = 'hide'; this.tacT = 1.2 + Math.random() * 1.6 + s.suppress * 3; }
         else if (done) { this.tac = 'none'; }
-        // Suppressive fire at the last known position while a teammate is on the move.
-        const suppress = !t && this.suppressing() && this.lastSeen !== null && g.time - this.lastSeen.t < 6;
+        // Fire at the last known position: a couple of seconds' worth after the enemy ducks out of sight (keeps his head
+        // down, as real riflemen do), and for longer while a teammate is on the move.
+        const suppress = !t && this.lastSeen !== null && g.time - this.lastSeen.t < (this.suppressing() ? 6 : 2.5);
         return { move: cp ? cp.peek : null, stance: st, aimAt, fire: canShoot || suppress };
       }
     }

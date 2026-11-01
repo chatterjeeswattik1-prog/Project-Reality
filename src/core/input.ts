@@ -2,7 +2,7 @@
 export const BIND = {
   fwd: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', sprint: 'ShiftLeft', crouch: 'ControlLeft', crouch2: 'KeyC', prone: 'KeyZ', jump: 'Space',
   reload: 'KeyR', mode: 'KeyB', use: 'KeyF', map: 'KeyM', score: 'Tab', leanL: 'KeyQ', leanR: 'KeyE', bandage: 'KeyF', menu: 'Escape', giveUp: 'Enter',
-  slot1: 'Digit1', slot2: 'Digit2', slot3: 'Digit3', slot4: 'Digit4', slot5: 'Digit5', light: 'KeyT', bipod: 'KeyG', orderMove: 'KeyY', orderHold: 'KeyH', orderSuppress: 'KeyU', freeLook: 'AltLeft', camera: 'KeyV',
+  slot1: 'Digit1', slot2: 'Digit2', slot3: 'Digit3', slot4: 'Digit4', slot5: 'Digit5', light: 'KeyT', bipod: 'KeyG', orderMove: 'KeyY', orderHold: 'KeyH', orderSuppress: 'KeyU', freeLook: 'AltLeft', camera: 'KeyV', rangeUp: 'PageUp', rangeDown: 'PageDown',
 } as const;
 
 export class Input {

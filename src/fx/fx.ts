@@ -1,11 +1,12 @@
 // Visual effects: muzzle flashes (with a small pool of lights so shaders never recompile), tracers, particle puffs
 // (dust, sparks, blood, smoke, fire), bullet-hole and scorch decals, explosions and smoke screens.
 import * as THREE from 'three';
+import { LiquidBlood } from './liquid';
 const _v3 = new THREE.Vector3();
 import type { Surface } from '../world/sink';
 
 type V3 = [number, number, number];
-const MAX_P = 6000, MAX_DECALS = 1500, MAX_TRACERS = 300, MAX_CASES = 160;
+const MAX_P = 6000, MAX_DECALS = 1500, MAX_TRACERS = 300, MAX_CASES = 320;
 
 function softDot(): THREE.Texture {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -48,23 +49,6 @@ function holeTexture(): THREE.Texture {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
-function bloodTexture(): THREE.Texture {
-  // Irregular splatter: a dense core, satellite drops and a few streaks (dark arterial red).
-  const c = document.createElement('canvas'); c.width = c.height = 128;
-  const x = c.getContext('2d')!;
-  const blob = (bx: number, by: number, r: number, a: number) => { const g = x.createRadialGradient(bx, by, 0, bx, by, r); g.addColorStop(0, `rgba(96,6,4,${a})`); g.addColorStop(0.7, `rgba(122,10,6,${a * 0.9})`); g.addColorStop(1, 'rgba(122,10,6,0)'); x.fillStyle = g; x.beginPath(); x.arc(bx, by, r, 0, 7); x.fill(); };
-  for (let i = 0; i < 9; i++) blob(64 + (Math.random() - 0.5) * 30, 64 + (Math.random() - 0.5) * 30, 14 + Math.random() * 16, 0.95);
-  for (let i = 0; i < 26; i++) { const a = Math.random() * 6.28, d = 25 + Math.random() * 36; blob(64 + Math.cos(a) * d, 64 + Math.sin(a) * d, 1.5 + Math.random() * 4, 0.9); }
-  x.strokeStyle = 'rgba(110,8,5,0.8)'; x.lineCap = 'round';
-  for (let i = 0; i < 6; i++) { const a = Math.random() * 6.28, d = 20 + Math.random() * 30; x.lineWidth = 1 + Math.random() * 3; x.beginPath(); x.moveTo(64 + Math.cos(a) * 12, 64 + Math.sin(a) * 12); x.lineTo(64 + Math.cos(a) * d, 64 + Math.sin(a) * d); x.stroke(); }
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
-}
-function poolTexture(): THREE.Texture {
-  const c = document.createElement('canvas'); c.width = c.height = 128;
-  const x = c.getContext('2d')!;
-  for (let i = 0; i < 7; i++) { const bx = 64 + (Math.random() - 0.5) * 34, by = 64 + (Math.random() - 0.5) * 34, r = 22 + Math.random() * 18; const g = x.createRadialGradient(bx, by, 0, bx, by, r); g.addColorStop(0, 'rgba(62,3,2,0.97)'); g.addColorStop(0.8, 'rgba(84,6,4,0.9)'); g.addColorStop(1, 'rgba(84,6,4,0)'); x.fillStyle = g; x.beginPath(); x.arc(bx, by, r, 0, 7); x.fill(); }
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
-}
 
 const PARTICLE_VS = `
 attribute float size; attribute float alpha; attribute vec3 tint; attribute float rot;
@@ -150,8 +134,10 @@ export class FX {
   lights: THREE.PointLight[] = []; private lightT: number[] = [];
   flashes: THREE.Sprite[] = []; private flashT: number[] = [];
   wind: V3 = [0.6, 0, 0.3];
-  splats: THREE.InstancedMesh; private bloodN = 0;
-  pools: THREE.InstancedMesh; private poolN = 0; private growing: { i: number; p: V3; r: number; max: number; rot: number }[] = [];
+  /** Liquid blood: simulated pools and beads (fx/liquid.ts). */
+  liquid: LiquidBlood;
+  /** Spray droplets in flight: each leaves a small splat where it lands (ground or wall). */
+  private drops: { p: V3; v: V3; t: number }[] = [];
   private bodies = new Map<number, THREE.Object3D>();
   /** Ejected cases: brass (rifles, pistols) or belt links, flying, bouncing once or twice and lying for a while. */
   private cases: THREE.InstancedMesh; private caseN = 0;
@@ -175,10 +161,7 @@ export class FX {
     const st = new THREE.CanvasTexture(sc); st.colorSpace = THREE.SRGBColorSpace;
     this.scorch = new THREE.InstancedMesh(dg, new THREE.MeshStandardMaterial({ map: st, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, roughness: 1 }), 120);
     this.scorch.count = 0; this.scorch.frustumCulled = false; scene.add(this.scorch);
-    // Blood: lit by the sun but not reflecting the sky (a blue sky reflection on dark red read as purple).
-    const bm = (map: THREE.Texture, o: number) => new THREE.MeshLambertMaterial({ map, color: 0xb0b0b0, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: o, polygonOffsetUnits: o });
-    this.splats = new THREE.InstancedMesh(dg, bm(bloodTexture(), -5), 400); this.splats.count = 0; this.splats.frustumCulled = false; scene.add(this.splats);
-    this.pools = new THREE.InstancedMesh(dg, bm(poolTexture(), -6), 60); this.pools.count = 0; this.pools.frustumCulled = false; scene.add(this.pools);
+    this.liquid = new LiquidBlood(scene, (q) => this.floorAt(q), (o, d, l) => this.sweep(o, d, l));
     const tg = new THREE.BufferGeometry();
     tg.setAttribute('position', new THREE.BufferAttribute(this.tr, 3).setUsage(THREE.DynamicDrawUsage));
     tg.setAttribute('color', new THREE.BufferAttribute(this.trc, 3).setUsage(THREE.DynamicDrawUsage));
@@ -187,8 +170,9 @@ export class FX {
     for (let i = 0; i < 3; i++) { const l = new THREE.PointLight(0xffb060, 0, 14, 2); this.lights.push(l); this.lightT.push(0); scene.add(l); }
     const fm = new THREE.SpriteMaterial({ map: softDot(), color: 0xffc070, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
     for (let i = 0; i < 8; i++) { const s = new THREE.Sprite(fm); s.visible = false; this.flashes.push(s); this.flashT.push(0); scene.add(s); }
-    const cg = new THREE.CylinderGeometry(0.0055, 0.0055, 0.04, 7).rotateX(Math.PI / 2);
-    this.cases = new THREE.InstancedMesh(cg, new THREE.MeshStandardMaterial({ color: 0xc8a050, metalness: 0.85, roughness: 0.32 }), MAX_CASES);
+    // Brass case (5.56: 45 × 9.6 mm), a touch of self-light so it still glints lying in shade.
+    const cg = new THREE.CylinderGeometry(0.0052, 0.006, 0.045, 7).rotateX(Math.PI / 2);
+    this.cases = new THREE.InstancedMesh(cg, new THREE.MeshStandardMaterial({ color: 0xd6ad58, metalness: 0.8, roughness: 0.28, emissive: 0x3a2808, emissiveIntensity: 0.6 }), MAX_CASES);
     this.cases.count = 0; this.cases.frustumCulled = false; this.cases.castShadow = false; scene.add(this.cases);
     const rg = new THREE.RingGeometry(0.85, 1, 48).rotateX(-Math.PI / 2);
     for (let i = 0; i < 4; i++) {
@@ -261,21 +245,22 @@ export class FX {
     // Exit mist: fine and translucent (a few overlapping opaque puffs read as a red cartoon cloud).
     for (let i = 0; i < 9 * big; i++) this.smoke.spawn(p, [dir[0] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1, dir[1] * 1.2 + (Math.random() - 0.3) * 0.8, dir[2] * (1 + Math.random() * 2.5) + (Math.random() - 0.5) * 1], 0.14, 1.1, 0.35 + Math.random() * 0.3, 0.45, [0.42, 0.03, 0.03], 3.5, 1.2, [0.3, 0.05, 0.04]);
     for (let i = 0; i < 18 * big; i++) this.smoke.spawn(p, [dir[0] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2, dir[1] * 2 + Math.random() * 1.5, dir[2] * (2 + Math.random() * 4) + (Math.random() - 0.5) * 2], 0.025 + Math.random() * 0.02, 0, 0.5 + Math.random() * 0.4, 1, [0.32, 0.01, 0.01], 0.4, 9.8);
+    // The heavier drops of the spray fly on and spatter whatever they land on.
+    for (let i = 0; i < 6 * big && this.drops.length < 160; i++) this.drops.push({ p: [...p] as V3, v: [dir[0] * (1.5 + Math.random() * 3.5) + (Math.random() - 0.5) * 1.6, dir[1] * 1.5 + Math.random() * 1.2, dir[2] * (1.5 + Math.random() * 3.5) + (Math.random() - 0.5) * 1.6], t: 0 });
   }
+  /** A drop falling from a wound (bleeding soldiers leave a trail). */
+  drip(p: V3) { if (this.drops.length < 160) this.drops.push({ p: [...p] as V3, v: [(Math.random() - 0.5) * 0.2, -0.5, (Math.random() - 0.5) * 0.2], t: 0 }); }
   /** Splatter on a surface (wall behind the victim, the ground below). */
   bloodDecal(p: V3, n: V3, size: number) {
-    const i = this.bloodN % 400; this.bloodN++;
-    this.q.setFromUnitVectors(this.up, new THREE.Vector3(n[0], n[1], n[2])).multiply(new THREE.Quaternion().setFromAxisAngle(this.up, Math.random() * 6.28));
-    this.m4.compose(new THREE.Vector3(p[0] + n[0] * 0.012, p[1] + n[1] * 0.012, p[2] + n[2] * 0.012), this.q, new THREE.Vector3(size, size, size));
-    this.splats.setMatrixAt(i, this.m4); this.splats.count = Math.min(400, this.bloodN); this.splats.instanceMatrix.needsUpdate = true;
+    // Liquid, not a painted splat: a cluster of beads on the surface (on a wall the big ones run down).
+    this.liquid.spatter(p, n, Math.min(1.2, size * 1.6));
   }
   /** A pool that spreads under a downed body over ~15 s. */
   bloodPool(p: V3, max = 1.3) {
-    const i = this.poolN % 60; this.poolN++;
-    this.growing = this.growing.filter((g) => g.i !== i);
-    this.growing.push({ i, p, r: 0.12, max: max * 0.6 * (0.8 + Math.random() * 0.4), rot: Math.random() * 6.28 });
-    this.pools.count = Math.min(60, this.poolN);
+    // A body bleeds out ~1 l (dead) / ~0.8 l (wounded, still bleeding) into a simulated pool.
+    this.liquid.pool(p, max * 0.9);
   }
+
   decal(p: V3, n: V3, size: number) {
     const i = this.decalN % MAX_DECALS; this.decalN++;
     this.q.setFromUnitVectors(this.up, new THREE.Vector3(n[0], n[1], n[2]));
@@ -368,12 +353,21 @@ export class FX {
       (r.m.material as THREE.MeshBasicMaterial).opacity = 0.45 * (1 - r.t);
       if (r.t >= 1) r.m.visible = false;
     }
-    for (const g of this.growing) {
-      if (g.r >= g.max) continue;
-      g.r = Math.min(g.max, g.r + dt * (g.max - g.r) * 0.07 + dt * 0.004);
-      this.q.setFromUnitVectors(this.up, new THREE.Vector3(0, 1, 0)).multiply(new THREE.Quaternion().setFromAxisAngle(this.up, g.rot));
-      this.m4.compose(new THREE.Vector3(g.p[0], g.p[1] + 0.015, g.p[2]), this.q, new THREE.Vector3(g.r * 2, g.r * 2, 1));
-      this.pools.setMatrixAt(g.i, this.m4); this.pools.instanceMatrix.needsUpdate = true;
+    for (let i = this.drops.length - 1; i >= 0; i--) {
+      const d = this.drops[i]; d.t += dt;
+      d.v[1] -= 9.81 * dt;
+      const sp = Math.hypot(d.v[0], d.v[1], d.v[2]), step = sp * dt;
+      const h = step > 1e-4 ? this.sweep(d.p, [d.v[0] / sp, d.v[1] / sp, d.v[2] / sp], step) : null;
+      if (h) {
+        const pt: V3 = [d.p[0] + (d.v[0] / sp) * h.dist, d.p[1] + (d.v[1] / sp) * h.dist, d.p[2] + (d.v[2] / sp) * h.dist];
+        // A drop lands as a bead; a fast one splashes a few tiny satellites round it.
+        const r = 0.0025 + Math.random() * 0.004;
+        this.liquid.bead(pt, h.normal, r);
+        if (sp > 3) this.liquid.spatter(pt, h.normal, 0.08 + Math.min(0.15, sp * 0.02));
+        this.drops.splice(i, 1); continue;
+      }
+      d.p[0] += d.v[0] * dt; d.p[1] += d.v[1] * dt; d.p[2] += d.v[2] * dt;
+      if (d.t > 3) this.drops.splice(i, 1);
     }
     let moved = false;
     for (let i = 0; i < this.cs.length; i++) {
@@ -404,6 +398,7 @@ export class FX {
       this.m4.compose(c.p, c.q, new THREE.Vector3(1, 1, 1)); this.cases.setMatrixAt(i, this.m4);
     }
     if (moved) this.cases.instanceMatrix.needsUpdate = true;
+    this.liquid.update(dt);
     this.smoke.update(dt, this.wind); this.glow.update(dt, [0, 0, 0]);
   }
   setScale(h: number) { for (const s of [this.smoke, this.glow]) (s.points.material as THREE.ShaderMaterial).uniforms.uScale.value = h * 0.9; }

@@ -6,6 +6,8 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { Soldier } from './soldier';
 import { damp } from '../core/rng';
 import { choreo, hand as handTrack, num, vec, type HandAt, type V3 } from '../player/handling';
+import { Ragdoll } from './ragdoll';
+import type { Physics } from '../world/physics';
 
 export interface CharAssets {
   models: Map<string, THREE.Object3D>; clips: Map<string, THREE.AnimationClip>; weapons: Map<string, THREE.Object3D>; tpWeapons: Map<string, THREE.Object3D>;
@@ -74,6 +76,43 @@ export function wristTarget(grip: THREE.Vector3, wq: THREE.Quaternion, side: 'r'
   const a = handTarget(wq, side);
   return grip.clone().addScaledVector(a.y, -0.075).addScaledVector(a.palm, -0.035);
 }
+
+/**
+ * Bullet wound on clothing/skin: a dark hole in a wet, irregular blood stain soaking outwards (alpha), a few runs below.
+ * Exit wounds use the same texture larger.
+ */
+let woundMat: THREE.MeshPhongMaterial | null = null;
+function woundMaterial(): THREE.MeshPhongMaterial {
+  if (woundMat) return woundMat;
+  const S = 128, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d')!;
+  let seed = 9; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  // Soaked stain: many overlapping soft blobs, darker in the middle.
+  for (let i = 0; i < 26; i++) {
+    const a = rnd() * Math.PI * 2, r = rnd() * S * 0.2, x = S / 2 + Math.cos(a) * r, y = S / 2 + Math.sin(a) * r * 0.8 + r * 0.25, rr = S * (0.07 + rnd() * 0.1);
+    const gr = g.createRadialGradient(x, y, 0, x, y, rr);
+    gr.addColorStop(0, 'rgba(105,8,5,0.8)'); gr.addColorStop(0.7, 'rgba(115,10,6,0.55)'); gr.addColorStop(1, 'rgba(115,10,6,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, rr, 0, Math.PI * 2); g.fill();
+  }
+  // Runs down from the wound.
+  g.strokeStyle = 'rgba(95,6,4,0.85)'; g.lineCap = 'round';
+  for (let i = 0; i < 4; i++) { const x = S / 2 + (rnd() - 0.5) * S * 0.25; g.lineWidth = 2 + rnd() * 3; g.beginPath(); g.moveTo(x, S / 2); g.lineTo(x + (rnd() - 0.5) * 6, S / 2 + S * (0.2 + rnd() * 0.25)); g.stroke(); }
+  // Wet dark centre and the hole.
+  let gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S * 0.16);
+  gr.addColorStop(0, 'rgba(55,3,2,0.98)'); gr.addColorStop(1, 'rgba(85,5,3,0)');
+  g.fillStyle = gr; g.beginPath(); g.arc(S / 2, S / 2, S * 0.16, 0, Math.PI * 2); g.fill();
+  gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S * 0.05);
+  gr.addColorStop(0, 'rgba(8,0,0,1)'); gr.addColorStop(0.6, 'rgba(25,1,1,1)'); gr.addColorStop(1, 'rgba(70,5,3,0.9)');
+  g.fillStyle = gr; g.beginPath(); g.arc(S / 2, S / 2, S * 0.05, 0, Math.PI * 2); g.fill();
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  // Wet: blood soaking cloth is glossy where it is fresh (sun highlight only: a sky reflection on dark red reads purple).
+  woundMat = new THREE.MeshPhongMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, specular: 0x2a1614, shininess: 60 });
+  return woundMat;
+}
+const woundGeo = new THREE.PlaneGeometry(1, 1);
+/** Bones a wound can sit on (nearest to the hit point wins). */
+const WOUND_BONES = ['Head', 'neck_01', 'spine_03', 'spine_02', 'spine_01', 'pelvis', 'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r'];
+const _ray = new THREE.Raycaster();
 
 const FINGERS = ['index', 'middle', 'ring', 'pinky'];
 const CURL: Record<'r' | 'l', number[]> = { r: [1.05, 1.25, 0.85], l: [0.8, 1.0, 0.65] };
@@ -148,6 +187,8 @@ export function armIK(B: Record<string, THREE.Bone>, side: 'l' | 'r', target: TH
 }
 
 const _cq = new THREE.Quaternion(), _cq2 = new THREE.Quaternion(), _cx = new THREE.Vector3(1, 0, 0);
+/** Share of the running clip's leg swing taken out (shorter stride, quicker cadence). */
+const STRIDE_CUT = 0.3;
 const CLIP_SPEED: Record<string, number> = { Walk_Loop: 1.45, Jog_Fwd_Loop: 3.4, Sprint_Loop: 5.8, Crouch_Fwd_Loop: 1.3, Prone_Crawl_Loop: 0.6, Walk_Bwd_Loop: 1.3, Strafe_L_Loop: 1.4, Strafe_R_Loop: 1.4 };
 
 export class Rig {
@@ -167,19 +208,27 @@ export class Rig {
   private shadow = true;
   private kAim = 0; private kPort = 0; private lastDt = 0.016;
   private bind = new Map<THREE.Bone, THREE.Quaternion>();
+  private bindPos = new Map<THREE.Bone, THREE.Vector3>();
   private lift = 0;
   /** Hit stagger: spine bend (pitch back, roll sideways, twist) as a damped spring, kicked by each hit. */
   private stag = new THREE.Vector3(); private stagV = new THREE.Vector3();
   /** Speed-up of the fall clip right after a hit (the body drops hard, then the clip eases out). */
   private fallBoost = 0;
+  /** Physics world for the ragdoll (set by the game; without it bodies fall with the death clips). */
+  P: Physics | null = null;
+  /** Ragdoll simulating the body (null once it has settled); `ragged` while the pose belongs to it. */
+  rag: Ragdoll | null = null; ragged = false;
+  private gunLoose = false;
+  private wounds: { m: THREE.Mesh; t: number; size: number }[] = [];
+  private meshes: THREE.SkinnedMesh[] = [];
 
   constructor(private A: CharAssets, modelId: string, private teamColor: number) {
     const src = A.models.get(modelId);
     if (src) {
       const m = SkeletonUtils.clone(src);
       m.traverse((o) => {
-        const b = o as THREE.Bone; if (b.isBone) { this.bones[b.name] = b; this.bind.set(b, b.quaternion.clone()); }
-        const sk = o as THREE.SkinnedMesh; if (sk.isMesh) { sk.castShadow = true; sk.receiveShadow = true; sk.frustumCulled = true; sk.geometry.boundingSphere = BODY_SPHERE; }
+        const b = o as THREE.Bone; if (b.isBone) { this.bones[b.name] = b; this.bind.set(b, b.quaternion.clone()); this.bindPos.set(b, b.position.clone()); }
+        const sk = o as THREE.SkinnedMesh; if (sk.isMesh) { sk.castShadow = true; sk.receiveShadow = true; sk.frustumCulled = true; sk.geometry.boundingSphere = BODY_SPHERE; if (sk.isSkinnedMesh) this.meshes.push(sk); }
       });
       this.root.add(m);
       this.mixer = new THREE.AnimationMixer(m);
@@ -221,9 +270,17 @@ export class Rig {
   update(dt: number, s: Soldier, camDist: number, now = 0) {
     // Every soldier is animated every frame: reduced update rates at range made runners stutter visibly.
     const step = dt; this.lastDt = step;
+    this.growWounds(dt);
+    // Down: the body is a ragdoll (started here if nothing has shoved it yet, e.g. bleeding out). Revived: back to clips.
+    if (s.state !== 'alive' && !this.ragged && this.mixer && this.P) this.startRag(s);
+    if (this.ragged) {
+      if (s.state === 'alive') this.unrag();
+      else { this.updateRag(dt, s); return; }
+    }
     this.root.position.set(s.pos[0], s.pos[1] + this.lift, s.pos[2]);
     this.root.rotation.set(0, s.yaw, 0);
-    this.aimPitch += (s.pitch - this.aimPitch) * damp(12, step);
+    // A prone body cannot lift the rifle above ~25-30°, whatever the soldier is looking at.
+    this.aimPitch += ((s.stance === 'prone' ? Math.min(0.5, s.pitch) : s.pitch) - this.aimPitch) * damp(12, step);
     if (this.mixer) this.animate(step, s, camDist); else this.poseMannequin(s);
     this.placeWeapon(s, camDist, now);
   }
@@ -234,15 +291,30 @@ export class Rig {
    * the upper body stays quiet behind the rifle — as soldiers move in the Project Reality footage.
    */
   private soldierCarry(sp: number, crouch: boolean) {
-    const k = Math.min(1, sp / 1.2) * (crouch ? 0.8 : 0.55);
+    const run = THREE.MathUtils.clamp((sp - 2) / 3, 0, 1);
+    const k = Math.min(1, sp / 1.2) * (crouch ? 0.8 : 0.55 + run * 0.3);
     if (k <= 0.01) return;
-    const lean = (crouch ? 0.32 : 0.04) + Math.min(1, sp / 5) * 0.1;
+    // Running, the body leans into the run from the hips (~15° at a sprint), head up looking ahead.
+    const lean = (crouch ? 0.32 : 0.04) + run * 0.26;
     const B = this.bones;
     for (const [n, w, l] of [['spine_01', 1, 0.35], ['spine_02', 1, 0.35], ['spine_03', 1, 0.3], ['neck_01', 0.8, -0.4], ['Head', 0.8, -0.5], ['clavicle_l', 0.7, 0], ['clavicle_r', 0.7, 0]] as const) {
       const b = B[n], q0 = b && this.bind.get(b); if (!b || !q0) continue;
       _cq.copy(q0); if (l) _cq.multiply(_cq2.setFromAxisAngle(_cx, lean * l));
       b.quaternion.slerp(_cq, k * w);
     }
+  }
+
+  /**
+   * Shorten the running stride: pull the hips, knees and ankles part of the way back to the standing pose, so the
+   * legs swing less far (no bounding leaps with the rear heel kicked up) and keep the pelvis' bounce down.
+   */
+  private gait(cut: number) {
+    const B = this.bones;
+    for (const [n, w] of [['thigh_l', 1], ['thigh_r', 1], ['calf_l', 1.25], ['calf_r', 1.25], ['foot_l', 0.6], ['foot_r', 0.6]] as const) {
+      const b = B[n], q0 = b && this.bind.get(b); if (b && q0) b.quaternion.slerp(q0, cut * w);
+    }
+    const pv = B.pelvis, p0 = pv && this.bindPos.get(pv);
+    if (pv && p0) pv.position.y += (p0.y - pv.position.y) * 0.5;
   }
 
   private animate(dt: number, s: Soldier, camDist: number) {
@@ -265,9 +337,13 @@ export class Rig {
     }
     if (!this.actions.has(clip)) clip = s.state !== 'alive' ? 'Death01' : 'Idle_Loop';
     const cs = CLIP_SPEED[clip], falling = s.state !== 'alive';
-    this.play(clip, falling ? 0.08 : 0.22, falling ? 1 + this.fallBoost : cs ? Math.max(0.4, Math.min(2, sp / cs)) : 1);
+    // Running with a rifle and kit: shorter, quicker steps than the library's long-striding jog (see gait()); the clip
+    // plays faster to keep the feet planted with the shorter stride.
+    const short = s.state === 'alive' && clip === 'Jog_Fwd_Loop' ? STRIDE_CUT : 0;
+    this.play(clip, falling ? 0.08 : 0.22, falling ? 1 + this.fallBoost : cs ? Math.max(0.4, Math.min(2.2, sp / (cs * (1 - short)))) : 1);
     this.fallBoost = Math.max(0, this.fallBoost - dt * 1.2);
     this.mixer!.update(dt);
+    if (short) this.gait(short);
     if (s.state === 'alive' && s.stance !== 'prone') this.soldierCarry(sp, s.stance === 'crouch' && sp > 0.65);
     // Stagger spring (ω ≈ 14 rad/s, ζ ≈ 0.35), added to the spine on top of the clip.
     for (let i = 0, n = Math.max(1, Math.ceil(dt * 120)), h = dt / n; i < n; i++) { this.stagV.addScaledVector(this.stag, -196 * h).multiplyScalar(1 - 10 * h); this.stag.addScaledVector(this.stagV, h); }
@@ -328,6 +404,92 @@ export class Rig {
   /** Going down: the death clip plays a little faster for a hard hit (a body drops; it does not slam flat). */
   fall(power = 1) { this.fallBoost = 0.1 + power * 0.18; }
 
+  // ---------------- ragdoll ----------------
+  private startRag(s: Soldier) {
+    this.ragged = true;
+    this.root.updateMatrixWorld(true);
+    // The weapon goes with the body (as a loose box) unless it is hidden.
+    this.gunLoose = !!(this.weapon && this.weapon.visible);
+    this.rag = new Ragdoll(this.P!, this.bones, [s.vel[0], Math.max(-2, s.vel[1]), s.vel[2]], this.gunLoose ? this.weapon : null, this.right());
+    this.mixer?.stopAllAction(); this.current = '';
+  }
+  /** Advance the ragdoll; keep the downed soldier's position and heading (hit boxes, medics) on the body. */
+  updateRag(dt: number, s?: Soldier) {
+    if (!this.rag) return;
+    // While the body moves its skinned bounds are stale: no culling until it settles (refreshBounds).
+    if (this.meshes[0]?.frustumCulled) for (const m of this.meshes) m.frustumCulled = false;
+    if (!this.rag.sync(dt)) { this.rag = null; this.refreshBounds(); return; }
+    const sp = s ? this.rag.spine() : null;
+    if (s && sp) {
+      const dx = sp.head[0] - sp.pelvis[0], dz = sp.head[2] - sp.pelvis[2], L = Math.hypot(dx, dz) || 1;
+      s.pos[0] = sp.pelvis[0] + (dx / L) * 0.2; s.pos[2] = sp.pelvis[2] + (dz / L) * 0.2;
+      s.yaw = Math.atan2(-dx, -dz);
+    }
+  }
+  get ragActive() { return !!this.rag; }
+  /** The body's right in the world (from the pelvis). */
+  private right() { return new THREE.Vector3(1, 0, 0).applyQuaternion(this.root.quaternion); }
+  /** Skinned bounds (culling, wound ray casts) from the current pose, with a margin for a moving body. */
+  private refreshBounds() { for (const m of this.meshes) { m.computeBoundingSphere(); m.boundingSphere!.radius *= 1.4; m.frustumCulled = true; } }
+  private unrag() {
+    this.rag?.finish(); this.rag = null; this.ragged = false; this.gunLoose = false;
+    for (const [b, q] of this.bind) { b.quaternion.copy(q); const p0 = this.bindPos.get(b); if (p0) b.position.copy(p0); }
+    this.current = '';
+  }
+  /** Settled body coming alive again (shot or blasted): a new ragdoll from the pose it lies in. */
+  private wake(s: Soldier | null): boolean {
+    if (this.rag) return true;
+    if (!this.mixer || !this.P) return false;
+    if (this.ragged) { this.rag = new Ragdoll(this.P, this.bones, [0, 0, 0], null, this.right()); return true; }
+    if (s) { this.startRag(s); return true; }
+    return false;
+  }
+  /** A shove at a world point (N·s): someone going down, or a body hit again. */
+  shove(s: Soldier, p: V3, imp: V3) { if (this.wake(s)) this.rag!.push(p, imp); }
+  /** Blast wave (corpses and the downed are thrown). */
+  blast(s: Soldier | null, c: V3, k: number) { if (this.wake(s)) this.rag!.blast(c, k); }
+
+  // ---------------- wounds ----------------
+  /**
+   * A bullet wound where the round went in (and, for a through-and-through, where it came out): a decal on the body's
+   * surface, carried by the nearest bone, whose stain soaks outwards over a few seconds.
+   */
+  wound(p: V3, dir: V3, exit: boolean) {
+    if (!this.meshes.length) return;
+    this.root.updateMatrixWorld(true);
+    this.refreshBounds();
+    const d = new THREE.Vector3(...dir).normalize();
+    const o = new THREE.Vector3(...p).addScaledVector(d, exit ? 0.6 : -0.6);
+    _ray.set(o, exit ? d.clone().negate() : d); _ray.far = 1.2;
+    const hit = _ray.intersectObjects(this.meshes, false)[0];
+    const at = hit ? hit.point : new THREE.Vector3(...p);
+    // Facing the way the round came (entry) or went (exit).
+    const n = exit ? d.clone() : d.clone().negate();
+    let bone: THREE.Bone | null = null, bd = Infinity;
+    for (const bn of WOUND_BONES) { const b = this.bones[bn]; if (!b) continue; const q = b.getWorldPosition(_v1).distanceToSquared(at); if (q < bd) { bd = q; bone = b; } }
+    if (!bone || bd > 0.5 * 0.5) return;
+    const m = new THREE.Mesh(woundGeo, woundMaterial());
+    m.renderOrder = 3; m.castShadow = false;
+    m.position.copy(at).addScaledVector(n, 0.012);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n).multiply(_q1.setFromAxisAngle(new THREE.Vector3(0, 0, 1), (Math.random() - 0.5) * 0.6));
+    const size = (exit ? 0.3 : 0.2) * (0.85 + Math.random() * 0.3);
+    m.scale.setScalar(size * 0.35);
+    this.root.parent?.add(m); m.updateMatrixWorld(true);
+    bone.attach(m);
+    this.wounds.push({ m, t: 0, size });
+    if (this.wounds.length > 10) { const w = this.wounds.shift()!; w.m.parent?.remove(w.m); }
+  }
+  private growWounds(dt: number) {
+    for (const w of this.wounds) {
+      if (w.t >= 6) continue;
+      w.t += dt;
+      const k = 0.35 + 0.65 * (1 - Math.exp(-w.t / 1.8));
+      // attach() divided the decal's scale by the bone's world scale: grow relative to it.
+      const ws = w.m.parent ? w.m.parent.getWorldScale(_v2).x : 1;
+      w.m.scale.setScalar((w.size * k) / (ws || 1));
+    }
+  }
+
   private poseMannequin(s: Soldier) {
     const g = this.mannequin!, torso = g.getObjectByName('torso')!, head = g.getObjectByName('head')!, lL = g.getObjectByName('legL')!, lR = g.getObjectByName('legR')!;
     const down = s.state !== 'alive' || s.stance === 'prone';
@@ -370,9 +532,9 @@ export class Rig {
     // Low ready: grip at the right hip/chest, muzzle down and slightly inboard.
     const qLow = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.55 + this.aimPitch * 0.3, s.yaw - 0.28, -0.1, 'YXZ'));
     const pLow = chest.clone().add(new THREE.Vector3(0.2, -0.16, -0.2).applyQuaternion(yawQ));
-    // Port arms: across the chest, muzzle up and to the left.
-    const qPort = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.65, s.yaw + 0.95, 0.35, 'YXZ'));
-    const pPort = chest.clone().add(new THREE.Vector3(0.14, -0.2, -0.24).applyQuaternion(yawQ));
+    // Low port (running): diagonally across the chest, muzzle forward-down to the left, as soldiers run with a rifle.
+    const qPort = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5, s.yaw + 0.6, 0.35, 'YXZ'));
+    const pPort = chest.clone().add(new THREE.Vector3(0.12, -0.2, -0.26).applyQuaternion(yawQ));
     const q = qLow.clone().slerp(qPort, this.kPort).slerp(qAim, this.kAim);
     const pos = pLow.clone().lerp(pPort, this.kPort).lerp(pAim, this.kAim);
     if (cho) { const r = vec(cho.rot, rp, _r3); q.multiply(_q1.setFromEuler(new THREE.Euler(r[0] * 0.8, r[1], r[2], 'YXZ'))); }
@@ -411,12 +573,12 @@ export class Rig {
 
   /** Leave the weapon lying on the ground next to the body. */
   dropWeapon(s: Soldier) {
-    const w = this.weapon; if (!w) return;
+    const w = this.weapon; if (!w || this.gunLoose) return;
     const rx = Math.cos(s.yaw), rz = -Math.sin(s.yaw);
     w.position.set(s.pos[0] + rx * 0.55, s.pos[1] + 0.04, s.pos[2] + rz * 0.55);
     w.quaternion.setFromEuler(new THREE.Euler(0, s.yaw + 0.6 + (s.id % 5) * 0.3, Math.PI / 2, 'YXZ'));
     w.visible = true; w.updateMatrixWorld(true);
   }
 
-  dispose() { this.root.parent?.remove(this.root); if (this.weapon) this.weapon.parent?.remove(this.weapon); }
+  dispose() { this.rag?.finish(); this.rag = null; this.root.parent?.remove(this.root); if (this.weapon) this.weapon.parent?.remove(this.weapon); }
 }

@@ -1,7 +1,7 @@
 // The local player: input → soldier, first-person camera (eye height, bob, recoil, zoom), viewmodel.
 import * as THREE from 'three';
 import { BIND, type Input } from '../core/input';
-import type { Soldier } from '../game/soldier';
+import { GL_RANGES, type Soldier } from '../game/soldier';
 import type { Game } from '../game/game';
 import { CAM_RECOIL, Viewmodel } from './viewmodel';
 import { WeaponLight, hasLight } from './weaponlight';
@@ -74,6 +74,11 @@ export class Player {
       }
       if (I.mouse.wheel && !s.sprinting) s.select((s.cur + I.mouse.wheel + s.slots.length) % s.slots.length);
       if (I.hit(BIND.reload)) this.g.reload(s);
+      // M203 quadrant sight: PageUp / PageDown set the range (the sight tips the rifle up for it).
+      if (s.slot.gl !== undefined && (I.hit(BIND.rangeUp) || I.hit(BIND.rangeDown))) {
+        const i = GL_RANGES.indexOf(s.glRange), j = Math.max(0, Math.min(GL_RANGES.length - 1, (i < 0 ? 4 : i) + (I.hit(BIND.rangeUp) ? 1 : -1)));
+        s.glRange = GL_RANGES[j]; this.g.audio.play('switch_fire_mode', null, { gain: 0.35, rate: 0.8 }); this.g.hud.flash(`M203 ${s.glRange} m`);
+      }
       if (I.hit(BIND.mode)) { const m = s.weapon.modes; s.slot.mode = m[(m.indexOf(s.slot.mode) + 1) % m.length]; this.g.audio.play('switch_fire_mode', null, { gain: 0.5 }); this.g.hud.flash(`${s.slot.mode.toUpperCase()}`); }
       // F: open/close the door in front, otherwise apply a field dressing.
       if (I.hit(BIND.use)) {

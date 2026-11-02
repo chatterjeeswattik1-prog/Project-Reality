@@ -244,7 +244,7 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
     // Roller shutters in the shop bays (front wall): corrugated steel just inside the outer face, the roll box on top.
     if (side === 'front') for (const sh of shutters) {
       if (sh.y1 - sh.y0 > 0.2) lbox(sh.u0, sh.u1, sh.y0, sh.y1, 0.05, 0.09, 'metal', 63, [0.62, 0.64, 0.6]);
-      lbox(sh.u0 - 0.05, sh.u1 + 0.05, G + 2.6, G + 2.85, -0.12, 0.12, 'metal', 63, [0.55, 0.57, 0.54]);
+      lbox(sh.u0 - 0.05, sh.u1 + 0.05, G + 2.62, G + 2.85, -0.12, 0.12, 'metal', 63, [0.55, 0.57, 0.54]);
     }
     for (const o of ops) if (o.y0 <= G + 0.01 && o.y1 - o.y0 < 3) { const [x, z] = W2((o.u0 + o.u1) / 2, alongV ? 0 : c0 < 1 ? -0.6 : D + 0.6); info.doors.push([x, G, z]); if (o.u1 - o.u0 < 1.6) doorway(alongV, c0, t, o, 0, true); }
   }
@@ -285,7 +285,10 @@ export function building(S: Sink, sp: BuildingSpec): BuildingInfo {
     let rs: R4[] = [[iu0, iu1, iv0, iv1]];
     if (k > 0 && hasStairs) rs = subtract(rs, [iu0, wellU1, wellV0 + LANDING, wellV1]);
     if (k === floors && collapse) rs = subtract(rs, [collapse.u0, iu1 + 0.01, collapse.v0, iv1 + 0.01]);
-    for (const r of rs) lbox(r[0], r[1], yb, yt, r[2], r[3], mat, f);
+    // Slab edges against the outer walls are buried in them (and drew a flickering band at every floor): only edges
+    // that border an opening (stairwell, collapse) are drawn.
+    const e = 0.01;
+    for (const r of rs) lbox(r[0], r[1], yb, yt, r[2], r[3], mat, (f & ~(LF.nu | LF.pu | LF.nv | LF.pv)) | (r[0] > iu0 + e ? LF.nu : 0) | (r[1] < iu1 - e ? LF.pu : 0) | (r[2] > iv0 + e ? LF.nv : 0) | (r[3] < iv1 - e ? LF.pv : 0));
   };
   for (let k = 0; k <= floors; k++) slab(k);
   if (sp.hall) {

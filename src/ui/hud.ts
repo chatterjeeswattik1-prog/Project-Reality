@@ -25,6 +25,16 @@ export class Hud {
     this.weapon = q('.h-weapon'); this.status = q('.h-status'); this.log = q('.h-log'); this.center = q('.h-center'); this.top = q('.h-top'); this.down = q('.h-down');
   }
 
+  /** A standing prompt below the centre (e.g. "F — pick up AKM"); null hides it. */
+  private promptEl: HTMLDivElement | null = null;
+  prompt(text: string | null) {
+    if (!this.promptEl) {
+      const d = this.promptEl = document.createElement('div');
+      Object.assign(d.style, { position: 'absolute', left: '50%', top: '62%', transform: 'translateX(-50%)', color: '#e8e2d0', font: '600 15px system-ui, sans-serif', letterSpacing: '0.06em', textShadow: '0 1px 3px #000', pointerEvents: 'none', whiteSpace: 'nowrap' });
+      this.el.appendChild(d);
+    }
+    if (this.promptEl.textContent !== (text ?? '')) this.promptEl.textContent = text ?? '';
+  }
   flash(text: string) { this.center.textContent = text; this.center.style.opacity = '1'; this.flashT = 2.2; }
   hurt(from: V3) { this.hurts.push({ t: 1.6, p: from }); }
   suppress(v: number) { this.supp = Math.max(this.supp, v); }

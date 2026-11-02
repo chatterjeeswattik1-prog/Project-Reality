@@ -1,0 +1,2 @@
+blood_spot.glb — "CC0 - Color Spot 2" (Sketchfab), CC0, supplied by the user. Used as the blood puddle / drop shape
+  and normal map (src/fx/liquid.ts).

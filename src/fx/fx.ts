@@ -6,7 +6,7 @@ const _v3 = new THREE.Vector3();
 import type { Surface } from '../world/sink';
 
 type V3 = [number, number, number];
-const MAX_P = 6000, MAX_DECALS = 1500, MAX_TRACERS = 300, MAX_CASES = 320;
+const MAX_P = 6000, MAX_DECALS = 1500, MAX_TRACERS = 300, MAX_CASES = 2000;
 
 function softDot(): THREE.Texture {
   const c = document.createElement('canvas'); c.width = c.height = 64;

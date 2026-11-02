@@ -114,6 +114,37 @@ const woundGeo = new THREE.PlaneGeometry(1, 1);
 const WOUND_BONES = ['Head', 'neck_01', 'spine_03', 'spine_02', 'spine_01', 'pelvis', 'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r'];
 const _ray = new THREE.Raycaster();
 
+/**
+ * Distant soldiers read as dark figures, as people do in the field (and in Project Reality): at a few pixels the shaded
+ * half of the body and its folds are no longer resolved, and the eye sees their average — a silhouette darker than the
+ * sunlit ground. The shader darkens a soldier (and his weapon) progressively from ~40 m to ~55 % at 260 m, and the haze
+ * acts on him at under half the scene's density, so distant enemies keep their contrast instead of melting into sand.
+ */
+const farPatched = new WeakSet<THREE.Material>();
+export function farFigure(o: THREE.Object3D) {
+  o.traverse((m) => {
+    const mats = (m as THREE.Mesh).isMesh ? ([] as THREE.Material[]).concat((m as THREE.Mesh).material) : [];
+    for (const mat of mats) {
+      if (farPatched.has(mat) || !(mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) continue;
+      farPatched.add(mat);
+      mat.onBeforeCompile = (sh) => {
+        sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `
+          gl_FragColor.rgb *= mix(1.0, 0.35, smoothstep(30.0, 220.0, length(vViewPosition)));
+          #ifdef USE_FOG
+            #ifdef FOG_EXP2
+              float fogFactor = 1.0 - exp(- fogDensity * fogDensity * 0.18 * vFogDepth * vFogDepth);
+            #else
+              float fogFactor = smoothstep(fogNear, fogFar, vFogDepth) * 0.5;
+            #endif
+            gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);
+          #endif`);
+      };
+      mat.customProgramCacheKey = () => 'farFigure';
+      mat.needsUpdate = true;
+    }
+  });
+}
+
 const FINGERS = ['index', 'middle', 'ring', 'pinky'];
 const CURL: Record<'r' | 'l', number[]> = { r: [1.05, 1.25, 0.85], l: [0.8, 1.0, 0.65] };
 const curlQ = (a: number) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), a);
@@ -189,6 +220,8 @@ export function armIK(B: Record<string, THREE.Bone>, side: 'l' | 'r', target: TH
 const _cq = new THREE.Quaternion(), _cq2 = new THREE.Quaternion(), _cx = new THREE.Vector3(1, 0, 0);
 /** Share of the running clip's leg swing taken out (shorter stride, quicker cadence). */
 const STRIDE_CUT = 0.3;
+/** Ground speed of the motion-captured run (set when it is retargeted at load). */
+export const RUN_SPEED = { mocap: 0 };
 const CLIP_SPEED: Record<string, number> = { Walk_Loop: 1.45, Jog_Fwd_Loop: 3.4, Sprint_Loop: 5.8, Crouch_Fwd_Loop: 1.3, Prone_Crawl_Loop: 0.6, Walk_Bwd_Loop: 1.3, Strafe_L_Loop: 1.4, Strafe_R_Loop: 1.4 };
 
 export class Rig {
@@ -231,6 +264,7 @@ export class Rig {
         const sk = o as THREE.SkinnedMesh; if (sk.isMesh) { sk.castShadow = true; sk.receiveShadow = true; sk.frustumCulled = true; sk.geometry.boundingSphere = BODY_SPHERE; if (sk.isSkinnedMesh) this.meshes.push(sk); }
       });
       this.root.add(m);
+      farFigure(m);
       this.mixer = new THREE.AnimationMixer(m);
       for (const [name, clip] of A.clips) this.actions.set(name, this.mixer.clipAction(clip));
     } else this.root.add(this.mannequin = this.buildMannequin());
@@ -252,7 +286,7 @@ export class Rig {
     if (this.weapon) this.root.parent?.remove(this.weapon);
     const src = this.A.tpWeapons.get(id) ?? this.A.weapons.get(id);
     this.weapon = src ? src.clone() : null;
-    if (this.weapon) { this.weapon.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; }); this.root.parent?.add(this.weapon); }
+    if (this.weapon) { this.weapon.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; }); farFigure(this.weapon); this.root.parent?.add(this.weapon); }
   }
 
   private play(name: string, fade = 0.25, speed = 1) {
@@ -336,7 +370,9 @@ export class Rig {
       else clip = sp > 2.4 ? 'Jog_Fwd_Loop' : 'Walk_Loop';
     }
     if (!this.actions.has(clip)) clip = s.state !== 'alive' ? 'Death01' : 'Idle_Loop';
-    const cs = CLIP_SPEED[clip], falling = s.state !== 'alive';
+    // Running and sprinting use the motion-captured run when it is loaded (legs and hips; the arms stay on the weapon).
+    if (clip === 'Jog_Fwd_Loop' && RUN_SPEED.mocap > 0 && this.actions.has('Run_Mocap') && (s.sprinting || sp > 2.6)) clip = 'Run_Mocap';
+    const cs = clip === 'Run_Mocap' ? RUN_SPEED.mocap : CLIP_SPEED[clip], falling = s.state !== 'alive';
     // Running with a rifle and kit: shorter, quicker steps than the library's long-striding jog (see gait()); the clip
     // plays faster to keep the feet planted with the shorter stride.
     const short = s.state === 'alive' && clip === 'Jog_Fwd_Loop' ? STRIDE_CUT : 0;
@@ -580,5 +616,10 @@ export class Rig {
     w.visible = true; w.updateMatrixWorld(true);
   }
 
-  dispose() { this.rag?.finish(); this.rag = null; this.root.parent?.remove(this.root); if (this.weapon) this.weapon.parent?.remove(this.weapon); }
+  dispose() {
+    // The clone's skeleton owns a bone texture on the GPU: free it with the body (a long match leaked one per death).
+    for (const m of this.meshes) m.skeleton?.dispose();
+    for (const w of this.wounds) w.m.parent?.remove(w.m);
+    this.wounds = [];
+    this.rag?.finish(); this.rag = null; this.root.parent?.remove(this.root); if (this.weapon) this.weapon.parent?.remove(this.weapon); }
 }

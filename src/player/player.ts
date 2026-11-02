@@ -80,8 +80,11 @@ export class Player {
         s.glRange = GL_RANGES[j]; this.g.audio.play('switch_fire_mode', null, { gain: 0.35, rate: 0.8 }); this.g.hud.flash(`M203 ${s.glRange} m`);
       }
       if (I.hit(BIND.mode)) { const m = s.weapon.modes; s.slot.mode = m[(m.indexOf(s.slot.mode) + 1) % m.length]; this.g.audio.play('switch_fire_mode', null, { gain: 0.5 }); this.g.hud.flash(`${s.slot.mode.toUpperCase()}`); }
-      // F: open/close the door in front, otherwise apply a field dressing.
-      if (I.hit(BIND.use)) {
+      // F: pick up the weapon looked at, else open/close the door in front, otherwise apply a field dressing.
+      const pk = s.alive ? this.g.pickupFor(s) : null;
+      this.g.hud?.prompt(pk ? `F — pick up ${pk.slot.def.name} (${pk.slot.mags.length + (pk.slot.loaded > 0 ? 1 : 0)} mag${pk.slot.mags.length + (pk.slot.loaded > 0 ? 1 : 0) === 1 ? '' : 's'})` : null);
+      if (I.hit(BIND.use) && pk) { this.g.pickUp(s, pk); this.g.hud?.flash(pk.slot.def.name.toUpperCase()); }
+      else if (I.hit(BIND.use)) {
         if (this.g.doors?.use(s.eye, s.aimDir())) this.g.audio.play('car_door', null, { gain: 0.5, rate: 0.8 });
         else if (s.startBandage()) this.g.audio.play('bandage', null);
       }

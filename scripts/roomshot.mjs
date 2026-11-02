@@ -1,7 +1,7 @@
 // Screenshots of furnished rooms in the test area: node scripts/roomshot.mjs out_prefix [count]
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 const [out = 'room', count = '6'] = process.argv.slice(2);
-const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, env: { ...process.env, DRI_PRIME: '1' }, args: ['--use-angle=gl', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const b = await launch();
 const p = await b.newPage({ viewport: { width: 1280, height: 720 } });
 const logs = []; p.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
 await p.goto('http://localhost:5173/?mode=test&q=medium&bots=0&shot=-110,1.6,140,0,0');
@@ -14,7 +14,7 @@ const rooms = await p.evaluate(() => {
     if (rm.x1 - rm.x0 > 3 && rm.z1 - rm.z0 > 3) r.push({ ...rm, id: b.id });
   }
   const kinds = {}; for (const x of r) kinds[x.kind] = (kinds[x.kind] ?? 0) + 1;
-  return { kinds, pick: ['living', 'kitchen', 'bedroom', 'store'].flatMap((k) => r.filter((x) => x.kind === k).slice(0, 2)) };
+  return { kinds, pick: ['living', 'kitchen', 'bedroom', 'store', 'shop', 'hall'].flatMap((k) => r.filter((x) => x.kind === k).slice(0, 2)) };
 });
 console.log(JSON.stringify(rooms.kinds));
 let i = 0;

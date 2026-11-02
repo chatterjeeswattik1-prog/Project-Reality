@@ -125,6 +125,8 @@ export class Viewmodel {
     this.id = id; this.lastS = s;
     this.preload([id]);
     if (this.model) this.group.remove(this.model);
+    // The previous weapon's own material copies (see below) go with it.
+    for (const m of this.mats) m.dispose();
     const src = this.full.get(id) ?? this.weapons.get(id);
     this.model = src ? src.clone() : this.placeholder();
     this.model.position.set(0, 0, 0); this.model.quaternion.identity(); this.model.updateMatrixWorld(true);

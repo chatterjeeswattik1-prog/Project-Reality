@@ -16,7 +16,7 @@ export const MATS = {
   sandstone: { tex: 'large_sandstone_blocks', uv: 3.2, surf: 'masonry' },
   cracked: { tex: 'cracked_concrete_wall', uv: 2.8, surf: 'concrete' },
   brick: { tex: 'concrete_brick_wall_001', uv: 2.2, surf: 'masonry' },
-  floor: { tex: 'concrete_floor_02', uv: 2.5, surf: 'concrete' },
+  floor: { tex: 'concrete_floor_worn_001', uv: 2.5, surf: 'concrete' },
   /** Two-tone terrazzo checker, the classic floor of Iraqi homes (0.4 m tiles). */
   checker: { tex: 'floor_tiles_06', uv: 1.6, surf: 'concrete' },
   tiles: { tex: 'large_grey_tiles', uv: 2.0, surf: 'concrete' },
@@ -95,10 +95,15 @@ export class Sink {
   quad(mat: MatId, p: number[][], n: [number, number, number], tint: [number, number, number], shade: number[], chunkX: number, chunkZ: number, layer: Layer = 0) {
     const b = this.batch(chunkX, chunkZ, layer, 6), s = 1 / MATS[mat].uv, mi = MAT_INDEX[mat];
     const ax = Math.abs(n[0]), ay = Math.abs(n[1]);
+    // Anti-z-fighting: faces are nudged off their plane by a few millimetres (0.8 mm steps, every material its own: depth precision at 50–100 m with the 5 cm near plane) that depend on the material (and the
+    // interior layer), so two different surfaces built in the same plane (a slab edge in a wall face, a shutter box
+    // under a lintel, a wall cap in the roof) never flicker against each other: one of them always wins.
+    const eps = layer === 3 ? 0 : 0.0008 * (1 + mi) + (layer === 1 ? 0.0004 : 0);
+    const ox = n[0] * eps, oy = n[1] * eps, oz = n[2] * eps;
     for (const i of ORDER) {
       const [x, y, z] = p[i], v = b.n++;
       b.mi[v] = mi;
-      b.pos[v * 3] = x; b.pos[v * 3 + 1] = y; b.pos[v * 3 + 2] = z;
+      b.pos[v * 3] = x + ox; b.pos[v * 3 + 1] = y + oy; b.pos[v * 3 + 2] = z + oz;
       b.nrm[v * 3] = n[0]; b.nrm[v * 3 + 1] = n[1]; b.nrm[v * 3 + 2] = n[2];
       // Planar projection by the dominant normal axis; walls keep v vertical.
       if (ay > 0.7) { b.uv[v * 2] = x * s; b.uv[v * 2 + 1] = -z * s; }

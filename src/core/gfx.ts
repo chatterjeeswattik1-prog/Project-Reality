@@ -33,7 +33,8 @@ export async function createGfx(host: HTMLElement, quality: Quality): Promise<Gf
   // Look (after the Project Reality footage): warm sun, sandy haze that layers the depth of the town, filmic contrast.
   // The haze stays light enough that a man at 200 m is still clear of it (~10 %).
   const fogCol = new THREE.Color(0xcdb995);
-  scene.fog = new THREE.FogExp2(fogCol, quality === 'low' ? 0.0019 : 0.0016);
+  // Light haze: at 300 m a soldier keeps ~85% of his contrast (it was ~70%: distant enemies melted into the ground).
+  scene.fog = new THREE.FogExp2(fogCol, quality === 'low' ? 0.0012 : 0.001);
   scene.background = fogCol;
 
   const sky = await hdr('day');

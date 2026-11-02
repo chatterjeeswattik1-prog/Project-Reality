@@ -12,8 +12,9 @@ import { Audio } from '../audio/audio';
 import { Foley } from '../audio/foley';
 import type { Surface } from '../world/sink';
 import { Projectiles, type V3 } from './projectiles';
-import { Soldier, glElevation, zeroAngle, type HitPart } from './soldier';
-import { Rig, type CharAssets } from './rig';
+import { Soldier, glElevation, zeroAngle, type HitPart, type Slot } from './soldier';
+import { Rig, RUN_SPEED, type CharAssets } from './rig';
+import { retargetRun } from './runclip';
 import { AMMO, WEAPONS, type Ammo, type WeaponDef } from './data/weapons';
 import { type Faction, type Kit } from './data/kits';
 import type { Player } from '../player/player';
@@ -31,8 +32,14 @@ export interface GameEvents {
 /** The M203 leaf sight looks ~9° below the bore (about the 200–250 m setting), so the grenade leaves above the sight line. */
 interface Charge { p: V3; owner: Soldier; ammo: Ammo; mesh: THREE.Object3D }
 
+/** A weapon lying on the ground (a fallen soldier's, or one swapped away) that anyone can pick up, with its ammunition. */
+export interface Pickup { slot: Slot; obj: THREE.Object3D }
+const FIREARM = new Set(['rifle', 'lmg', 'gpmg', 'sniper', 'pistol', 'launcher']);
+
 /** Ragdolls simulated at once (a settled body costs nothing). */
 const MAX_RAGDOLLS = 12;
+
+const _pk = new THREE.Vector3();
 
 export class Game {
   fx: FX; audio: Audio; proj: Projectiles;
@@ -57,6 +64,9 @@ export class Game {
   private zeros = new Map<string, number>();
   rng = mulberry(4242);
   prof: Record<string, number> = {};
+  /** Weapons on the ground that can be picked up (F). */
+  pickups: Pickup[] = [];
+  private dropped = new Set<number>();
   /** Footsteps, body falls, the player's breathing and heartbeat. */
   foley = new Foley(this);
 
@@ -203,7 +213,7 @@ export class Game {
     this.fx.muzzle([mz.x, mz.y, mz.z], d, big, !!s.isPlayer);
     // Other soldiers' weapons throw their brass too (seen close by: the cases pile up round a firing position).
     const fp = s.isPlayer && this.player && !this.player.third;
-    if (!fp && rig?.weapon && (def.kind === 'rifle' || def.kind === 'lmg' || def.kind === 'gpmg' || def.kind === 'pistol' || def.kind === 'sniper') && mz.distanceToSquared(this.gfx.camera.position) < 35 * 35) {
+    if (!fp && rig?.weapon && (def.kind === 'rifle' || def.kind === 'lmg' || def.kind === 'gpmg' || def.kind === 'pistol' || def.kind === 'sniper') && mz.distanceToSquared(this.gfx.camera.position) < 90 * 90) {
       const ej = rig.weapon.getObjectByName('eject');
       if (ej) {
         const ep = ej.getWorldPosition(new THREE.Vector3()), q = rig.weapon.getWorldQuaternion(new THREE.Quaternion());
@@ -241,6 +251,41 @@ export class Game {
       this.gfx.scene.remove(c.mesh); this.charges.splice(i, 1);
       this.explode(c.p, c.ammo, owner);
     }
+  }
+
+  // ---------------- weapons on the ground ----------------
+  /** The pickup a soldier is looking at within reach (≤ 2.2 m, within ~35° of the aim), if any. */
+  pickupFor(s: Soldier): Pickup | null {
+    const e = s.eye, d = s.aimDir(); let best: Pickup | null = null, bs = -1;
+    for (const k of this.pickups) {
+      if (!k.obj.visible) continue;
+      const p = k.obj.getWorldPosition(_pk), dx = p.x - e[0], dy = p.y - e[1], dz = p.z - e[2], L = Math.hypot(dx, dy, dz);
+      if (Math.hypot(p.x - s.pos[0], p.z - s.pos[2]) > 2.2 || L < 1e-3) continue;
+      const c = (dx * d[0] + dy * d[1] + dz * d[2]) / L; if (c < 0.82) continue;
+      if (c > bs) { bs = c; best = k; }
+    }
+    return best;
+  }
+  /** Swap the weapon in hand (or the first firearm) for the one on the ground; ours is left lying in its place. */
+  pickUp(s: Soldier, k: Pickup) {
+    const i = FIREARM.has(s.weapon.kind) ? s.cur : s.slots.findIndex((x) => FIREARM.has(x.def.kind));
+    const at = k.obj.getWorldPosition(new THREE.Vector3());
+    k.obj.parent?.remove(k.obj); this.pickups.splice(this.pickups.indexOf(k), 1);
+    if (i >= 0) {
+      const old = s.slots[i];
+      // Ours goes down where the other one lay.
+      const src = this.assets.tpWeapons.get(old.def.model) ?? this.assets.weapons.get(old.def.model);
+      if (src) {
+        const o = src.clone(); o.position.set(at.x, at.y, at.z); o.rotation.set(0, Math.random() * Math.PI * 2, Math.PI / 2, 'YXZ');
+        const fl = this.P.castRay([at.x, at.y + 0.5, at.z], [0, -1, 0], 3, G_WORLD); if (fl) o.position.y = fl.point[1] + 0.035;
+        o.traverse((m) => { if ((m as THREE.Mesh).isMesh) m.castShadow = true; });
+        this.gfx.scene.add(o); this.pickups.push({ slot: old, obj: o });
+        if (this.pickups.length > 60) { const x = this.pickups.shift()!; x.obj.parent?.remove(x.obj); }
+      }
+      s.slots[i] = { ...k.slot, mags: [...k.slot.mags] };
+      s.underSel = false; s.cur = i; s.switchT = 1.0; s.reloadT = 0;
+    } else { s.slots.unshift({ ...k.slot, mags: [...k.slot.mags] }); s.cur = 0; s.switchT = 1.0; }
+    this.audio.play('mag_in', s.isPlayer ? null : s.eye, { range: 15, gain: 0.6, rate: 0.8 });
   }
 
   // ---------------- damage ----------------
@@ -384,11 +429,20 @@ export class Game {
       const rig = this.rigs.get(s.id); if (!rig) continue;
       const dist = Math.hypot(s.pos[0] - cam.x, s.pos[2] - cam.z);
       const hide = s.isPlayer && this.player && !this.player.third;
-      rig.root.visible = !hide && dist < 700; rig.visible = rig.root.visible;
+      rig.root.visible = !hide && dist < 1200; rig.visible = rig.root.visible;
       rig.setWeapon(s.underSel ? s.weapon.model : s.weapon.model);
       if (rig.root.visible || s.isPlayer || rig.ragged) rig.update(dt, s, dist, this.time);
       else if (rig.weapon) rig.weapon.visible = false;
     }
+    // A soldier killed leaves his weapon (with what ammunition he had) to be picked up; pickups whose body has been
+    // cleared away go with it.
+    for (const s of this.soldiers) {
+      if (s.state !== 'dead' || this.dropped.has(s.id)) continue;
+      this.dropped.add(s.id);
+      const rig = this.rigs.get(s.id), cur = FIREARM.has(s.weapon.kind) ? s.slot : s.slots.find((x) => FIREARM.has(x.def.kind));
+      if (rig?.weapon && cur && (cur.loaded > 0 || cur.mags.length)) this.pickups.push({ slot: { ...cur, mags: [...cur.mags] }, obj: rig.weapon });
+    }
+    if (this.pickups.length) this.pickups = this.pickups.filter((k) => k.obj.parent);
     // Corpses still falling; at most MAX_RAGDOLLS simulate at once (the oldest settle where they are).
     for (const r of this.corpses) if (r.ragActive) r.updateRag(dt);
     const active = [...this.rigs.values(), ...this.corpses].filter((r) => r.ragActive);
@@ -430,6 +484,9 @@ export async function loadCharAssets(): Promise<CharAssets> {
   const anims = await gltf('models/chars/anims.glb');
   if (anims) for (const c of anims.animations) clips.set(c.name, c);
   await Promise.all(ids.map(async (id) => { const g = await gltf(`models/chars/${id}.glb`); if (g && clips.size) models.set(id, g.scene); }));
+  // Motion-captured run, retargeted onto the shared skeleton (game/runclip.ts).
+  const run = await gltf('models/chars/mocap/run.glb'), ref = models.get('us_rifleman');
+  if (run && ref) { const r = retargetRun(run, ref); if (r) { clips.set(r.clip.name, r.clip); RUN_SPEED.mocap = r.speed; } }
   const wids = [...new Set(Object.values(WEAPONS).map((w) => w.model))];
   const tpWeapons = new Map<string, THREE.Object3D>();
   await Promise.all(wids.map(async (id) => {

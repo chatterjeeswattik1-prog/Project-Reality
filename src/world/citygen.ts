@@ -307,7 +307,7 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
     const wall = pick(() => hash2(id, 8), WALL_SETS[district === 'fob' || district === 'rural' ? 'outskirts' : district]);
     const spec: Omit<BuildingSpec, 'id'> = {
       ...fp, orient: lot.orient, y0: footY(fp), floors, fh: 3.05, t: district === 'new' || district === 'civic' ? 0.25 : 0.3,
-      wall, tint: tintFor(id), floorMat: hash2(id, 9) < 0.3 ? 'tiles' : hash2(id, 9) < 0.7 ? 'checker' : 'floor', party: lot.party, shops, damage, stairs: true,
+      wall, tint: tintFor(id), floorMat: hash2(id, 9) < 0.45 ? 'tiles' : hash2(id, 9) < 0.9 ? 'checker' : 'floor', party: lot.party, shops, damage, stairs: true,
       parapet: 1.0 + (hash2(id, 10) < 0.3 ? 0.4 : 0), backDoor: fr.D - Db > 3,
     };
     return { spec, yard: fr.D - Db > 3 ? fr.rect(0, Db, fr.W, fr.D) : null, fr };

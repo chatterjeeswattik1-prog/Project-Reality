@@ -25,6 +25,18 @@ import { kitById, type Faction } from './game/data/kits';
 import { AMMO, WEAPONS } from './game/data/weapons';
 import type { Soldier } from './game/soldier';
 import { groundH } from './world/terrain';
+import { downloads, expectDownload, mb, trackDownloads } from './core/netprogress';
+
+// Count every byte the game downloads (the loading screen shows it), and start the big shared downloads at once, while
+// the player is still in the main menu: characters, animations, weapons, the props kit and the navmesh.
+trackDownloads();
+expectDownload((new URLSearchParams(location.search).get('mode') === 'test' ? 103 : 124) * 1048576);
+const early = {
+  chars: loadCharAssets(),
+  props: gltf('models/props.glb'),
+  nav: (new URLSearchParams(location.search).get('mode') === 'test') ? null : fetch(`${import.meta.env.BASE_URL}nav/zahran-${Number(new URLSearchParams(location.search).get('seed') ?? 1337)}.bin`).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
+};
+void early;
 
 const params = new URLSearchParams(location.search);
 /** The default close-quarters test area: the Ruins plaza with the buildings around it (110 × 83 m). */
@@ -32,11 +44,32 @@ const TEST_AREA: Rect = { x0: -168, z0: 95, x1: -58, z1: 178 };
 const host = document.getElementById('app')!;
 const W = window as unknown as Record<string, unknown>;
 
+/**
+ * Loading screen: the stage, and the download itself (MB received of MB requested, speed, time left), refreshed four
+ * times a second so a slow connection never looks frozen. The bar follows whichever is further on: the stages or the
+ * bytes. A first visit downloads ~190 MB; the browser caches it for the next time.
+ */
 function loadingScreen() {
+  document.getElementById('boot')?.remove();
   const el = document.createElement('div'); el.className = 'loading';
-  el.innerHTML = `<div class="box"><h1>PROJECT REALISM</h1><div class="sub">INSURGENCY · AL ZAHRAN</div><div class="bar"><i></i></div><div class="msg"></div></div>`;
+  el.innerHTML = `<div class="box"><h1>PROJECT REALISM</h1><div class="sub">INSURGENCY · AL ZAHRAN</div><div class="bar"><i></i></div><div class="msg"></div><div class="net"></div><div class="tip"></div></div>`;
   host.appendChild(el);
-  return { set: (f: number, msg: string) => { (el.querySelector('.bar > i') as HTMLElement).style.width = `${Math.round(f * 100)}%`; el.querySelector('.msg')!.textContent = msg; }, done: () => el.remove() };
+  const bar = el.querySelector('.bar > i') as HTMLElement, msg = el.querySelector('.msg')!, net = el.querySelector('.net')!, tip = el.querySelector('.tip')!;
+  const TIPS = ['No crosshair: shoulder the weapon (right mouse) and use the sights.', 'Hold Shift while aiming to hold your breath.', 'Wounded? Press F to apply a field dressing before you bleed out.', 'F on a fallen soldier\'s weapon picks it up with his ammunition.', 'Rounds snapping past pin you down: get into cover before returning fire.', 'Crouch-walk to move quietly: enemies hear running footsteps.', 'M203: PgUp / PgDn set the quadrant sight range.', 'G deploys a bipod on the ground, a sill or a wall top.'];
+  let stage = 0, ti = Math.floor(Math.random() * TIPS.length), tt = 0;
+  tip.textContent = TIPS[ti];
+  const tick = () => {
+    const d = downloads();
+    const f = Math.max(stage, d.total > 0 ? Math.min(0.97, d.got / d.total) * 0.9 : 0);
+    bar.style.width = `${Math.round(f * 100)}%`;
+    if (d.total > 0 && d.got < d.total - 1024) {
+      const left = d.left !== null ? (d.left > 90 ? ` · about ${Math.ceil(d.left / 60)} min left` : ` · about ${Math.max(1, Math.round(d.left))} s left`) : '';
+      net.textContent = `Downloading ${mb(d.got)} / ${mb(d.total)} MB · ${mb(d.rate)} MB/s${left}`;
+    } else net.textContent = d.got > 0 ? `${mb(d.got)} MB loaded` : '';
+    if ((tt += 0.25) > 7) { tt = 0; ti = (ti + 1) % TIPS.length; tip.textContent = TIPS[ti]; }
+  };
+  const iv = setInterval(tick, 250); tick();
+  return { set: (f: number, m: string) => { stage = f; msg.textContent = m; tick(); }, done: () => { clearInterval(iv); el.remove(); } };
 }
 const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
@@ -49,6 +82,10 @@ function detectGpu(): string {
 }
 
 async function boot() {
+  // The script is here: the static boot screen gives way to the menu, with the background download shown in a corner.
+  document.getElementById('boot')?.remove();
+  const bg = document.createElement('div'); bg.className = 'bgdl'; host.appendChild(bg);
+  const bgIv = setInterval(() => { const d = downloads(); bg.textContent = d.total > 0 && d.got < d.total - 1024 ? `Downloading game data ${mb(d.got)} / ${mb(d.total)} MB` : ''; if (!bg.isConnected) clearInterval(bgIv); }, 300);
   const gpu = detectGpu();
   console.info('GPU:', gpu);
   const auto = params.get('auto') as Faction | null;
@@ -58,6 +95,8 @@ async function boot() {
   const test = choice.mode === 'test';
   const areaArg = params.get('area')?.split(',').map(Number);
   const area: Rect | undefined = test ? (areaArg?.length === 4 ? { x0: areaArg[0], z0: areaArg[1], x1: areaArg[2], z1: areaArg[3] } : TEST_AREA) : undefined;
+  bg.remove();
+  expectDownload((test ? 103 : 124) * 1048576);
   const L0 = loadingScreen();
   // Heap at each loading stage (window.__mem, for profiling memory on the full map).
   const memLog: [string, number][] = []; (window as unknown as Record<string, unknown>).__mem = memLog;
@@ -75,7 +114,7 @@ async function boot() {
   P.buildStatic(city, propBoxes);
   P.checkTerrain();
   L.set(0.72, 'Navigation, soldiers and weapons…'); await frame();
-  const [nav, assets, cacheGltf] = await Promise.all([test ? Nav.generate(city, propBoxes) : Nav.load(seed), loadCharAssets(), gltf('models/props.glb')]);
+  const [nav, assets, cacheGltf] = await Promise.all([test ? Nav.generate(city, propBoxes) : Nav.load(seed, seed === 1337 ? early.nav : null), early.chars, early.props]);
   // Static colliders now live in the physics world (and the navmesh is built): drop the generator's copy.
   city.sink.colliders.length = 0;
   const game = new Game(G, P, city, world, assets, quality);

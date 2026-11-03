@@ -12,12 +12,17 @@ export class Nav {
   budget = 3;
   constructor(public mesh: NavMesh, public q: NavMeshQuery) {}
 
-  static async load(seed: number): Promise<Nav | null> {
+  /** `pre`: the file already being downloaded (started at boot, see main.ts). */
+  static async load(seed: number, pre: Promise<ArrayBuffer | null> | null = null): Promise<Nav | null> {
     try {
-      const r = await fetch(`${BASE}nav/zahran-${seed}.bin`);
-      if (!r.ok) { console.warn('no navmesh baked — bots will steer directly (run npm run navmesh)'); return null; }
+      let buf = pre ? await pre : null;
+      if (!buf) {
+        const r = await fetch(`${BASE}nav/zahran-${seed}.bin`);
+        if (!r.ok) { console.warn('no navmesh baked — bots will steer directly (run npm run navmesh)'); return null; }
+        buf = await r.arrayBuffer();
+      }
       await init();
-      const { navMesh } = importNavMesh(new Uint8Array(await r.arrayBuffer()));
+      const { navMesh } = importNavMesh(new Uint8Array(buf));
       return new Nav(navMesh, new NavMeshQuery(navMesh));
     } catch (e) { console.warn('navmesh load failed', e); return null; }
   }

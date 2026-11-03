@@ -10,6 +10,9 @@ canvas.gl { position: absolute; inset: 0; width: 100%; height: 100%; display: bl
 .loading .bar { height: 4px; background: var(--line); }
 .loading .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 .loading .msg { color: var(--dim); margin-top: 10px; font-size: 12px; }
+.bgdl { position: absolute; right: 16px; bottom: 12px; z-index: 45; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; pointer-events: none; }
+.loading .net { color: var(--ink); margin-top: 6px; font-size: 13px; font-variant-numeric: tabular-nums; min-height: 1.2em; }
+.loading .tip { color: var(--dim); margin-top: 26px; font-size: 13px; font-style: italic; min-height: 2.6em; }
 button { font: inherit; color: var(--ink); background: rgba(232,226,210,0.08); border: 1px solid var(--line); padding: 8px 14px; cursor: pointer; }
 button:hover:not(:disabled) { background: rgba(201,162,74,0.25); border-color: var(--accent); }
 button:disabled { opacity: 0.45; cursor: default; }

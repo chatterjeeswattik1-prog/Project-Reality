@@ -8,6 +8,16 @@
 </head>
 <body>
   <div id="app"></div>
+  <!-- Shown while the game script itself downloads (removed by main.ts). -->
+  <div id="boot" style="position:fixed;inset:0;display:grid;place-items:center;background:#15130f;color:#e8e2d0;font:14px system-ui,sans-serif;z-index:60">
+    <div style="width:min(520px,90vw)">
+      <div style="font-size:34px;letter-spacing:.14em;font-weight:700">PROJECT REALISM</div>
+      <div style="color:#8f897b;letter-spacing:.3em;font-size:12px;margin:4px 0 26px">INSURGENCY · AL ZAHRAN</div>
+      <div style="height:4px;background:rgba(232,226,210,.15);overflow:hidden"><i style="display:block;height:100%;width:30%;background:#c9a24a;animation:bootbar 1.4s ease-in-out infinite"></i></div>
+      <div style="color:#8f897b;margin-top:10px;font-size:12px">Loading the game…</div>
+    </div>
+  </div>
+  <style>@keyframes bootbar{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}</style>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

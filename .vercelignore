@@ -1,0 +1,7 @@
+# Only used by `vercel deploy` from this folder (Git deploys clone the repo): skip the authoring tools and caches.
+tools/
+dist/
+node_modules/
+*.blend
+*.blend1
+*.log

@@ -23,6 +23,7 @@ export function mainMenu(host: HTMLElement, gpu: string): Promise<MenuChoice> {
     </div>
     <div class="keys"><b>Controls</b> WASD move · Shift sprint · Ctrl/C crouch · Z prone · Space jump · RMB aim · LMB fire · R reload · B fire mode · 1–5 weapons (press 1 again for M203; PgUp / PgDn sets its quadrant sight range) · Q / E lean (hold) · Alt freelook (hold) · F doors, else field dressing · T weapon light · G bipod (prone, window sill, wall top) · Shift while aiming hold breath · Y team move there · H team hold / form up · U team suppress there · M map · Tab score · Enter give up when wounded · Esc menu</div>
     <div class="gpu">Rendering on: ${gpu}</div>
+    <div class="gpu">Credits: running animation <a href="https://sketchfab.com/3d-models/rida-sidi-ben-ali-running-487e9e949e4a4ea3a8fd59df7e842830" target="_blank" rel="noopener">“Rida sidi ben ali Running”</a> by Rida.Sidi.Ben.Ali and blood shape <a href="https://sketchfab.com/3d-models/cc0-color-spot-2-f0c6c040b86f4b42af3b3b49b9e6a23b" target="_blank" rel="noopener">“Color Spot 2”</a> by plaggy, both <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>. Other assets CC0 (Poly Haven, ambientCG, Quaternius, Freesound) — see the CREDITS.txt files.</div>
   </div>`;
   host.appendChild(el);
   const md = el.querySelector('select[name=mode]') as HTMLSelectElement;

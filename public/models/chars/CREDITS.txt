@@ -15,6 +15,7 @@ boots shafts, knee pads), robes, beards and all texture recolouring are generate
 Authored clips (Prone_*, Stand_To_Prone, Prone_To_Stand, Wounded_Loop, Death02, Death03, Walk_Bwd_Loop,
 Strafe_L/R_Loop, Crouch_Bwd_Loop) are keyframed procedurally in characters.py. No other third-party assets.
 
-mocap/run.glb — running animation from "rida_sidi_ben_ali_running.glb" supplied by the user (Sketchfab, Mixamo rig).
-  Only its animation is used (retargeted onto the game skeleton at load, src/game/runclip.ts); the mesh is not shown.
-  Licence as stated by its source; check before any public release.
+mocap/run.glb — "Rida sidi ben ali Running" by Rida.Sidi.Ben.Ali
+  https://sketchfab.com/3d-models/rida-sidi-ben-ali-running-487e9e949e4a4ea3a8fd59df7e842830
+  Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Only its animation is used, retargeted onto the
+  game skeleton at load (src/game/runclip.ts); the mesh is not shown.

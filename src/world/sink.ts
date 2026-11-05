@@ -6,9 +6,9 @@ export type Surface = 'masonry' | 'concrete' | 'metal' | 'wood' | 'glass' | 'dir
 
 /** Visual materials; `uv` is metres per texture repeat. */
 export const MATS = {
-  plaster_a: { tex: 'beige_wall_001', uv: 2.6, surf: 'masonry' },
-  plaster_b: { tex: 'beige_wall_002', uv: 2.6, surf: 'masonry' },
-  clay: { tex: 'clay_plaster', uv: 3.0, surf: 'masonry' },
+  plaster_a: { tex: 'plaster_grey_04', uv: 3.0, surf: 'masonry' },
+  plaster_b: { tex: 'patterned_clay_plaster', uv: 2.6, surf: 'masonry' },
+  clay: { tex: 'rough_plaster_brick_04', uv: 2.8, surf: 'masonry' },
   plastered: { tex: 'plastered_wall_03', uv: 2.8, surf: 'masonry' },
   damaged: { tex: 'damaged_plaster', uv: 2.6, surf: 'masonry' },
   concrete: { tex: 'concrete_wall_008', uv: 3.0, surf: 'concrete' },
@@ -40,7 +40,7 @@ export interface Collider { c: [number, number, number]; h: [number, number, num
  * 1 building interiors (near only); 2 detailed building exteriors (near/mid); 3 building LOD shells (far only).
  */
 export type Layer = 0 | 1 | 2 | 3;
-export interface Batch { chunk: number; layer: Layer; n: number; pos: Float32Array; nrm: Float32Array; uv: Float32Array; col: Float32Array; mi: Float32Array }
+export interface Batch { id: number; chunk: number; layer: Layer; n: number; pos: Float32Array; nrm: Float32Array; uv: Float32Array; col: Float32Array; mi: Float32Array }
 /** Material index (texture-array layer) of each MatId. */
 export const MAT_INDEX = Object.fromEntries(Object.keys(MATS).map((k, i) => [k, i])) as Record<MatId, number>;
 
@@ -48,6 +48,31 @@ export const MAT_INDEX = Object.fromEntries(Object.keys(MATS).map((k, i) => [k, 
 export type Shade = (cx: number, cy: number, cz: number, nx: number, ny: number, nz: number) => number;
 
 export const CHUNK = 128;
+
+/**
+ * Destructible pieces: every box the generator emits (walls, slabs, caps, shutters, compound walls…), with its bounds,
+ * its collider index (−1 for visual-only boxes) and, for each of its six faces (−x, +x, −y, +y, −z, +z), the batch and
+ * first vertex its quad went to (−1 when the face was not drawn). world/destruct.ts cuts holes through them.
+ */
+export class PieceTable {
+  n = 0;
+  box = new Float32Array(6 * 4096);
+  col = new Int32Array(4096);
+  face = new Int32Array(12 * 4096);
+  dead = new Uint8Array(4096);
+  grow(add = 1) {
+    if (this.n + add <= this.col.length) return;
+    const c = Math.max(this.n + add, this.col.length * 2);
+    const g = <T extends Float32Array | Int32Array | Uint8Array>(a: T, k: number): T => { const r = new (a.constructor as new (n: number) => T)(c * k); r.set(a); return r; };
+    this.box = g(this.box, 6); this.col = g(this.col, 1); this.face = g(this.face, 12); this.dead = g(this.dead, 1);
+  }
+  add(min: number[], max: number[], col: number): number {
+    this.grow(); const i = this.n++;
+    this.box.set([min[0], min[1], min[2], max[0], max[1], max[2]], i * 6); this.col[i] = col; this.dead[i] = 0;
+    this.face.fill(-1, i * 12, i * 12 + 12);
+    return i;
+  }
+}
 const ORDER = [0, 1, 2, 0, 2, 3];
 /** Shade values at or below this mark interior faces (see building.ts). */
 export const INTERIOR = 0.5;
@@ -55,6 +80,10 @@ export const chunkOf = (x: number, z: number) => (Math.floor((x + 2048) / CHUNK)
 
 export class Sink {
   batches = new Map<string, Batch>();
+  pieces = new PieceTable();
+  private batchN = 0;
+  /** Batch id and first vertex of the last quad emitted. */
+  last: [number, number] = [-1, -1];
   colliders: Collider[] = [];
   tris = 0;
   /** Tag stamped on new colliders (the building id), so ray hits can be traced to a building. */
@@ -83,7 +112,7 @@ export class Sink {
   private batch(x: number, z: number, layer: Layer, add: number): Batch {
     const chunk = chunkOf(x, z), key = `${chunk}|${layer}`;
     let b = this.batches.get(key);
-    if (!b) { const c = 4096; b = { chunk, layer, n: 0, pos: new Float32Array(c * 3), nrm: new Float32Array(c * 3), uv: new Float32Array(c * 2), col: new Float32Array(c * 3), mi: new Float32Array(c) }; this.batches.set(key, b); }
+    if (!b) { const c = 4096; b = { id: this.batchN++, chunk, layer, n: 0, pos: new Float32Array(c * 3), nrm: new Float32Array(c * 3), uv: new Float32Array(c * 2), col: new Float32Array(c * 3), mi: new Float32Array(c) }; this.batches.set(key, b); }
     if (b.n + add > b.pos.length / 3) {
       const c = Math.max(b.n + add, (b.pos.length / 3) * 2), g = (a: Float32Array, k: number) => { const r = new Float32Array(c * k); r.set(a); return r; };
       b.pos = g(b.pos, 3); b.nrm = g(b.nrm, 3); b.uv = g(b.uv, 2); b.col = g(b.col, 3); b.mi = g(b.mi, 1);
@@ -98,7 +127,8 @@ export class Sink {
     // Anti-z-fighting: faces are nudged off their plane by a few millimetres (0.8 mm steps, every material its own: depth precision at 50–100 m with the 5 cm near plane) that depend on the material (and the
     // interior layer), so two different surfaces built in the same plane (a slab edge in a wall face, a shutter box
     // under a lintel, a wall cap in the roof) never flicker against each other: one of them always wins.
-    const eps = layer === 3 ? 0 : 0.0008 * (1 + mi) + (layer === 1 ? 0.0004 : 0);
+    const eps = layer === 3 ? 0 : faceEps(mi, layer);
+    this.last = [b.id, b.n];
     const ox = n[0] * eps, oy = n[1] * eps, oz = n[2] * eps;
     for (const i of ORDER) {
       const [x, y, z] = p[i], v = b.n++;
@@ -124,9 +154,11 @@ export class Sink {
     if (x1 - x0 < 1e-3 || y1 - y0 < 1e-3 || z1 - z0 < 1e-3 || this.skip) return;
     const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2;
     if (this.out(cx, cz)) return;
+    const pi = this.pieces.add(min, max, solid ? this.colliders.length : -1);
     const ao = (y: number, base: number) => (y - y0 < 0.01 && y1 - y0 > 0.6 ? base * 0.72 : base);
     const face = (flag: number, n: [number, number, number], p: number[][], fc: [number, number, number]) => {
       if (!(faces & flag)) return;
+      const fi = FACE_SLOT[flag];
       const k = shade ? shade(fc[0], fc[1], fc[2], n[0], n[1], n[2]) : 1;
       const sh = n[1] === 0 ? p.map((q) => ao(q[1], k)) : [k, k, k, k];
       const inside = k <= INTERIOR;
@@ -134,6 +166,7 @@ export class Sink {
       const pm: MatId = inside && this.paint && n[1] <= 0 ? 'plastered' : mat;
       const pt: [number, number, number] = inside && this.paint && n[1] <= 0 ? (n[1] < 0 ? [Math.min(1, this.paint[0] * 1.08), Math.min(1, this.paint[1] * 1.08), Math.min(1, this.paint[2] * 1.08)] : this.paint) : tint;
       this.quad(pm, p, n, pt, sh, this.ext ? this.cx : cx, this.ext ? this.cz : cz, inside ? 1 : this.ext);
+      this.pieces.face[pi * 12 + fi * 2] = this.last[0]; this.pieces.face[pi * 12 + fi * 2 + 1] = this.last[1];
     };
     face(F.nx, [-1, 0, 0], [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [x0, cy, cz]);
     face(F.px, [1, 0, 0], [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [x1, cy, cz]);
@@ -164,6 +197,11 @@ export class Sink {
     this.colliders.push({ c, h, q, s, tag: this.tag });
   }
 }
+
+/** Face slot (0..5 = −x, +x, −y, +y, −z, +z) of an F flag. */
+const FACE_SLOT: Record<number, number> = { [F.nx]: 0, [F.px]: 1, [F.ny]: 2, [F.py]: 3, [F.nz]: 4, [F.pz]: 5 };
+/** Anti-z-fighting offset of a face along its normal (see Sink.quad). */
+export const faceEps = (mi: number, layer: number) => 0.0008 * (1 + mi) + (layer === 1 ? 0.0004 : 0);
 
 /** Quaternion for a rotation of `a` radians about the X or Z axis. */
 export const quatX = (a: number): [number, number, number, number] => [Math.sin(a / 2), 0, 0, Math.cos(a / 2)];

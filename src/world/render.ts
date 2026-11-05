@@ -15,6 +15,13 @@ export interface WorldView {
   /** Register a mesh that is only drawn within `dist` (Chebyshev) of the camera. */
   cull: (mesh: THREE.Object3D, cx: number, cz: number, dist: number, far?: boolean) => void;
   stats: () => { meshes: number; tris: number };
+  /** City meshes by generator batch id (destruction edits their faces), and the two city materials. */
+  batchMesh: THREE.Mesh[];
+  mats: { outdoor: THREE.Material; indoor: THREE.Material };
+  /** Instance slots of each placed prop (index in city.props), so destruction can take one away. */
+  propSlots: Map<number, [THREE.InstancedMesh, number][]>;
+  /** Add a city mesh made at run time (wall remnants): culled like the generator's meshes of the same layer. */
+  addCity: (mesh: THREE.Mesh, layer: number, cx: number, cz: number) => void;
 }
 
 export async function buildWorld(city: City, quality: 'low' | 'medium' | 'high'): Promise<WorldView> {
@@ -22,6 +29,7 @@ export async function buildWorld(city: City, quality: 'low' | 'medium' | 'high')
   const root = new THREE.Group(); root.name = 'world';
   const lods: { mesh: THREE.Mesh; layer: number; cx: number; cz: number }[] = [];
   let tris = 0;
+  const batchMesh: THREE.Mesh[] = [];
   for (const b of city.sink.batches.values()) {
     if (!b.n) continue;
     const g = new THREE.BufferGeometry();
@@ -34,6 +42,7 @@ export async function buildWorld(city: City, quality: 'low' | 'medium' | 'high')
     const mesh = new THREE.Mesh(g, b.layer === 1 ? mats.indoor : mats.outdoor);
     mesh.castShadow = b.layer !== 1; mesh.receiveShadow = true; mesh.matrixAutoUpdate = false;
     mesh.name = `city:${b.chunk}:${b.layer}`;
+    mesh.userData.chunk = b.chunk; mesh.userData.layer = b.layer; batchMesh[b.id] = mesh;
     root.add(mesh); tris += b.n / 3;
     if (b.layer) { const c = g.boundingBox!.getCenter(new THREE.Vector3()); lods.push({ mesh, layer: b.layer, cx: c.x, cz: c.z }); }
   }
@@ -56,6 +65,8 @@ export async function buildWorld(city: City, quality: 'low' | 'medium' | 'high')
       }
     },
     stats: () => ({ meshes: root.children.length, tris }),
+    batchMesh, mats, propSlots: new Map(),
+    addCity: (mesh, layer, cx, cz) => { root.add(mesh); if (layer) lods.push({ mesh, layer, cx, cz }); },
   };
 }
 
@@ -193,7 +204,7 @@ const FALLBACK: Record<string, [number, number, number, number]> = {
   'veh:sedan': [1.75, 1.45, 4.5, 0xd8d4c8], 'veh:pickup': [1.75, 1.7, 4.9, 0xd8d4c8], 'veh:sedan_wreck': [1.75, 1.3, 4.5, 0x3a3028], 'veh:pickup_wreck': [1.75, 1.5, 4.9, 0x3a3028],
   'veh:m1114_wreck': [2.3, 1.9, 5, 0x2a2420], 'veh:bus_wreck': [2.3, 2.6, 7, 0x3a3028],
 };
-export interface PropBox { c: [number, number, number]; h: [number, number, number]; ry: number; id: string; /** World-space triangles for props that collide with their real shape (rubble, wrecks…). */ tris?: { pos: Float32Array; idx: Uint32Array } }
+export interface PropBox { c: [number, number, number]; h: [number, number, number]; ry: number; id: string; /** Index in city.props. */ pi?: number; /** World-space triangles for props that collide with their real shape (rubble, wrecks…). */ tris?: { pos: Float32Array; idx: Uint32Array } }
 
 /** Instance all props; returns the solid props' boxes (for colliders), measured from the models. */
 export async function buildProps(city: City, world: WorldView, shadows: boolean, quality: 'low' | 'medium' | 'high', renderer: THREE.WebGLRenderer): Promise<PropBox[]> {
@@ -226,20 +237,21 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
     return out;
   };
   // Group placements by prop and 256 m cell so each InstancedMesh culls locally.
-  const groups = new Map<string, typeof city.props>();
-  for (const p of city.props) {
+  const groups = new Map<string, number[]>();
+  city.props.forEach((p, pi) => {
     const cs = IMPOSTOR.has(p.id) ? 128 : 256;
     const key = `${p.id}|${Math.floor((p.x + 2048) / cs)}|${Math.floor((p.z + 2048) / cs)}|${cs}`;
-    (groups.get(key) ?? groups.set(key, []).get(key)!).push(p);
-  }
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(pi);
+  });
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), sc = new THREE.Vector3(), tr = new THREE.Vector3();
-  for (const [key, list] of groups) {
-    const id = key.split('|')[0];
+  for (const [key, idx] of groups) {
+    const id = key.split('|')[0], list = idx.map((i) => city.props[i]);
     for (const part of partsOf(id)) {
       const im = new THREE.InstancedMesh(part.geo, part.mat, list.length);
       list.forEach((p, i) => {
         q.setFromAxisAngle(up, p.ry); sc.setScalar(p.s ?? 1); tr.set(p.x, p.y, p.z);
         im.setMatrixAt(i, m4.compose(tr, q, sc).multiply(part.local));
+        if (!IMPOSTOR.has(id)) { const sl = world.propSlots.get(idx[i]); if (sl) sl.push([im, i]); else world.propSlots.set(idx[i], [[im, i]]); }
       });
       im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere();
       im.castShadow = shadows && !id.startsWith('grass'); im.receiveShadow = true; im.name = `prop:${id}`;
@@ -268,7 +280,8 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
   // shapes: tank legs, pole cross-arms, dishes).
   const col = (await fetch(`${import.meta.env.BASE_URL}models/props_col.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}))) as PropCol;
   const solid: PropBox[] = [];
-  for (const p of city.props) {
+  for (let pi = 0; pi < city.props.length; pi++) {
+    const p = city.props[pi];
     if (!p.solid) continue;
     if (EXACT.test(p.id)) {
       // Mounds and wrecks: their real triangles (a few hundred props on the map).
@@ -281,14 +294,14 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
         const ix = part.geo.getIndex();
         if (ix) for (let i = 0; i < ix.count; i++) idx.push(base + ix.getX(i)); else for (let i = 0; i < pa.count; i++) idx.push(base + i);
       }
-      solid.push({ c: sb.c as [number, number, number], h: [sb.h[0] * 0.8, sb.h[1] * 0.7, sb.h[2] * 0.8], ry: p.ry, id: p.id, tris: { pos: new Float32Array(pos), idx: new Uint32Array(idx) } });
+      solid.push({ pi, c: sb.c as [number, number, number], h: [sb.h[0] * 0.8, sb.h[1] * 0.7, sb.h[2] * 0.8], ry: p.ry, id: p.id, tris: { pos: new Float32Array(pos), idx: new Uint32Array(idx) } });
       continue;
     }
     const fb = col[p.id];
-    if (fb?.length) { for (const b of fittedBoxes(p.id, fb, p)) solid.push({ c: b.c as [number, number, number], h: b.h as [number, number, number], ry: p.ry, id: p.id }); continue; }
+    if (fb?.length) { for (const b of fittedBoxes(p.id, fb, p)) solid.push({ pi, c: b.c as [number, number, number], h: b.h as [number, number, number], ry: p.ry, id: p.id }); continue; }
     const b = boxes.get(p.id); if (!b) continue;
     const sb = solidBox(p.id, b.min.toArray(), b.max.toArray(), p);
-    solid.push({ c: sb.c as [number, number, number], h: sb.h as [number, number, number], ry: p.ry, id: p.id });
+    solid.push({ pi, c: sb.c as [number, number, number], h: sb.h as [number, number, number], ry: p.ry, id: p.id });
   }
   return solid;
 }

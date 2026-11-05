@@ -34,7 +34,7 @@ export class Doors {
     return out;
   }
 
-  constructor(P: Physics, scene: THREE.Scene, city: City, area?: { x0: number; z0: number; x1: number; z1: number }) {
+  constructor(private P: Physics, scene: THREE.Scene, city: City, area?: { x0: number; z0: number; x1: number; z1: number }) {
     const rng = mulberry(9001);
     const wood = new THREE.MeshStandardMaterial({ map: tex('assets/tex/distressed_painted_planks/diff.jpg'), roughness: 0.85, color: 0xb8a890 });
     const metal = new THREE.MeshStandardMaterial({ map: tex('assets/tex/green_metal_rust/diff.jpg'), roughness: 0.6, metalness: 0.4, color: 0xa0a8a0 });
@@ -104,6 +104,7 @@ export class Doors {
   use(p: V3, dir: V3): boolean {
     let best: Door | null = null, bd = 2.2;
     for (const d of this.near(p[0], p[2], 4)) {
+      if (d.w <= 0) continue;
       const mid = d.hinge.clone().addScaledVector(this.leafDir(d, d.angle), d.w / 2);
       const dx = mid.x - p[0], dz = mid.z - p[2], dist = Math.hypot(dx, dz);
       if (Math.abs(mid.y + 1 - p[1]) > 2.2 || dist > bd) continue;
@@ -119,11 +120,37 @@ export class Doors {
   openNear(p: V3, vel: [number, number, number]) {
     const sp = Math.hypot(vel[0], vel[2]); if (sp < 0.3) return;
     for (const d of this.near(p[0], p[2], 3)) {
-      if (d.target > 0.4) continue;
+      if (d.target > 0.4 || d.w <= 0) continue;
       const mid = d.hinge.clone().addScaledVector(this.leafDir(d, 0), d.w / 2);
       const dx = mid.x - p[0], dz = mid.z - p[2], dist = Math.hypot(dx, dz);
       if (dist < 1.6 && Math.abs(mid.y - p[1]) < 1.5 && (dx * vel[0] + dz * vel[2]) / (dist * sp) > 0.2) { d.target = OPEN; this.moving.add(d); }
     }
+  }
+
+  /**
+   * A blast at p: leaves within `r` are torn off, and so is any door whose wall or lintel has just been blown away.
+   * Returns the boxes (min, max) of the removed leaves, for splinters.
+   */
+  blast(p: V3, r: number): { min: number[]; max: number[]; metal: boolean }[] {
+    const out: { min: number[]; max: number[]; metal: boolean }[] = [];
+    const solidAt = (x: number, y: number, z: number) => !!this.P.boxAt(x, y, z);
+    for (const d of this.near(p[0], p[2], r + 4)) {
+      if (d.w <= 0) continue;
+      const dir = this.leafDir(d, 0), mid = d.hinge.clone().addScaledVector(dir, d.w / 2), c = mid.clone().addScaledVector(dir, 0);
+      // The doorway's axis (along the wall) and the wall test from the constructor, against today's walls.
+      const ax = Math.abs(dir.x), az = Math.abs(dir.z), off = d.w / 2 + 0.2;
+      const standing = solidAt(c.x + ax * off, d.hinge.y + 1.0, c.z + az * off) && solidAt(c.x - ax * off, d.hinge.y + 1.0, c.z - az * off)
+        && solidAt(c.x, d.hinge.y + d.h + 0.15, c.z);
+      const near = Math.hypot(mid.x - p[0], d.hinge.y + d.h / 2 - p[1], mid.z - p[2]) < r;
+      if (!near && standing) continue;
+      this.P.world.removeRigidBody(d.body);
+      d.w = 0; this.moving.delete(d);
+      const im = d.metal ? this.im!.metal : this.im!.wood;
+      im.setMatrixAt(d.inst, this.m4.makeScale(0, 0, 0)); im.instanceMatrix.needsUpdate = true;
+      const e = d.h / 2;
+      out.push({ min: [mid.x - 0.5, d.hinge.y, mid.z - 0.5], max: [mid.x + 0.5, d.hinge.y + e * 2, mid.z + 0.5], metal: d.metal });
+    }
+    return out;
   }
 
   /** Doors swinging right now (only these are updated). */

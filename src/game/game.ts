@@ -24,6 +24,7 @@ import type { GameMode } from './mode';
 import { mulberry } from '../core/rng';
 import type { CoverIndex } from '../ai/cover';
 import type { Doors } from './doors';
+import { Destruction } from '../world/destruct';
 
 export interface GameEvents {
   onDown?: (victim: Soldier, by: Soldier | null, killed: boolean) => void;
@@ -36,8 +37,8 @@ interface Charge { p: V3; owner: Soldier; ammo: Ammo; mesh: THREE.Object3D }
 export interface Pickup { slot: Slot; obj: THREE.Object3D }
 const FIREARM = new Set(['rifle', 'lmg', 'gpmg', 'sniper', 'pistol', 'launcher']);
 
-/** Ragdolls simulated at once (a settled body costs nothing). */
-const MAX_RAGDOLLS = 12;
+/** Ragdolls simulated at once, normally (a settled body costs nothing; see the freezing rule in update). */
+const MAX_RAGDOLLS = 20;
 
 const _pk = new THREE.Vector3();
 
@@ -58,6 +59,8 @@ export class Game {
   claims = new Map<number, number>();
   cover: CoverIndex | null = null;
   doors: Doors | null = null;
+  /** Breakable walls, slabs and shutters (world/destruct.ts). */
+  destruct: Destruction | null = null;
   /** The player's fireteam brain when the mode has one (close-quarters test mode). */
   fireteam: import('../ai/team').Fireteam | null = null;
   smokes: { p: V3; t0: number }[] = [];
@@ -72,6 +75,7 @@ export class Game {
 
   constructor(public gfx: Gfx, public P: Physics, public city: City, public world: WorldView, public assets: CharAssets, quality: string) {
     this.fx = new FX(gfx.scene);
+    this.destruct = new Destruction(city, P, world, gfx.scene);
     this.fx.floorAt = (p) => { const h = P.castRay([p[0], p[1], p[2]], [0, -1, 0], 80, G_WORLD); return h ? h.point[1] : null; };
     this.fx.sweep = (a, d, len) => { const h = P.castRay(a, d, len, G_WORLD); return h ? { dist: h.dist, normal: h.normal } : null; };
     this.fx.onCaseLand = (p) => { if (Math.random() < 0.6) this.audio.play('casing_drop', p, { range: 12, gain: 0.35, rate: 0.9 + Math.random() * 0.25 }); };
@@ -349,6 +353,17 @@ export class Game {
     const ex = a.explosive!;
     const power = Math.min(3, Math.max(0.6, ex.dmg / 180));
     this.fx.explosion(p, power, n);
+    // Walls first: a breach lets the blast through to whoever is behind it.
+    if (this.destruct) {
+      const br = this.destruct.blast(p, ex.breach ?? 0, ex.light ?? 0, power);
+      for (const h of br.holes) { this.fx.dust(h.p, h.n, h.r); this.fx.impact(h.p, h.n, h.surf, 2); }
+      // Doors torn off by the blast, or left with no wall around them.
+      for (const d of this.doors?.blast(p, (ex.light ?? 0) * 1.4) ?? []) this.destruct.debris(d.min, d.max, p, power, d.metal ? 'metal' : 'wood', 0.12);
+      if (br.holes.length) {
+        this.cover?.invalidate(p[0], p[2], (ex.breach ?? 0) * 2 + 2);
+        this.audio.play('debris_fall', [p[0], p[1] + 0.5, p[2]], { range: 140, gain: Math.min(1.2, 0.5 + br.volume * 0.8 + br.fell * 0.05) });
+      }
+    }
     this.audio.play(ex.dmg > 300 ? 'explosion_big' : 'explosion_near', p, { range: 3000, far: 'explosion_far', nearDist: 150, gain: 1 });
     // Bodies on the ground are thrown by the blast.
     const throwK = (q: V3) => { const dd = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]); return dd > ex.radius * 0.8 ? 0 : 4.5 * power * (1 - dd / (ex.radius * 0.8)); };
@@ -402,6 +417,7 @@ export class Game {
   // ---------------- per frame ----------------
   update(dt: number) {
     this.time += dt;
+    this.destruct?.update(dt);
     const cam = this.gfx.camera.position;
     for (const s of this.soldiers) {
       // Blood pool under the chest once the body has settled.
@@ -446,7 +462,9 @@ export class Game {
     // Corpses still falling; at most MAX_RAGDOLLS simulate at once (the oldest settle where they are).
     for (const r of this.corpses) if (r.ragActive) r.updateRag(dt);
     const active = [...this.rigs.values(), ...this.corpses].filter((r) => r.ragActive);
-    if (active.length > MAX_RAGDOLLS) active.sort((x, y) => y.rag!.t - x.rag!.t).slice(0, active.length - MAX_RAGDOLLS).forEach((r) => { r.rag!.finish(); r.rag = null; });
+    // Over the limit, the oldest bodies that have had time to land (3 s) are frozen where they lie; one still falling is
+    // never frozen (it would be left kneeling or hanging in the air), so a burst of deaths may briefly exceed the limit.
+    if (active.length > MAX_RAGDOLLS) active.filter((r) => r.rag!.t > 3).sort((x, y) => y.rag!.t - x.rag!.t).slice(0, active.length - MAX_RAGDOLLS).forEach((r) => { r.rag!.finish(); r.rag = null; });
     this.prof.rigs = performance.now() - t0; t0 = performance.now();
     this.doors?.update(dt);
     this.fx.cam.set(cam.x, cam.y, cam.z);

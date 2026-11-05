@@ -66,3 +66,4 @@ button.ins { border-color: rgba(192,80,58,0.6); }
 .sc-col { flex: 1; } .sc-col h3 { letter-spacing: 0.1em; font-size: 14px; }
 .score table { width: 100%; border-collapse: collapse; font-size: 12px; } .score td, .score th { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--line); }
 .score tr.me { color: var(--accent); } .score tr.dead { color: #888; } .score tr.wounded { color: #e0c060; }
+.menu .gpu a { color: #9a9a8a; }

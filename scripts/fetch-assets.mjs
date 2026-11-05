@@ -12,7 +12,7 @@ const HDRIS = { day: ['kloofendal_43d_clear_puresky', '2k'], dusk: ['qwantani_du
 /** PBR textures: id → resolution. Diffuse, OpenGL normal and AO/rough/metal are fetched. */
 const TEXTURES = {
   // walls
-  beige_wall_001: '1k', beige_wall_002: '1k', clay_plaster: '1k', damaged_plaster: '1k', plastered_wall_03: '1k',
+  plaster_grey_04: '1k', patterned_clay_plaster: '1k', rough_plaster_brick_04: '1k', damaged_plaster: '1k', plastered_wall_03: '1k',
   concrete_wall_008: '1k', concrete_block_wall: '1k', large_sandstone_blocks: '1k', cracked_concrete_wall: '1k', concrete_brick_wall_001: '1k',
   // ground, roads, pavements
   dry_ground_01: '2k', gravelly_sand: '1k', dirt: '1k', asphalt_02: '1k', cracked_concrete: '1k', concrete_pavement: '1k', dry_mud_field_001: '1k',

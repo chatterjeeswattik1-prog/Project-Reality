@@ -38,7 +38,16 @@ export class Physics {
   static async create(): Promise<Physics> { await RAPIER.init(); return new Physics(); }
 
   /** Static boxes kept for surface lookups (trimesh hits carry no per-triangle data). */
-  private boxes: { c: number[]; h: number[]; ry: number; q?: number[]; s: Surface; tag: number }[] = [];
+  private boxes: { c: number[]; h: number[]; ry: number; q?: number[]; s: Surface; tag: number; dead?: boolean; grp?: string; tris?: { pos: Float32Array; idx: Uint32Array } }[] = [];
+  /** Box indices of each solid prop (index in city.props). */
+  private propBoxes = new Map<number, number[]>();
+  /**
+   * City boxes are grouped into one trimesh per building (by tag), or per 128 m chunk for boxes that belong to no
+   * building (compound walls, fences, terrain features), so a destroyed wall only rebuilds its own building's collider.
+   */
+  private grps = new Map<string, { col: RAPIER.Collider | null; boxes: number[] }>();
+  private dirty = new Set<string>();
+  private cityBody: RAPIER.RigidBody | null = null;
   /** Static boxes [0, cityBoxN) are the city (walls, floors); the rest are props. */
   cityBoxN = 0;
   private grid = new Map<number, number[]>();
@@ -52,45 +61,35 @@ export class Physics {
   buildStatic(city: City, props: PropBox[]) {
     const w = this.world, R = RAPIER, g = groups(G_WORLD, 0xffff);
     const body = w.createRigidBody(R.RigidBodyDesc.fixed());
-    const chunks = new Map<number, { v: number[]; i: number[] }>();
-    const add = (c: number[], h: number[], q: number[] | null, surf: Surface, tag: number, ry = 0) => {
-      const bi = this.boxes.length;
-      this.boxes.push({ c, h, ry, q: q ?? undefined, s: surf, tag });
-      const r = Math.hypot(h[0], h[2]) + (q ? h[1] : 0), C = Physics.cell;
-      for (let ix = Math.floor((c[0] - r) / C); ix <= Math.floor((c[0] + r) / C); ix++) for (let iz = Math.floor((c[2] - r) / C); iz <= Math.floor((c[2] + r) / C); iz++) {
-        const k = this.key(ix, iz); let l = this.grid.get(k); if (!l) this.grid.set(k, l = []); l.push(bi);
-      }
-      const ck = Math.floor((c[0] + 2048) / 128) + Math.floor((c[2] + 2048) / 128) * 64;
-      let ch = chunks.get(ck); if (!ch) chunks.set(ck, ch = { v: [], i: [] });
-      const b = ch.v.length / 3;
-      for (let n = 0; n < 8; n++) {
-        let v = [(n & 1 ? 1 : -1) * h[0], (n & 2 ? 1 : -1) * h[1], (n & 4 ? 1 : -1) * h[2]];
-        if (q) v = rotq(q, v);
-        ch.v.push(c[0] + v[0], c[1] + v[1], c[2] + v[2]);
-      }
-      for (const [a, b2, cc, d] of BOX_FACES) ch.i.push(b + a, b + b2, b + cc, b + a, b + cc, b + d);
-    };
-    for (const c of city.sink.colliders) add(c.c, c.h, c.q ?? null, c.s, c.tag ?? -1);
+    this.cityBody = body;
+    // City boxes: grouped per building / chunk (rebuilt when destroyed).
+    for (const c of city.sink.colliders) {
+      const bi = this.boxes.length, tag = c.tag ?? -1;
+      const grp = tag >= 0 ? `b${tag}` : `c${Math.floor((c.c[0] + 2048) / 128) + Math.floor((c.c[2] + 2048) / 128) * 64}`;
+      this.boxes.push({ c: c.c, h: c.h, ry: 0, q: c.q, s: c.s, tag, grp });
+      this.gridAdd(bi);
+      let gr = this.grps.get(grp); if (!gr) this.grps.set(grp, gr = { col: null, boxes: [] });
+      gr.boxes.push(bi); this.dirty.add(grp);
+    }
     this.cityBoxN = this.boxes.length;
+    this.commit();
+    // Props: rebuildable groups per 128 m chunk too (a prop knocked off a holed roof takes its collider with it); the
+    // real-shape ones (mounds, wrecks, stalls: thousands of triangles, never destroyed) in groups of their own.
     for (const p of props) {
-      if (!p.tris) { add(p.c, p.h, [0, Math.sin(p.ry / 2), 0, Math.cos(p.ry / 2)], propSurface(p.id), -1, p.ry); continue; }
-      // Real-shape props: their triangles go into the chunk trimesh; the (shrunk) box stays only for surface lookups.
-      const bi = this.boxes.length;
-      this.boxes.push({ c: p.c, h: p.h, ry: p.ry, q: [0, Math.sin(p.ry / 2), 0, Math.cos(p.ry / 2)], s: propSurface(p.id), tag: -1 });
-      const C = Physics.cell, r = Math.hypot(p.h[0], p.h[2]) + 1;
-      for (let ix = Math.floor((p.c[0] - r) / C); ix <= Math.floor((p.c[0] + r) / C); ix++) for (let iz = Math.floor((p.c[2] - r) / C); iz <= Math.floor((p.c[2] + r) / C); iz++) {
-        const k = this.key(ix, iz); let l = this.grid.get(k); if (!l) this.grid.set(k, l = []); l.push(bi);
-      }
-      const ck = Math.floor((p.c[0] + 2048) / 128) + Math.floor((p.c[2] + 2048) / 128) * 64;
-      let ch = chunks.get(ck); if (!ch) chunks.set(ck, ch = { v: [], i: [] });
-      const base = ch.v.length / 3;
-      for (let i = 0; i < p.tris.pos.length; i++) ch.v.push(p.tris.pos[i]);
-      for (let i = 0; i < p.tris.idx.length; i++) ch.i.push(base + p.tris.idx[i]);
+      const cs = p.tris ? 128 : 32, bi = this.boxes.length, grp = `${p.tris ? "t" : "p"}${Math.floor((p.c[0] + 2048) / cs) + Math.floor((p.c[2] + 2048) / cs) * 256}`;
+      // Real-shape props: their triangles collide; the (shrunk) box stays only for surface lookups.
+      this.boxes.push({ c: p.c, h: p.h, ry: p.ry, q: [0, Math.sin(p.ry / 2), 0, Math.cos(p.ry / 2)], s: propSurface(p.id), tag: -1, grp, tris: p.tris });
+      if (p.tris) {
+        const C = Physics.cell, r = Math.hypot(p.h[0], p.h[2]) + 1;
+        for (let ix = Math.floor((p.c[0] - r) / C); ix <= Math.floor((p.c[0] + r) / C); ix++) for (let iz = Math.floor((p.c[2] - r) / C); iz <= Math.floor((p.c[2] + r) / C); iz++) {
+          const k = this.key(ix, iz); let l = this.grid.get(k); if (!l) this.grid.set(k, l = []); l.push(bi);
+        }
+      } else this.gridAdd(bi);
+      let gr = this.grps.get(grp); if (!gr) this.grps.set(grp, gr = { col: null, boxes: [] });
+      gr.boxes.push(bi); this.dirty.add(grp);
+      if (p.pi !== undefined) { const l = this.propBoxes.get(p.pi); if (l) l.push(bi); else this.propBoxes.set(p.pi, [bi]); }
     }
-    for (const ch of chunks.values()) {
-      const col = w.createCollider(R.ColliderDesc.trimesh(new Float32Array(ch.v), new Uint32Array(ch.i), 0 as never).setCollisionGroups(g).setFriction(0.8), body);
-      this.surf.set(col.handle, 'concrete');
-    }
+    this.commit();
     // Terrain heightfield: 4 m cells over ±1000 m (rows along z, columns along x, column-major).
     const N = 500, size = 2000, heights = new Float32Array((N + 1) * (N + 1));
     for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) heights[i + j * (N + 1)] = groundH(-size / 2 + (j * size) / N, -size / 2 + (i * size) / N);
@@ -109,6 +108,49 @@ export class Physics {
       const c = w.createCollider(R.ColliderDesc.cuboid(hx, 60, hz).setTranslation(cx, 20, cz).setCollisionGroups(groups(G_BOUND, G_CHAR | G_VEH)), body);
       this.surf.set(c.handle, 'dirt');
     }
+  }
+
+  private gridAdd(bi: number) {
+    const { c, h, q } = this.boxes[bi], r = Math.hypot(h[0], h[2]) + (q ? h[1] : 0), C = Physics.cell;
+    for (let ix = Math.floor((c[0] - r) / C); ix <= Math.floor((c[0] + r) / C); ix++) for (let iz = Math.floor((c[2] - r) / C); iz <= Math.floor((c[2] + r) / C); iz++) {
+      const k = this.key(ix, iz); let l = this.grid.get(k); if (!l) this.grid.set(k, l = []); l.push(bi);
+    }
+  }
+
+  /** Destruction: a city box is gone (its group's collider is rebuilt on the next commit()). */
+  removeBox(bi: number) {
+    const b = this.boxes[bi]; if (!b || b.dead) return;
+    b.dead = true; if (b.grp) this.dirty.add(b.grp);
+  }
+  /** Destruction: a new city box (a wall remnant) in the same group as `like`. Returns its index. */
+  addBox(min: number[], max: number[], like: number): number {
+    const L = this.boxes[like], bi = this.boxes.length;
+    this.boxes.push({ c: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2], h: [(max[0] - min[0]) / 2, (max[1] - min[1]) / 2, (max[2] - min[2]) / 2], ry: 0, s: L.s, tag: L.tag, grp: L.grp });
+    this.gridAdd(bi);
+    if (L.grp) { this.grps.get(L.grp)!.boxes.push(bi); this.dirty.add(L.grp); }
+    return bi;
+  }
+  /** Destruction: a prop is gone (all its collision boxes). */
+  removeProp(pi: number) { for (const bi of this.propBoxes.get(pi) ?? []) this.removeBox(bi); }
+  surfOf(bi: number): Surface | null { return this.boxes[bi]?.s ?? null; }
+  /** Rebuild the trimesh of every group that changed. */
+  commit() {
+    const w = this.world, g = groups(G_WORLD, 0xffff);
+    for (const k of this.dirty) {
+      const gr = this.grps.get(k); if (!gr) continue;
+      if (gr.col) { this.surf.delete(gr.col.handle); w.removeCollider(gr.col, true); gr.col = null; }
+      gr.boxes = gr.boxes.filter((i) => !this.boxes[i].dead);
+      if (!gr.boxes.length) continue;
+      const v: number[] = [], idx: number[] = [];
+      for (const i of gr.boxes) {
+        const b = this.boxes[i];
+        if (b.tris) { const base = v.length / 3; for (let k = 0; k < b.tris.pos.length; k++) v.push(b.tris.pos[k]); for (let k = 0; k < b.tris.idx.length; k++) idx.push(base + b.tris.idx[k]); }
+        else boxTris(b.c, b.h, b.q ?? null, v, idx);
+      }
+      gr.col = w.createCollider(RAPIER.ColliderDesc.trimesh(new Float32Array(v), new Uint32Array(idx), 0 as never).setCollisionGroups(g).setFriction(0.8), this.cityBody!);
+      this.surf.set(gr.col.handle, 'concrete');
+    }
+    this.dirty.clear();
   }
 
   /** Self-test of the heightfield layout (logs a warning if axes are swapped). */
@@ -150,7 +192,7 @@ export class Physics {
   boxesNear(x: number, z: number, r: number) {
     const C = Physics.cell, out = new Set<number>();
     for (let ix = Math.floor((x - r) / C); ix <= Math.floor((x + r) / C); ix++) for (let iz = Math.floor((z - r) / C); iz <= Math.floor((z + r) / C); iz++) for (const i of this.grid.get(this.key(ix, iz)) ?? []) out.add(i);
-    return [...out].map((i) => this.boxes[i]).filter((b) => Math.abs(b.c[0] - x) <= r && Math.abs(b.c[2] - z) <= r);
+    return [...out].map((i) => this.boxes[i]).filter((b) => !b.dead && Math.abs(b.c[0] - x) <= r && Math.abs(b.c[2] - z) <= r);
   }
 
   /** The static box containing a point (for surface and building lookups). */
@@ -159,6 +201,7 @@ export class Physics {
     if (!l) return null;
     for (const i of l) {
       const b = this.boxes[i];
+      if (b.dead) continue;
       let dx = x - b.c[0], dy = y - b.c[1], dz = z - b.c[2];
       if (b.q) { const v = rotq([-b.q[0], -b.q[1], -b.q[2], b.q[3]], [dx, dy, dz]); dx = v[0]; dy = v[1]; dz = v[2]; }
       if (Math.abs(dx) <= b.h[0] + 0.01 && Math.abs(dy) <= b.h[1] + 0.01 && Math.abs(dz) <= b.h[2] + 0.01) return b;
@@ -174,6 +217,16 @@ export class Physics {
   }
 
   step() { this.world.step(); }
+}
+
+function boxTris(c: number[], h: number[], q: number[] | null, v: number[], idx: number[]) {
+  const b = v.length / 3;
+  for (let n = 0; n < 8; n++) {
+    let p = [(n & 1 ? 1 : -1) * h[0], (n & 2 ? 1 : -1) * h[1], (n & 4 ? 1 : -1) * h[2]];
+    if (q) p = rotq(q, p);
+    v.push(c[0] + p[0], c[1] + p[1], c[2] + p[2]);
+  }
+  for (const [a, b2, cc, d] of BOX_FACES) idx.push(b + a, b + b2, b + cc, b + a, b + cc, b + d);
 }
 
 const BOX_FACES = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];

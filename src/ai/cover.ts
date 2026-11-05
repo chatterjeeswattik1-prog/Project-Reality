@@ -17,6 +17,11 @@ export class CoverIndex {
 
   private key(ix: number, iz: number) { return (ix + 512) * 1024 + (iz + 512); }
 
+  /** Walls changed (destruction): drop the cells around (x, z) so they are rebuilt from the new geometry. */
+  invalidate(x: number, z: number, r: number) {
+    for (let ix = Math.floor((x - r - 8) / CELL); ix <= Math.floor((x + r + 8) / CELL); ix++) for (let iz = Math.floor((z - r - 8) / CELL); iz <= Math.floor((z + r + 8) / CELL); iz++) this.cells.delete(this.key(ix, iz));
+  }
+
   near(x: number, z: number, r: number): CoverPoint[] {
     const out: CoverPoint[] = [];
     for (let ix = Math.floor((x - r) / CELL); ix <= Math.floor((x + r) / CELL); ix++) for (let iz = Math.floor((z - r) / CELL); iz <= Math.floor((z + r) / CELL); iz++) {

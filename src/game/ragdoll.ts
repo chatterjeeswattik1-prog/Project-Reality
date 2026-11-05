@@ -141,8 +141,9 @@ export class Ragdoll {
     if (this.done) return false;
     this.t += dt;
     // Muscle tone: the joints hold the pose loosely at first and let go over about a second, so the body sags and
-    // folds at the knees and hips instead of balling up or flailing; a little tone stays to keep limbs plausible.
-    const tone = 0.1 + 0.9 * Math.exp(-this.t / 0.45);
+    // folds at the knees and hips instead of balling up or flailing; almost none stays (more held the legs locked
+    // straight, and bodies came to rest propped like planks on head and heels).
+    const tone = 0.025 + 0.975 * Math.exp(-this.t / 0.45);
     if (Math.abs(tone - this.tone) > 0.02) {
       this.tone = tone;
       for (const pt of this.parts) if (pt.joint) {
@@ -188,6 +189,20 @@ export class Ragdoll {
     if (this.done) return;
     this.done = true;
     const w = this.P.world;
+    // Frozen before it had settled (too many bodies falling at once, or the time limit) or resting propped up: let the
+    // body down onto the floor under it, so no corpse is left hanging in the air.
+    const pel = this.parts.find((p) => p.seg.bone === 'pelvis');
+    if (pel) {
+      let low = Infinity;
+      for (const pt of this.parts) { const t = pt.body.translation(); low = Math.min(low, t.y - pt.seg.r); }
+      const pv = pel.bone.getWorldPosition(new THREE.Vector3());
+      const fl = this.P.castRay([pv.x, pv.y + 0.3, pv.z], [0, -1, 0], 6, G_WORLD);
+      if (fl && low - fl.point[1] > 0.06) {
+        pv.y -= Math.min(low - fl.point[1] - 0.02, 3);
+        pel.bone.position.copy(pel.bone.parent!.worldToLocal(pv));
+        pel.bone.updateMatrixWorld(true);
+      }
+    }
     for (const j of this.joints) w.removeImpulseJoint(j, false);
     for (const pt of this.parts) w.removeRigidBody(pt.body);
     if (this.gun) w.removeRigidBody(this.gun.body);

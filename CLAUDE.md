@@ -65,6 +65,7 @@ All models: real-world dimensions, origin as stated, applied transforms, PBR mat
 ## Code layout (`src/`)
 - `main.ts` boot and menu · `core/` loop, input, settings, rng · `world/` terrain, city generator, collision, nav · `game/` modes, factions, kits, tickets · `weapons/` data, ballistics, deviation, firing · `player/` controller, viewmodel · `ai/` bots and squads · `vehicles/` · `fx/` · `audio/` · `ui/` HUD, map, menus.
 - Game data (weapons, kits, vehicles) lives in typed tables in `src/game/data/`, with sources noted. Mark approximate numbers.
+- Destruction (`world/destruct.ts`): every box `Sink.box` emits is a piece (`sink.ts` PieceTable: bounds, collider index, where each face sits in the chunk meshes); blasts cut holes, unsupported remnants and props fall, physics rebuilds that building's trimesh (city colliders are grouped per building, props per 32 m cell). Explosive `breach`/`light` radii are in `game/data/weapons.ts`. Test: `node scripts/breach.mjs <outPrefix>` (`FULL=1` for the full map).
 
 ## Rules
 - Determinism where it is cheap: the map layout comes from a seed (`mulberry32`), never `Math.random()` in the generator.

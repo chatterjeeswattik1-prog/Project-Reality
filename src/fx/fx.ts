@@ -308,6 +308,16 @@ export class FX {
       this.scorch.setMatrixAt(i, this.m4); this.scorch.count = Math.min(120, this.scorchN); this.scorch.instanceMatrix.needsUpdate = true;
     }
   }
+  /** A wall breached: a thick, pale cloud of masonry dust billowing out of the hole (both sides) and hanging. */
+  dust(p: V3, n: V3, r: number) {
+    const rnd = Math.random, R = () => rnd() - 0.5;
+    // Puffs start clear of the wall by about their size (a big sprite cutting through the wall shows a hard edge).
+    for (let i = 0; i < 10 + r * 12; i++) {
+      const side = i % 3 === 0 ? -1 : 1, s = (0.6 + rnd() * 2.2) * side, sz = 0.3 + r * 0.3, off = (0.35 + sz) * side;
+      this.smoke.spawn([p[0] + n[0] * off + R() * r, p[1] + n[1] * off + R() * r, p[2] + n[2] * off + R() * r], [n[0] * s + R() * 1.2, n[1] * s + rnd() * 0.7, n[2] * s + R() * 1.2],
+        sz, 0.5 + r * 0.45, 4 + rnd() * 5, 0.75, [0.68, 0.62, 0.52], 1.6, -0.04, [0.76, 0.71, 0.62]);
+    }
+  }
   /** Smoke grenade: emits for ~50 s. */
   smokeScreens: { p: V3; t: number; col: V3 }[] = [];
   smokeGrenade(p: V3, col: V3 = [0.86, 0.86, 0.84]) { this.smokeScreens.push({ p, t: 0, col }); }

@@ -53,12 +53,13 @@ function make(diff: THREE.DataArrayTexture, nor: THREE.DataArrayTexture, arm: TH
   m.onBeforeCompile = (sh) => {
     sh.uniforms.tDiff = { value: diff }; sh.uniforms.tNor = { value: nor }; sh.uniforms.tArm = { value: arm };
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float mi;\nflat varying float vMi;\nvarying vec3 vCityW;')
-      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMi = mi;\nvCityW = position;');
+      .replace('#include <common>', '#include <common>\nattribute float mi;\nflat varying float vMi;\nvarying vec3 vCityW;\nvarying vec3 vCityN;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMi = mi;\nvCityW = position;\nvCityN = normal;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
 flat varying float vMi;
 varying vec3 vCityW;
+varying vec3 vCityN;
 uniform highp sampler2DArray tDiff, tNor, tArm;
 // Smooth value noise (city macro variation).
 float cHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -73,6 +74,12 @@ float cNoise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 *
   vec4 t1 = texture(tDiff, vec3(vMapUv, vMi)), t2 = texture(tDiff, vec3(uv2, vMi));
   vec4 tc = mix(t1, t2, b * 0.55);
   float macro = mix(0.9, 1.07, cNoise(vCityW.xz * 0.045 + vec2(vCityW.y * 0.03, 3.1)));
+  // Weathering on outside walls: dust and rain streaks running down from sills and the roof edge (narrow across the
+  // wall, long vertically). Interiors get none.
+  float wallF = (1.0 - abs(vCityN.y)) * ${interior ? '0.0' : '1.0'};
+  float along = dot(vCityW.xz, vec2(-vCityN.z, vCityN.x));
+  float st = cNoise(vec2(along * 2.1, vCityW.y * 0.09)) * cNoise(vec2(along * 0.37 + 5.3, vCityW.y * 0.05));
+  macro *= 1.0 - wallF * 0.2 * smoothstep(0.22, 0.6, st);
   diffuseColor *= vec4(tc.rgb * macro, tc.a);
 }`)
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = roughness * texture(tArm, vec3(vRoughnessMapUv, vMi)).g;')

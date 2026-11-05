@@ -12,7 +12,13 @@ export interface Ammo {
   /** Damage to an unarmoured torso at the muzzle (HP out of 100). */ dmg: number;
   /** Penetration class: 0 pistol, 1 intermediate rifle, 2 full-power rifle, 3 heavy MG. Decides what walls it goes through. */ pen: number;
   tracer?: number;
-  explosive?: { radius: number; dmg: number; kill: number; heat?: boolean };
+  /**
+   * `breach`: radius (m) of the hole blown through a brick/plaster wall (concrete ×0.75, sheet metal/wood ×1.8);
+   * `light`: radius within which even a weak blast shreds sheet metal, wood and shutters. Approximate (game values):
+   * a 40 mm HEDP or an RPG makes a hole a man can crawl or climb through, a C4 breaching charge a doorway, a 155 mm
+   * shell IED brings down a wall section; hand grenades do not breach masonry.
+   */
+  explosive?: { radius: number; dmg: number; kill: number; heat?: boolean; breach?: number; light?: number };
   rocket?: { boost: number; cruise: number; burn: number; selfDestruct?: number };
   /** Supersonic crack audible to soldiers near the path. */ crack?: boolean;
 }
@@ -28,14 +34,14 @@ export const AMMO: Record<AmmoId, Ammo> = {
   '9x18': { id: '9x18', name: '9×18 mm Makarov', v0: 315, k: 1.9e-3, dmg: 36, pen: 0 },
   '50bmg': { id: '50bmg', name: '.50 BMG M33', v0: 890, k: 5.4e-4, dmg: 260, pen: 3, tracer: 5, crack: true },
   '127x108': { id: '127x108', name: '12.7×108 mm B-32', v0: 840, k: 4.7e-4, dmg: 260, pen: 3, tracer: 5, crack: true },
-  hedp40: { id: 'hedp40', name: '40 mm M433 HEDP', v0: 76, k: 1.5e-4, dmg: 120, pen: 0, explosive: { radius: 14, dmg: 160, kill: 4 } },
-  heat84: { id: 'heat84', name: '84 mm HEAT (AT4)', v0: 285, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 10, dmg: 200, kill: 3, heat: true } },
-  pg7vl: { id: 'pg7vl', name: 'PG-7VL HEAT', v0: 117, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 9, dmg: 200, kill: 3, heat: true }, rocket: { boost: 0.3, cruise: 295, burn: 1.0, selfDestruct: 920 } },
-  og7v: { id: 'og7v', name: 'OG-7V frag', v0: 117, k: 2.0e-4, dmg: 150, pen: 0, explosive: { radius: 18, dmg: 180, kill: 6 }, rocket: { boost: 0.3, cruise: 290, burn: 1.0, selfDestruct: 920 } },
-  frag: { id: 'frag', name: 'Fragmentation grenade', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 15, dmg: 180, kill: 5 } },
+  hedp40: { id: 'hedp40', name: '40 mm M433 HEDP', v0: 76, k: 1.5e-4, dmg: 120, pen: 0, explosive: { radius: 14, dmg: 160, kill: 4, breach: 0.38, light: 0.8 } },
+  heat84: { id: 'heat84', name: '84 mm HEAT (AT4)', v0: 285, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 10, dmg: 200, kill: 3, heat: true, breach: 0.62, light: 1.0 } },
+  pg7vl: { id: 'pg7vl', name: 'PG-7VL HEAT', v0: 117, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 9, dmg: 200, kill: 3, heat: true, breach: 0.6, light: 1.0 }, rocket: { boost: 0.3, cruise: 295, burn: 1.0, selfDestruct: 920 } },
+  og7v: { id: 'og7v', name: 'OG-7V frag', v0: 117, k: 2.0e-4, dmg: 150, pen: 0, explosive: { radius: 18, dmg: 180, kill: 6, breach: 0.45, light: 1.1 }, rocket: { boost: 0.3, cruise: 290, burn: 1.0, selfDestruct: 920 } },
+  frag: { id: 'frag', name: 'Fragmentation grenade', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 15, dmg: 180, kill: 5, breach: 0, light: 1.1 } },
   smoke: { id: 'smoke', name: 'Smoke grenade', v0: 0, k: 0, dmg: 0, pen: 0 },
-  c4: { id: 'c4', name: 'C4 demolition charge', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 12, dmg: 400, kill: 6 } },
-  ied: { id: 'ied', name: '155 mm shell IED', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 28, dmg: 500, kill: 10 } },
+  c4: { id: 'c4', name: 'C4 demolition charge', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 12, dmg: 400, kill: 6, breach: 1.3, light: 2.0 } },
+  ied: { id: 'ied', name: '155 mm shell IED', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 28, dmg: 500, kill: 10, breach: 2.4, light: 3.5 } },
 };
 
 export type Optic = 'irons' | 'acog' | 'rco' | 'scope10' | 'pso1' | 'pgo7' | 'none';

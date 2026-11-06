@@ -4,7 +4,8 @@
 // down, a head hit kills; Squad-style: aimed shots go where the swaying sights point, plus the mechanical dispersion `acc`; no crosshair).
 // Sources: docs/RESEARCH.md §4. Values marked ~ are approximate.
 
-export type AmmoId = '556' | '545' | '762x39' | '762x51' | '762x51lr' | '762x54' | '9x19' | '9x18' | '50bmg' | '127x108' | 'hedp40' | 'heat84' | 'pg7vl' | 'og7v' | 'frag' | 'smoke' | 'c4' | 'ied';
+export type AmmoId = '556' | '545' | '762x39' | '762x51' | '762x51lr' | '762x54' | '9x19' | '9x18' | '50bmg' | '127x108' | 'hedp40' | 'heat84' | 'pg7vl' | 'og7v' | 'frag' | 'smoke' | 'c4' | 'ied'
+  | 'pg7vr' | '120apfsds' | '120heat' | '25ap' | '25he' | 'tow2' | '9m113';
 export interface Ammo {
   id: AmmoId; name: string;
   /** Muzzle velocity m/s (for rockets: launch speed; `boost` brings it to cruise). */ v0: number;
@@ -21,26 +22,48 @@ export interface Ammo {
   explosive?: { radius: number; dmg: number; kill: number; heat?: boolean; breach?: number; light?: number };
   rocket?: { boost: number; cruise: number; burn: number; selfDestruct?: number };
   /** Supersonic crack audible to soldiers near the path. */ crack?: boolean;
+  /**
+   * Against armour (mm of rolled homogeneous armour, RHA, at normal incidence; public estimates, approximate):
+   * `ap` kinetic penetration at the muzzle (falls with velocity), `ce` shaped-charge (HEAT) penetration (independent of
+   * range), `tandem` a precursor charge that defeats explosive reactive armour.
+   */
+  ap?: number; ce?: number; tandem?: boolean;
+  /** Wire-guided (SACLOS): the missile flies to where the gunner's sight points. */ guided?: boolean;
+  /** Drawn in flight as a rocket/missile body (rockets and launcher rounds) or as a glowing tank-shell tracer. */ visual?: 'rocket' | 'gl' | 'shell';
 }
 
 export const AMMO: Record<AmmoId, Ammo> = {
-  '556': { id: '556', name: '5.56×45 mm M855', v0: 910, k: 1.17e-3, dmg: 66, pen: 1, crack: true },
-  '545': { id: '545', name: '5.45×39 mm 7N6', v0: 735, k: 1.13e-3, dmg: 64, pen: 1, crack: true },
-  '762x39': { id: '762x39', name: '7.62×39 mm M43', v0: 715, k: 1.34e-3, dmg: 76, pen: 1, crack: true },
-  '762x51': { id: '762x51', name: '7.62×51 mm M80', v0: 853, k: 8.3e-4, dmg: 96, pen: 2, tracer: 5, crack: true },
-  '762x51lr': { id: '762x51lr', name: '7.62×51 mm M118LR', v0: 790, k: 6.0e-4, dmg: 102, pen: 2, crack: true },
-  '762x54': { id: '762x54', name: '7.62×54 mmR 57-N-323S', v0: 825, k: 8.5e-4, dmg: 96, pen: 2, tracer: 4, crack: true },
-  '9x19': { id: '9x19', name: '9×19 mm M882', v0: 375, k: 1.46e-3, dmg: 40, pen: 0, crack: true },
-  '9x18': { id: '9x18', name: '9×18 mm Makarov', v0: 315, k: 1.9e-3, dmg: 36, pen: 0 },
-  '50bmg': { id: '50bmg', name: '.50 BMG M33', v0: 890, k: 5.4e-4, dmg: 260, pen: 3, tracer: 5, crack: true },
-  '127x108': { id: '127x108', name: '12.7×108 mm B-32', v0: 840, k: 4.7e-4, dmg: 260, pen: 3, tracer: 5, crack: true },
-  hedp40: { id: 'hedp40', name: '40 mm M433 HEDP', v0: 76, k: 1.5e-4, dmg: 120, pen: 0, explosive: { radius: 14, dmg: 160, kill: 4, breach: 0.38, light: 0.8 } },
-  heat84: { id: 'heat84', name: '84 mm HEAT (AT4)', v0: 285, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 10, dmg: 200, kill: 3, heat: true, breach: 0.62, light: 1.0 } },
-  pg7vl: { id: 'pg7vl', name: 'PG-7VL HEAT', v0: 117, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 9, dmg: 200, kill: 3, heat: true, breach: 0.6, light: 1.0 }, rocket: { boost: 0.3, cruise: 295, burn: 1.0, selfDestruct: 920 } },
-  og7v: { id: 'og7v', name: 'OG-7V frag', v0: 117, k: 2.0e-4, dmg: 150, pen: 0, explosive: { radius: 18, dmg: 180, kill: 6, breach: 0.45, light: 1.1 }, rocket: { boost: 0.3, cruise: 290, burn: 1.0, selfDestruct: 920 } },
+  '556': { id: '556', name: '5.56×45 mm M855', v0: 910, k: 1.17e-3, dmg: 66, pen: 1, crack: true, ap: 9 },
+  '545': { id: '545', name: '5.45×39 mm 7N6', v0: 735, k: 1.13e-3, dmg: 64, pen: 1, crack: true, ap: 7 },
+  '762x39': { id: '762x39', name: '7.62×39 mm M43', v0: 715, k: 1.34e-3, dmg: 76, pen: 1, crack: true, ap: 8 },
+  '762x51': { id: '762x51', name: '7.62×51 mm M80', v0: 853, k: 8.3e-4, dmg: 96, pen: 2, tracer: 5, crack: true, ap: 12 },
+  '762x51lr': { id: '762x51lr', name: '7.62×51 mm M118LR', v0: 790, k: 6.0e-4, dmg: 102, pen: 2, crack: true, ap: 12 },
+  '762x54': { id: '762x54', name: '7.62×54 mmR 57-N-323S', v0: 825, k: 8.5e-4, dmg: 96, pen: 2, tracer: 4, crack: true, ap: 12 },
+  '9x19': { id: '9x19', name: '9×19 mm M882', v0: 375, k: 1.46e-3, dmg: 40, pen: 0, crack: true, ap: 3 },
+  '9x18': { id: '9x18', name: '9×18 mm Makarov', v0: 315, k: 1.9e-3, dmg: 36, pen: 0, ap: 2 },
+  '50bmg': { id: '50bmg', name: '.50 BMG M33', v0: 890, k: 5.4e-4, dmg: 260, pen: 3, tracer: 5, crack: true, ap: 25 },
+  '127x108': { id: '127x108', name: '12.7×108 mm B-32', v0: 840, k: 4.7e-4, dmg: 260, pen: 3, tracer: 5, crack: true, ap: 25 },
+  hedp40: { id: 'hedp40', name: '40 mm M433 HEDP', v0: 76, k: 1.5e-4, dmg: 120, pen: 0, explosive: { radius: 14, dmg: 160, kill: 4, breach: 0.38, light: 0.8 }, ce: 63, visual: 'gl' },
+  heat84: { id: 'heat84', name: '84 mm HEAT (AT4)', v0: 285, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 10, dmg: 200, kill: 3, heat: true, breach: 0.62, light: 1.0 }, ce: 420, visual: 'rocket' },
+  pg7vl: { id: 'pg7vl', name: 'PG-7VL HEAT', v0: 117, k: 2.0e-4, dmg: 300, pen: 3, explosive: { radius: 9, dmg: 200, kill: 3, heat: true, breach: 0.6, light: 1.0 }, rocket: { boost: 0.3, cruise: 295, burn: 1.0, selfDestruct: 920 }, ce: 500, visual: 'rocket' },
+  og7v: { id: 'og7v', name: 'OG-7V frag', v0: 117, k: 2.0e-4, dmg: 150, pen: 0, explosive: { radius: 18, dmg: 180, kill: 6, breach: 0.45, light: 1.1 }, rocket: { boost: 0.3, cruise: 290, burn: 1.0, selfDestruct: 920 }, visual: 'rocket' },
   frag: { id: 'frag', name: 'Fragmentation grenade', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 15, dmg: 180, kill: 5, breach: 0, light: 1.1 } },
   smoke: { id: 'smoke', name: 'Smoke grenade', v0: 0, k: 0, dmg: 0, pen: 0 },
   c4: { id: 'c4', name: 'C4 demolition charge', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 12, dmg: 400, kill: 6, breach: 1.3, light: 2.0 } },
+  // Armour-defeating rounds (approximate published figures):
+  // PG-7VR: tandem HEAT for the RPG-7, ~600 mm behind ERA, heavier and slower than the PG-7VL.
+  pg7vr: { id: 'pg7vr', name: 'PG-7VR tandem HEAT', v0: 110, k: 2.4e-4, dmg: 320, pen: 3, explosive: { radius: 9, dmg: 220, kill: 3, heat: true, breach: 0.75, light: 1.1 }, ce: 600, tandem: true, visual: 'rocket', rocket: { boost: 0.3, cruise: 250, burn: 1.0, selfDestruct: 700 } },
+  // M829A3 APFSDS-T (120 mm, M1A2): 1555 m/s, ~750–800 mm RHA at 2 km; a long rod, no explosive (punches clean holes).
+  '120apfsds': { id: '120apfsds', name: '120 mm M829A3 APFSDS', v0: 1555, k: 4.0e-5, dmg: 400, pen: 9, ap: 800, visual: 'shell' },
+  // M830A1 HEAT-MP-T: 1410 m/s, ~600 mm CE, fragmentation and blast for soft targets, bunkers and buildings.
+  '120heat': { id: '120heat', name: '120 mm M830A1 HEAT-MP', v0: 1410, k: 9.0e-5, dmg: 400, pen: 9, explosive: { radius: 14, dmg: 330, kill: 5, heat: true, breach: 1.25, light: 2.2 }, ce: 600, visual: 'shell' },
+  // 25 mm M242: M919 APFSDS-T (~1385 m/s, ~100 mm at 1 km) and M792 HEI-T (1100 m/s, small blast).
+  '25ap': { id: '25ap', name: '25 mm M919 APFSDS-T', v0: 1385, k: 2.2e-4, dmg: 180, pen: 6, ap: 110, crack: true },
+  '25he': { id: '25he', name: '25 mm M792 HEI-T', v0: 1100, k: 4.5e-4, dmg: 150, pen: 3, explosive: { radius: 5, dmg: 110, kill: 1.5, breach: 0.22, light: 0.5 }, crack: true },
+  // BGM-71E TOW-2A: wire-guided, tandem HEAT ~900 mm, ~280 m/s, 3750 m.
+  tow2: { id: 'tow2', name: 'BGM-71E TOW-2A', v0: 70, k: 1.0e-4, dmg: 400, pen: 9, explosive: { radius: 10, dmg: 260, kill: 3, heat: true, breach: 1.1, light: 1.6 }, ce: 900, tandem: true, guided: true, visual: 'rocket', rocket: { boost: 0.2, cruise: 280, burn: 15, selfDestruct: 3800 } },
+  // 9M113M Konkurs-M: wire-guided, tandem HEAT ~750 mm, ~200 m/s, 4000 m (the insurgents' ATGM teams).
+  '9m113': { id: '9m113', name: '9M113M Konkurs', v0: 80, k: 1.2e-4, dmg: 400, pen: 9, explosive: { radius: 10, dmg: 240, kill: 3, heat: true, breach: 1.0, light: 1.5 }, ce: 750, tandem: true, guided: true, visual: 'rocket', rocket: { boost: 0.2, cruise: 200, burn: 20, selfDestruct: 4000 } },
   ied: { id: 'ied', name: '155 mm shell IED', v0: 0, k: 0, dmg: 0, pen: 0, explosive: { radius: 28, dmg: 500, kill: 10, breach: 2.4, light: 3.5 } },
 };
 
@@ -94,6 +117,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
   rpd: { id: 'rpd', name: 'RPD', faction: 'ins', kind: 'lmg', model: 'rpd', ammo: '762x39', mag: 100, rpm: 700, modes: ['auto'], mass: 7.4, optic: 'irons', zoom: 1.3, zero: 300, dev: { acc: 0.8, hip: [44, 33, 23], kick: 6.5 }, recoil: [4.4, 2.0], reload: [6.5, 7.5], bipod: true, belt: true, tracer: 5, sound: 'ak_shot', farSound: 'mg_far' },
   pkm: { id: 'pkm', name: 'PKM', faction: 'ins', kind: 'gpmg', model: 'pkm', ammo: '762x54', mag: 100, rpm: 650, modes: ['auto'], mass: 9.0, optic: 'irons', zoom: 1.3, zero: 300, dev: { acc: 1.0, hip: [52, 40, 28], kick: 8.5 }, recoil: [5.2, 2.5], reload: [7.0, 8.0], bipod: true, belt: true, sound: 'pkm_shot', farSound: 'mg_far' },
   svd: { id: 'svd', name: 'SVD Dragunov / PSO-1', faction: 'ins', kind: 'sniper', model: 'svd', ammo: '762x54', mag: 10, rpm: 120, modes: ['semi'], mass: 4.7, optic: 'pso1', zoom: 4, zero: 300, dev: { acc: 0.3, hip: [55, 42, 32], kick: 10 }, recoil: [7, 2], reload: [3.0, 3.6], tracer: 0, sound: 'svd_shot', farSound: 'rifle_far' },
+  rpg7vr: { id: 'rpg7vr', name: 'RPG-7 / PG-7VR', faction: 'ins', kind: 'launcher', model: 'rpg7', ammo: 'pg7vr', mag: 1, rpm: 10, modes: ['semi'], mass: 7.5, optic: 'pgo7', zoom: 2.7, zero: 200, dev: { acc: 2.4, hip: [80, 70, 70], kick: 25 }, recoil: [19, 4], reload: [5, 5], backblast: 20, sound: 'rpg_launch', farSound: 'explosion_far' },
   rpg7: { id: 'rpg7', name: 'RPG-7 / PG-7VL', faction: 'ins', kind: 'launcher', model: 'rpg7', ammo: 'pg7vl', mag: 1, rpm: 10, modes: ['semi'], mass: 7.0, optic: 'pgo7', zoom: 2.7, zero: 200, dev: { acc: 2.2, hip: [80, 70, 70], kick: 25 }, recoil: [18, 4], reload: [4.5, 4.5], backblast: 20, sound: 'rpg_launch', farSound: 'explosion_far' },
   makarov: { id: 'makarov', name: 'Makarov PM', faction: 'ins', kind: 'pistol', model: 'makarov', ammo: '9x18', mag: 8, rpm: 300, modes: ['semi'], mass: 0.8, optic: 'irons', zoom: 1.15, zero: 25, dev: { acc: 3, hip: [30, 25, 22], kick: 8 }, recoil: [8, 3], reload: [1.8, 2.2], sound: 'makarov_shot', farSound: 'rifle_far' },
   f1: { id: 'f1', name: 'F1 frag', faction: 'ins', kind: 'grenade', model: 'f1', ammo: 'frag', mag: 1, rpm: 30, modes: ['semi'], mass: 0.6, optic: 'none', zoom: 1, zero: 0, dev: RIFLE_DEV, recoil: [0, 0], reload: [1.2, 1.2], fuse: 3.8, sound: 'grenade_throw', farSound: 'explosion_far' },

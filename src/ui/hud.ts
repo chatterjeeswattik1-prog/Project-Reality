@@ -55,6 +55,17 @@ export class Hud {
     if (m) this.log.innerHTML = m.log.filter((l) => g.time - l.t < 14).slice(-6).map((l) => `<div class="${l.team ?? ''}">${l.text}</div>`).join('');
     if (m) this.top.innerHTML = m.hudTop();
     this.flashT -= dt; if (this.flashT <= 0) this.center.style.opacity = '0';
+    // In a vehicle: the vehicle's panel and sight instead of the infantry HUD.
+    if (s.vehicle && s.alive) {
+      this.weapon.innerHTML = p.vc.panel(s);
+      this.status.innerHTML = `<div class="grid">${gridRef(s.pos[0], s.pos[2])}</div>`;
+      this.down.style.display = 'none';
+      p.vc.draw(x, W, H, s);
+      const v = s.vehicle, st = v.seats[v.seatOf(s)];
+      this.compass(W, Math.atan2(-p.vc.viewDir(v, st)[0], -p.vc.viewDir(v, st)[2]));
+      this.blastV *= Math.exp(-dt * 0.5); g.audio.muffle = Math.min(0.9, this.blastV * 1.2);
+      return;
+    }
     // Wounded.
     if (s.state === 'wounded') this.down.innerHTML = `<h2>CRITICALLY WOUNDED</h2><p>Wait for a medic, or press <b>Enter</b> to give up. Bleed-out in ${Math.max(0, Math.ceil(300 - s.downT))} s</p>`;
     else if (s.state === 'dead') this.down.innerHTML = `<h2>KILLED IN ACTION</h2><p>Choose your kit and spawn point in a moment…</p>`;

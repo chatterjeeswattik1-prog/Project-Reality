@@ -4,7 +4,7 @@
 // counted; they are small next to the models.
 const st = { got: 0, total: 0, files: 0, done: 0, t0: 0, last: 0, expect: 0 };
 /**
- * Bytes a first visit is expected to download (measured with scripts/loadtest.mjs: full map ~124 MB, test area
+ * Bytes a first visit is expected to download (measured with scripts/loadtest.mjs: full map ~133 MB with the armour, test area
  * ~103 MB; approximate). Requests start one after another, so the sum of known sizes alone would make the bar jump and
  * the time left read "1 s" all along; the larger of the two is used.
  */

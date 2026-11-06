@@ -1,0 +1,15 @@
+Vehicles
+
+m1a2.glb  <-  "abrams m1a2" by coderslava402
+              https://sketchfab.com/3d-models/abrams-m1a2-0e98541f6f684311ac7a8abe08c9449e
+              Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+              Changes: turned and scaled to real dimensions, split into hull / turret / gun / tracks / road wheels,
+              decimated (201k -> 39k triangles), crew and weapon points added (tools/blender/tanks.py).
+
+m2a3.glb  <-  "M2 Bradley IFV" by 42manako
+              https://sketchfab.com/3d-models/m2-bradley-ifv-ab022158ab5f4fbfa55d4142db7595ab
+              Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+              Changes: turned and scaled to real dimensions, 25 mm gun split from the turret, hull/turret texture
+              recoloured from woodland to desert tan, crew, cargo and weapon points added (tools/blender/tanks.py).
+
+m1114, hilux_dshk, sedan, pickup and the wrecks are built from code (tools/blender/vehicles.py), no third-party assets.

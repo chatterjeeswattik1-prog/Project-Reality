@@ -104,7 +104,7 @@ function fit(tris) {
 
 const out = {};
 /** Lines and masts: only what stands on the ground collides (posts, the mast) — the wire or arms would be walls. */
-const POSTS_ONLY = /^(clothesline|antenna_tv|street_light|flagpole|bulb_hanging|ceiling_fan)/;
+const POSTS_ONLY = /^(clothesline|antenna_tv|street_light|flagpole|bulb_hanging|ceiling_fan|tree_)/;
 /** Indoor furniture and small items: one tight box (tens of thousands of placements; nobody shoots under a sofa). */
 const ONE_BOX = /^(floor_cushions|sofa_old|armchair|rug_|coffee_table|tv_crt|side_table|curtain_|bed_double|mattress_|wardrobe|dresser|clothes_pile|prayer_mat|kitchen_|fridge_old|gas_stove|table_dining|water_cooler|cardboard_boxes|plastic_crates|shoes_rack|wall_shelf|picture_frame|broken_furniture|sandbag_window|bedsheet_window|gas_cylinder|oil_drum|plastic_chair|crate|pallet|generator_small|tyres_pile|trash_)/;
 const doc = await io.read('public/models/props.glb');

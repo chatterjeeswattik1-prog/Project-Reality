@@ -25,10 +25,15 @@ import { mulberry } from '../core/rng';
 import type { CoverIndex } from '../ai/cover';
 import type { Doors } from './doors';
 import { Destruction } from '../world/destruct';
+import type { Vehicle } from '../vehicles/vehicle';
+import { strike } from '../vehicles/armour';
+import type { RayHit } from '../world/physics';
 
 export interface GameEvents {
   onDown?: (victim: Soldier, by: Soldier | null, killed: boolean) => void;
   onExplosion?: (p: V3, ammo: Ammo, by: Soldier | null) => void;
+  /** A vehicle caught fire / was destroyed. */
+  onVehicle?: (v: Vehicle, what: 'burning' | 'destroyed') => void;
 }
 /** The M203 leaf sight looks ~9° below the bore (about the 200–250 m setting), so the grenade leaves above the sight line. */
 interface Charge { p: V3; owner: Soldier; ammo: Ammo; mesh: THREE.Object3D }
@@ -61,6 +66,17 @@ export class Game {
   doors: Doors | null = null;
   /** Breakable walls, slabs and shutters (world/destruct.ts). */
   destruct: Destruction | null = null;
+  /** Armoured vehicles, and their colliders → vehicle (ray hits on a hull). */
+  vehicles: Vehicle[] = [];
+  /** Buildings each side has cleared room by room (house-to-house). */
+  cleared: Record<Faction, Set<number>> = { us: new Set(), ins: new Set() };
+  /** The US armour and its AI crews (vehicles/crews.ts). */
+  crews: import('../vehicles/crews').VehicleCrews | null = null;
+  /** Insurgent IEDs and ATGM teams (ai/threats.ts). */
+  insAT: import('../ai/threats').InsurgentAT | null = null;
+  vehicleOf = new Map<number, Vehicle>();
+  /** Paved roads on a 4 m grid (vehicle top speed: road or cross-country). */
+  private roadGrid: Uint8Array; private roadN = 0; private roadX0 = 0; private roadZ0 = 0;
   /** The player's fireteam brain when the mode has one (close-quarters test mode). */
   fireteam: import('../ai/team').Fireteam | null = null;
   smokes: { p: V3; t0: number }[] = [];
@@ -76,6 +92,7 @@ export class Game {
   constructor(public gfx: Gfx, public P: Physics, public city: City, public world: WorldView, public assets: CharAssets, quality: string) {
     this.fx = new FX(gfx.scene);
     this.destruct = new Destruction(city, P, world, gfx.scene);
+    this.destruct.g = { audio: { play: (n, p, o) => this.audio.play(n, p, o as never) } };
     this.fx.floorAt = (p) => { const h = P.castRay([p[0], p[1], p[2]], [0, -1, 0], 80, G_WORLD); return h ? h.point[1] : null; };
     this.fx.sweep = (a, d, len) => { const h = P.castRay(a, d, len, G_WORLD); return h ? { dist: h.dist, normal: h.normal } : null; };
     this.fx.onCaseLand = (p) => { if (Math.random() < 0.6) this.audio.play('casing_drop', p, { range: 12, gain: 0.35, rate: 0.9 + Math.random() * 0.25 }); };
@@ -97,7 +114,42 @@ export class Game {
       tracer: (a, b, ammo) => this.fx.tracer(a, b, ammo.id === '762x54' || ammo.id === '127x108' ? [0.4, 1.0, 0.35] : [1.0, 0.42, 0.18]),
       body: (id, kind, p, v) => this.fx.body(id, kind, p, v),
       smoke: (p) => { this.fx.smokeGrenade(p); this.smokes.push({ p, t0: this.time }); this.audio.play('grenade_pin', p, { range: 30 }); },
+      armour: (wh, d, sp, a, by) => this.armourHit(wh, d, sp, a, by),
     });
+    // Road grid.
+    const C = 4; this.roadX0 = -1100; this.roadZ0 = -1100; this.roadN = Math.ceil(2200 / C);
+    this.roadGrid = new Uint8Array(this.roadN * this.roadN);
+    for (const r of city.roads) {
+      if (r.kind !== 'boulevard' && r.kind !== 'avenue' && r.kind !== 'street') continue;
+      for (let x = r.x0; x <= r.x1; x += C) for (let z = r.z0; z <= r.z1; z += C) {
+        const i = Math.floor((x - this.roadX0) / C), j = Math.floor((z - this.roadZ0) / C);
+        if (i >= 0 && j >= 0 && i < this.roadN && j < this.roadN) this.roadGrid[j * this.roadN + i] = 1;
+      }
+    }
+  }
+
+  isRoad(x: number, z: number): boolean {
+    const i = Math.floor((x - this.roadX0) / 4), j = Math.floor((z - this.roadZ0) / 4);
+    return i >= 0 && j >= 0 && i < this.roadN && j < this.roadN && this.roadGrid[j * this.roadN + i] === 1;
+  }
+
+  // ---------------- vehicles ----------------
+  /** A round hits a vehicle's hull: the armour decides; HEAT and HE burst on the plate. Feedback for the shooter. */
+  private armourHit(wh: RayHit, d: V3, sp: number, a: Ammo, by: Soldier): boolean {
+    const v = this.vehicleOf.get(wh.collider.handle); if (!v) return false;
+    const r = v.dead ? null : strike(v, wh.point, d, a, sp, by);
+    const big = (a.ap ?? 0) >= 100 || (a.ce ?? 0) >= 200;
+    if (a.explosive) this.explode([wh.point[0] + wh.normal[0] * 0.15, wh.point[1] + wh.normal[1] * 0.15, wh.point[2] + wh.normal[2] * 0.15], a, by, wh.normal, v);
+    else {
+      this.fx.impact(wh.point, wh.normal, 'metal', big ? 3 : 1);
+      this.audio.play(big ? 'explosion_near' : 'impact_metal', wh.point, { range: big ? 600 : 60, gain: big ? 0.8 : 0.7, rate: big ? 1.6 : 1 });
+    }
+    if (r?.pen && big) {
+      // Behind-armour flash: a burst of sparks and smoke out of the hole.
+      for (let i = 0; i < 18; i++) this.fx.glow.spawn(wh.point, [(Math.random() - 0.5) * 10, Math.random() * 8, (Math.random() - 0.5) * 10], 0.12, 0, 0.5 + Math.random() * 0.6, 1, [1, 0.75, 0.35], 0.3, 9.8);
+    }
+    if (r && by?.isPlayer && (a.ap ?? 0) + (a.ce ?? 0) >= 60) this.hud?.flash(r.pen ? (v.dead ? 'TARGET DESTROYED' : r.track ? 'PENETRATION — TRACK' : 'PENETRATION') : 'NO PENETRATION');
+    return true;
   }
 
   // ---------------- soldiers ----------------
@@ -115,6 +167,7 @@ export class Game {
   }
   /** Remove a soldier from play. Dead bodies stay as corpses (up to 40), with their weapon dropped beside them. */
   remove(s: Soldier) {
+    if (s.vehicle) s.vehicle.exit(s, false);
     const wasDead = s.state === 'dead';
     if (!wasDead) s.die(null);
     const rig = this.rigs.get(s.id);
@@ -139,6 +192,7 @@ export class Game {
 
   /** Trigger input for any soldier. `held` = button down, `pressed` = went down this frame, `aim` = aiming down sights. */
   trigger(s: Soldier, held: boolean, pressed: boolean, aiming = s.aiming) {
+    if (s.vehicle) return; // a crewman fires the vehicle's weapons (vehicles/control.ts)
     if (!s.alive) return;
     const slot = s.slot, def = s.underSel ? WEAPONS.m203 : slot.def;
     if (s.switchT > 0 || s.reloadT > 0 || s.bandageT > 0 || (s.support === 'bipod' && s.deployT < 1)) return;
@@ -331,6 +385,8 @@ export class Game {
    * surfaces at a glancing angle the whine of a ricochet going off somewhere.
    */
   private impactSound(p: V3, n: V3, surf: Surface, a: Ammo, d?: V3) {
+    // Heavy kinetic rounds (tank and 25 mm sabot) punch holes through walls as they go.
+    if ((a.ap ?? 0) >= 100 && (surf === 'masonry' || surf === 'concrete' || surf === 'metal' || surf === 'wood')) this.destruct?.blast([p[0] - n[0] * 0.05, p[1] - n[1] * 0.05, p[2] - n[2] * 0.05], (a.ap ?? 0) >= 500 ? 0.35 : 0.14, 0.4, 0.4);
     this.fx.impact(p, n, surf, a.pen >= 3 ? 2 : 1);
     const L = this.audio.listener.p, dist = Math.hypot(p[0] - L[0], p[1] - L[1], p[2] - L[2]);
     if (dist < 18 || Math.random() < 0.55) this.audio.play(surf === 'metal' ? 'impact_metal' : surf === 'dirt' || surf === 'sandbag' ? 'impact_dirt' : 'impact_concrete', p, { range: 45, gain: dist < 18 ? 0.85 : 0.6 });
@@ -349,10 +405,23 @@ export class Game {
     }
   }
 
-  explode(p: V3, a: Ammo, by: Soldier | null, n?: V3) {
+  /** `hitVeh`: the vehicle a HEAT round burst on (its armour already took the hit). */
+  explode(p: V3, a: Ammo, by: Soldier | null, n?: V3, hitVeh?: Vehicle) {
     const ex = a.explosive!;
     const power = Math.min(3, Math.max(0.6, ex.dmg / 180));
     this.fx.explosion(p, power, n);
+    // Blast against nearby armour: only heavy charges close by matter (an IED under the belly, C4 on the deck; a
+    // grenade on a tank does nothing). The face is the side the blast comes from.
+    for (const v of this.vehicles) {
+      if (v === hitVeh || v.dead) continue;
+      const vp = v.pos(), dist = Math.hypot(vp[0] - p[0], vp[1] + 1 - p[1], vp[2] - p[2]) - Math.max(v.def.hull[0], v.def.hull[2]) / 2.5;
+      if (dist > 3 || ex.dmg < 150) continue;
+      const pen = ex.dmg * 0.25 * Math.max(0, 1 - Math.max(0, dist) / 3);
+      const dir: V3 = [vp[0] - p[0], vp[1] + 0.8 - p[1], vp[2] - p[2]], L = Math.hypot(...dir) || 1;
+      // Hit point: the hull surface nearest the blast.
+      const hp: V3 = [p[0] + dir[0] / L * Math.max(0, dist), p[1] + dir[1] / L * Math.max(0, dist), p[2] + dir[2] / L * Math.max(0, dist)];
+      strike(v, hp, [dir[0] / L, dir[1] / L, dir[2] / L], null, 0, by, pen);
+    }
     // Walls first: a breach lets the blast through to whoever is behind it.
     if (this.destruct) {
       const br = this.destruct.blast(p, ex.breach ?? 0, ex.light ?? 0, power);
@@ -369,6 +438,7 @@ export class Game {
     const throwK = (q: V3) => { const dd = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]); return dd > ex.radius * 0.8 ? 0 : 4.5 * power * (1 - dd / (ex.radius * 0.8)); };
     for (const r of this.corpses) { const q: V3 = [r.root.position.x, r.root.position.y + 0.3, r.root.position.z], k = throwK(q); if (k > 0 && this.P.clear(p, q, G_WORLD)) r.blast(null, p, k); }
     for (const s of this.soldiers) {
+      if (s.vehicle) continue; // inside the armour: the vehicle's armour model handles the blast
       if (s.state === 'dead') { const q: V3 = [s.pos[0], s.pos[1] + 0.3, s.pos[2]], k = throwK(q); if (k > 0 && this.P.clear(p, q, G_WORLD)) this.rigs.get(s.id)?.blast(s, p, k); continue; }
       const c: V3 = [s.pos[0], s.pos[1] + (s.stance === 'prone' || s.state !== 'alive' ? 0.25 : 1.0), s.pos[2]];
       const dist = Math.hypot(c[0] - p[0], c[1] - p[1], c[2] - p[2]);
@@ -388,11 +458,30 @@ export class Game {
       if (s.state !== 'alive') { const tk = throwK(c); if (tk > 0) this.rigs.get(s.id)?.blast(s, p, tk); }
       if (wasAlive && s.state !== 'alive') this.events.onDown?.(s, by, (s.state as string) === 'dead');
     }
+    this.insAT?.blast(p);
     this.events.onExplosion?.(p, a, by);
   }
 
-  /** Is a straight line blocked by smoke screens (for AI vision)? */
-  smokeBlocks(a: V3, b: V3): boolean {
+  /**
+   * Is a sight line blocked by smoke, or by more than ~30 m of eucalyptus wood (trunks and crowns: a wood hides what
+   * is behind it, though a man at its edge still sees out)? For AI vision.
+   */
+  smokeBlocks(a: V3, b: V3): boolean { return this.foliageBlocks(a, b) || this.smokeOnly(a, b); }
+  foliageBlocks(a: V3, b: V3): boolean {
+    let inside = 0;
+    for (const w of this.city.woods ?? []) {
+      // Length of the segment inside the rectangle (slab clipping).
+      let t0 = 0, t1 = 1;
+      for (const [o, d, lo, hi] of [[a[0], b[0] - a[0], w.x0, w.x1], [a[2], b[2] - a[2], w.z0, w.z1]]) {
+        if (Math.abs(d) < 1e-9) { if (o < lo || o > hi) { t0 = 1; t1 = 0; } continue; }
+        let u0 = (lo - o) / d, u1 = (hi - o) / d; if (u0 > u1) [u0, u1] = [u1, u0];
+        t0 = Math.max(t0, u0); t1 = Math.min(t1, u1);
+      }
+      if (t1 > t0) inside += (t1 - t0) * Math.hypot(b[0] - a[0], b[2] - a[2]);
+    }
+    return inside > 30;
+  }
+  private smokeOnly(a: V3, b: V3): boolean {
     for (const s of this.smokes) {
       const age = this.time - s.t0; if (age < 3 || age > 55) continue;
       const r = Math.min(9, 2 + age * 0.6);
@@ -435,17 +524,21 @@ export class Game {
       const reloaded = s.tick(dt, this.time);
       if (reloaded && (!s.isPlayer || s.underSel)) this.audio.play(s.weapon.belt ? 'belt_box_open_close' : 'mag_in', s.isPlayer ? null : s.eye, { range: 25, gain: 0.7 });
     }
+    this.crews?.update(dt);
+    this.insAT?.update(dt);
+    for (const v of this.vehicles) v.update(dt);
     let t0 = performance.now();
     this.proj.step(dt);
     this.prof.proj = performance.now() - t0; t0 = performance.now();
     this.P.world.timestep = dt;
     this.P.step();
+    for (const v of this.vehicles) v.sync(dt);
     this.prof.phys = performance.now() - t0; t0 = performance.now();
     for (const s of this.soldiers) {
       const rig = this.rigs.get(s.id); if (!rig) continue;
       const dist = Math.hypot(s.pos[0] - cam.x, s.pos[2] - cam.z);
       const hide = s.isPlayer && this.player && !this.player.third;
-      rig.root.visible = !hide && dist < 1200; rig.visible = rig.root.visible;
+      rig.root.visible = !hide && dist < 1200 && !s.vehicle; rig.visible = rig.root.visible;
       rig.setWeapon(s.underSel ? s.weapon.model : s.weapon.model);
       if (rig.root.visible || s.isPlayer || rig.ragged) rig.update(dt, s, dist, this.time);
       else if (rig.weapon) rig.weapon.visible = false;
@@ -471,6 +564,7 @@ export class Game {
     this.fx.update(dt);
     this.foley.update(dt);
     this.prof.fx = performance.now() - t0;
+    if (this.player?.s.vehicle) this.player.vc.place(this.player.s);
     if (this.player) this.audio.setListener([cam.x, cam.y, cam.z], this.player.forward());
   }
 }

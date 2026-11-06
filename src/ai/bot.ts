@@ -94,8 +94,27 @@ export class Bot {
     const fx = -Math.sin(s.yaw), fz = -Math.cos(s.yaw);
     const alert = this.target || (this.lastSeen && g.time - this.lastSeen.t < 20) || s.suppress > 0.2;
     let best: Soldier | null = null, bestScore = -Infinity;
+    // Armour: only a man with an anti-tank weapon takes it on (rifle fire just rattles off the hull); the others
+    // keep their heads down when a tank or IFV is close and in view.
+    const hasAT = s.slots.some((x) => x.def.kind === 'launcher' && (x.loaded > 0 || x.mags.length > 0));
+    const seenVeh = new Set<number>();
     for (const t of g.soldiers) {
       if (t.team === s.team || t.state !== 'alive') { this.spot.delete(t.id); continue; }
+      if (t.vehicle) {
+        const v = t.vehicle;
+        if (seenVeh.has(v.id)) continue; seenVeh.add(v.id);
+        const vp = v.pos(), c: V3 = [vp[0], vp[1] + 1.4, vp[2]], d = Math.hypot(c[0] - e[0], c[2] - e[2]);
+        if (d > 900 || !g.P.clear(e, c) || g.smokeBlocks(e, c)) { this.decay(t.id, dt); continue; }
+        // A 60-tonne tank is easy to see and hear: the meter fills fast out to a long way.
+        const v2 = Math.min(1.5, (this.spot.get(t.id) ?? 0) + dt * 6 / (1 + (d / 400) ** 2));
+        this.spot.set(t.id, v2);
+        if (v2 < 1) continue;
+        g.report(s.team, t);
+        if (!hasAT) { if (d < 150) s.suppress = Math.min(1, s.suppress + dt * 0.4 * (1 - d / 150)); if (!this.lastSeen || g.time - this.lastSeen.t > 3) this.lastSeen = { p: [...t.pos], t: g.time }; continue; }
+        const threat = 40 + (t === this.target ? 30 : 0) - d * 0.1;
+        if (d < 320 && threat > bestScore) { bestScore = threat; best = t; }
+        continue;
+      }
       const dx = t.pos[0] - e[0], dz = t.pos[2] - e[2], d = Math.hypot(dx, dz);
       if (d > VIEW) { this.spot.delete(t.id); continue; }
       const cos = (dx * fx + dz * fz) / (d || 1);
@@ -149,7 +168,9 @@ export class Bot {
   // ---------------- per frame ----------------
   update(dt: number) {
     const s = this.s, g = this.g;
-    if (s.state !== 'alive') return;
+    if (s.state !== 'alive' || s.vehicle) return; // mounted: the vehicle carries him (dismounts at the rear)
+    // Just out of a vehicle: forget the navmesh polygon and path from before he got in (he is somewhere else now).
+    if (s.teleported) { s.teleported = false; this.navRef = 0; this.path = []; this.goal = null; this.coverPt = null; this.cover = null; }
     this.thinkT -= dt;
     if (this.thinkT <= 0) { const iv = 0.25 + Math.random() * 0.15; this.think(iv); this.thinkT = iv; }
     this.reactT -= dt; this.grenadeT -= dt;
@@ -174,8 +195,8 @@ export class Bot {
       const group = g.soldiers.filter((o) => o.team === t0.team && o.alive && Math.hypot(o.pos[0] - t0.pos[0], o.pos[2] - t0.pos[2]) < 6).length;
       const back = s.aimDir(), behind = g.P.castRay(s.eye, [-back[0], 0, -back[2]], 1.8);
       // Hidden in an ambush, the RPG is what opens it (on a group in the kill zone).
-      const ok = this.sprung ? (group >= 2 || Math.random() < 0.3) : group >= 2 && d < 90;
-      if (ok && d > 30 && d < 180 && !behind) { this.rpgOn = true; this.rpgUntil = g.time + 7; this.sprung = true; s.select(rpg); }
+      const ok = t0.vehicle ? d < 300 : this.sprung ? (group >= 2 || Math.random() < 0.3) : group >= 2 && d < 90;
+      if (ok && d > 30 && d < (t0.vehicle ? 300 : 180) && !behind) { this.rpgOn = true; this.rpgUntil = g.time + (t0.vehicle ? 12 : 7); this.sprung = true; s.select(rpg); }
       else this.rpgT = 2;
     }
     if (this.rpgOn) {
@@ -323,6 +344,18 @@ export class Bot {
       const hit = L > 0.5 ? g.P.castRay(e, [dx / L, dy / L, dz / L], L) : null;
       if (hit && hit.dist < L - 1.5 && AMMO[def.ammo].pen < (THIN[hit.surf] ?? 9)) { this.burst = 0; g.trigger(s, false, false); return; }
     }
+    // A friend in the line of fire (or right beside the point aimed at): hold.
+    {
+      const e = s.eye, dx = at[0] - e[0], dy = at[1] - e[1], dz = at[2] - e[2], L = Math.hypot(dx, dy, dz) || 1;
+      for (const o of g.soldiers) {
+        if (o === s || o.team !== s.team || !o.alive || o.vehicle) continue;
+        const w0 = o.pos[0] - e[0], w2 = o.pos[2] - e[2]; if (Math.abs(w0) > L + 3 || Math.abs(w2) > L + 3) continue;
+        const c: [number, number, number] = [o.pos[0], o.pos[1] + 1.1, o.pos[2]], wx = c[0] - e[0], wy = c[1] - e[1], wz = c[2] - e[2];
+        const a = (wx * dx + wy * dy + wz * dz) / L;
+        if (a < 0.5 || a > L + 2) continue;
+        if (Math.hypot(wx - dx / L * a, wy - dy / L * a, wz - dz / L * a) < (def.kind === 'launcher' ? 3 : 0.9)) { this.burst = 0; g.trigger(s, false, false); return; }
+      }
+    }
     const auto = s.slot.mode === 'auto';
     if (this.burst <= 0) this.burst = auto ? (d < 30 ? 6 : def.kind === 'rifle' ? 3 : 7) : d < 30 ? 3 : 1;
     if (auto) {
@@ -414,6 +447,13 @@ export class Bot {
   }
   /** Chest of a soldier (aim point) with lead for its motion. */
   private aimPoint(t: Soldier): V3 {
+    // A man inside a vehicle: aim at the hull's centre (sides above the running gear), leading it by the rocket's
+    // (or bullet's) time of flight.
+    if (t.vehicle) {
+      const v = t.vehicle, p = v.pos(), lv = v.body.linvel(), d = Math.hypot(p[0] - this.s.pos[0], p[2] - this.s.pos[2]);
+      const spd = this.s.weapon.kind === 'launcher' ? 160 : AMMO[this.s.weapon.ammo].v0, tof = d / spd;
+      return [p[0] + lv.x * tof, p[1] + 1.25 + lv.y * tof, p[2] + lv.z * tof];
+    }
     const s = this.s, d = Math.hypot(t.pos[0] - s.pos[0], t.pos[2] - s.pos[2]), tof = d / 700;
     const y = t.pos[1] + (t.stance === 'prone' || t.state !== 'alive' ? 0.25 : t.stance === 'crouch' ? 0.85 : 1.3);
     return [t.pos[0] + t.vel[0] * tof, y + (d > 300 ? (d - 300) * 0.004 : 0), t.pos[2] + t.vel[2] * tof];

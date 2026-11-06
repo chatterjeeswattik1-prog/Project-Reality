@@ -233,6 +233,76 @@ def p_oleander(w, h, rng):
     return dict(rgb=rgb, a=a)
 A.cell('oleander', 'veg', 256, 256, p_oleander)
 
+def p_euca_foliage(w, h, rng):
+    """Eucalyptus (E. camaldulensis, the river red gum planted in Iraqi windbreaks): a loose, drooping spray of narrow
+    sickle-shaped grey-green leaves hanging from thin twigs; ragged, see-through outline."""
+    r = R(rng)
+    rgb = np.zeros((h, w, 3)); a = np.zeros((h, w))
+    for _ in range(9):
+        x0, y0 = w / 2 + r.uniform(-40, 40), h * r.uniform(0.55, 0.8)
+        x1, y1 = x0 + r.uniform(-100, 100), y0 + r.uniform(-60, 40)
+        seg(rgb, a, (x0, y0), (x1, y1), 1.6, 0.8, (0.36, 0.28, 0.22))
+    for _ in range(700):
+        ang = r.uniform(0, 2 * math.pi); rad = math.sqrt(r.random())
+        cx = w / 2 + math.cos(ang) * rad * w * 0.47
+        cy = h * 0.52 + math.sin(ang) * rad * h * 0.46
+        if r.random() < 0.18: continue
+        L = r.uniform(14, 26); la = -math.pi / 2 + r.uniform(-0.7, 0.7)  # hanging
+        tone = np.array((0.34, 0.40, 0.27)) * r.uniform(0.7, 1.25)
+        if r.random() < 0.15: tone = np.array((0.46, 0.44, 0.30)) * r.uniform(0.8, 1.1)
+        seg(rgb, a, (cx, cy), (cx + math.cos(la) * L * 0.4, cy + math.sin(la) * L), 2.2, 0.4, tone, shade=0.35)
+    return dict(rgb=rgb, a=a)
+A.cell('euca_foliage', 'veg', 256, 256, p_euca_foliage)
+
+def p_euca_bark(w, h, rng):
+    """Smooth pale eucalyptus bark with darker strips peeling away."""
+    c = col((0.70, 0.66, 0.58), h, w)
+    s = fbm(h, w, rng, 6, 3, aspect=0.15)
+    c = c * (0.88 + 0.2 * s[..., None])
+    pe = fbm(h, w, rng, 4, 2, aspect=0.12)
+    c = mix(c, np.array([0.55, 0.47, 0.38]), np.clip((pe - 0.6) * 3, 0, 0.8))
+    return dict(rgb=c)
+A.cell('euca_bark', 'veg', 64, 256, p_euca_bark)
+
+def p_orchard_foliage(w, h, rng):
+    """Citrus orchard tree card: dense glossy dark-green oval leaves, a few oranges, rounded outline."""
+    r = R(rng)
+    rgb = np.zeros((h, w, 3)); a = np.zeros((h, w))
+    for _ in range(1100):
+        ang = r.uniform(0, 2 * math.pi); rad = math.sqrt(r.random())
+        cx = w / 2 + math.cos(ang) * rad * w * 0.46; cy = h * 0.5 + math.sin(ang) * rad * h * 0.46
+        la = r.uniform(0, 2 * math.pi); L = r.uniform(9, 15)
+        tone = np.array((0.10, 0.22, 0.07)) * r.uniform(0.7, 1.45)
+        seg(rgb, a, (cx, cy), (cx + math.cos(la) * L, cy + math.sin(la) * L), 3.4, 1.2, tone, shade=0.45)
+    for _ in range(18):
+        ang = r.uniform(0, 2 * math.pi); rad = r.uniform(0.2, 0.9)
+        disc(rgb, a, (w / 2 + math.cos(ang) * rad * w * 0.42, h * 0.5 + math.sin(ang) * rad * h * 0.42), r.uniform(3.5, 5.0), np.array((0.85, 0.45, 0.06)) * r.uniform(0.85, 1.05), shade=0.3)
+    return dict(rgb=rgb, a=a)
+A.cell('orchard_foliage', 'veg', 256, 256, p_orchard_foliage)
+
+def p_tamarisk(w, h, rng):
+    """Tamarisk: feathery sprays of tiny scale leaves, grey-green with pale pink flower plumes at the tips."""
+    r = R(rng)
+    rgb = np.zeros((h, w, 3)); a = np.zeros((h, w))
+    for _ in range(60):
+        x0, y0 = w / 2 + r.uniform(-25, 25), h * r.uniform(0.0, 0.3)
+        ang = math.pi / 2 + r.uniform(-1.0, 1.0); L = h * r.uniform(0.4, 0.8)
+        pts = [(x0, y0)]
+        for k in range(6):
+            ang += r.uniform(-0.18, 0.18)
+            pts.append((pts[-1][0] + math.cos(ang) * L / 6, pts[-1][1] + math.sin(ang) * L / 6))
+        for (xa, ya), (xb, yb) in zip(pts, pts[1:]):
+            seg(rgb, a, (xa, ya), (xb, yb), 1.0, 0.6, (0.40, 0.34, 0.28))
+            for _ in range(5):
+                t = r.random(); x, y = xa + (xb - xa) * t, ya + (yb - ya) * t
+                la = ang + r.uniform(-1.4, 1.4); L2 = r.uniform(6, 14)
+                seg(rgb, a, (x, y), (x + math.cos(la) * L2, y + math.sin(la) * L2), 1.6, 0.7, np.array((0.40, 0.46, 0.34)) * r.uniform(0.75, 1.2), shade=0.3)
+        if r.random() < 0.5:
+            for _ in range(5):
+                disc(rgb, a, (pts[-1][0] + r.uniform(-5, 5), pts[-1][1] + r.uniform(-5, 5)), r.uniform(1.8, 3.0), np.array((0.86, 0.66, 0.70)) * r.uniform(0.85, 1.05), shade=0.25)
+    return dict(rgb=rgb, a=a)
+A.cell('tamarisk', 'veg', 256, 256, p_tamarisk)
+
 def p_reeds(w, h, rng):
     """Common reed (Phragmites) clump: tall stems with long tapering blades and purple-brown plumes."""
     r = R(rng)
@@ -1333,6 +1403,79 @@ def b_reeds(mb):
     for k in range(4):
         a = r.uniform(0, 2 * math.pi)
         card(mb, (math.cos(a) * 0.45, math.sin(a) * 0.45), 1.0, 1.9 * r.uniform(0.8, 1.0), r.uniform(0, 180), 'reeds', z0=-0.03)
+
+def _crown(mb, centres, size, cell, r, flat=0.35):
+    """Leaf clusters: at each centre two crossed upright cards and one tilted towards horizontal."""
+    for c in centres:
+        s = size * r.uniform(0.8, 1.15); yaw = r.uniform(0, 180)
+        for k in range(2):
+            card(mb, (c.x, c.y), s, s * 0.9, yaw + k * 90, cell, tilt=r.uniform(-12, 12), z0=c.z - s * 0.45)
+        M = T((c.x, c.y, c.z), (90 - flat * 90 + r.uniform(-10, 10), 0, yaw + 45))
+        mb.quad((s / 2, 0, -s / 2), (-s / 2, 0, -s / 2), (-s / 2, 0, s / 2), (s / 2, 0, s / 2), cell, (0, 0, 1, 1), M)
+
+def eucalyptus(mb, H, seed):
+    """A river red gum: straight pale trunk to ~55 % of the height, two or three leaders, drooping open crown."""
+    r = random.Random(seed)
+    lean = V((r.uniform(-0.04, 0.04), r.uniform(-0.04, 0.04), 1)).normalized()
+    trunk = [V((0, 0, -0.15))]
+    for k in range(1, 5):
+        trunk.append(trunk[-1] + lean * (H * 0.55 / 4) + V((r.uniform(-0.06, 0.06), r.uniform(-0.06, 0.06), 0)))
+    R0 = 0.022 * H + 0.08
+    mb.tube(trunk, [R0 * (1 - 0.35 * k / 4) for k in range(5)], 'euca_bark', sides=8, vrep=3)
+    tips = []
+    def branch(p, d, L, rad, depth):
+        pts = [p.copy()]
+        for i in range(3):
+            d = (d + V((r.uniform(-0.25, 0.25), r.uniform(-0.25, 0.25), r.uniform(-0.05, 0.12)))).normalized()
+            p = p + d * (L / 3); pts.append(p.copy())
+        mb.tube(pts, [rad, rad * 0.8, rad * 0.6, rad * 0.4], 'euca_bark', sides=5 if depth else 4, caps=False, vrep=1)
+        if depth > 0:
+            for _ in range(2):
+                a = r.uniform(0, 2 * math.pi)
+                nd = (d + V((math.cos(a), math.sin(a), 0.1)) * r.uniform(0.5, 0.9)).normalized()
+                branch(pts[r.randint(2, 3)], nd, L * r.uniform(0.55, 0.7), rad * 0.55, depth - 1)
+        else:
+            tips.append(p)
+    top = trunk[-1]
+    for k in range(r.randint(2, 3)):
+        a = k * 2.3 + r.uniform(-0.4, 0.4)
+        branch(top, V((math.cos(a) * 0.45, math.sin(a) * 0.45, 1)).normalized(), H * 0.32, R0 * 0.6, 3 if H > 13 else 2)
+    # Hanging foliage at the tips, plus a few lower clusters along the leaders.
+    cs = [t + V((0, 0, -0.6)) for t in tips]
+    for t in tips[::3]:
+        cs.append(t * 0.75 + top * 0.25 + V((r.uniform(-0.8, 0.8), r.uniform(-0.8, 0.8), -1.0)))
+    _crown(mb, cs, H * (0.15 if H > 13 else 0.19), 'euca_foliage', r, flat=0.25)
+
+def b_tree_eucalyptus(mb):
+    eucalyptus(mb, 16.0, 21)
+def b_tree_eucalyptus_b(mb):
+    eucalyptus(mb, 11.5, 22)
+
+def b_tree_orchard(mb):
+    """Citrus orchard tree (~3.8 m): short trunk, three limbs, dense rounded crown."""
+    r = random.Random(23)
+    trunk = [V((0, 0, -0.1)), V((0.03, 0.0, 0.5)), V((0.0, 0.04, 0.95))]
+    mb.tube(trunk, [0.11, 0.09, 0.08], 'deadwood', sides=6, vrep=1)
+    for k in range(3):
+        a = k * 2.1 + r.uniform(-0.3, 0.3)
+        mb.tube([trunk[-1], trunk[-1] + V((math.cos(a) * 0.5, math.sin(a) * 0.5, 0.8))], [0.06, 0.035], 'deadwood', sides=4, caps=False)
+    mb.sphere(1.25, 'leaf_core', T((0, 0, 2.3)), 8, 5, (1, 1, 0.85), rfun=lumpy(r, 8, 5, 0.18))
+    cs = [V((math.cos(a) * 1.0, math.sin(a) * 1.0, 2.2 + r.uniform(-0.5, 0.6))) for a in [k * 2 * math.pi / 7 + r.uniform(-0.2, 0.2) for k in range(7)]] + [V((0, 0, 3.2))]
+    _crown(mb, cs, 1.7, 'orchard_foliage', r, flat=0.5)
+
+def b_tree_tamarisk(mb):
+    """Tamarisk (salt cedar), ~5 m: several leaning stems from the base, feathery crown; ditch banks and hedgerows."""
+    r = random.Random(24)
+    tips = []
+    for k in range(5):
+        a = k * 1.3 + r.uniform(-0.3, 0.3); l = r.uniform(0.15, 0.4)
+        p0 = V((r.uniform(-0.2, 0.2), r.uniform(-0.2, 0.2), -0.1)); p1 = p0 + V((math.cos(a) * l, math.sin(a) * l, 2.2)); p2 = p1 + V((math.cos(a) * l * 1.5, math.sin(a) * l * 1.5, 1.6))
+        mb.tube([p0, p1, p2], [0.08, 0.06, 0.035], 'deadwood', sides=5, caps=False)
+        tips.append(p2)
+    for k in range(6):
+        a = k * math.pi / 3 + r.uniform(-0.2, 0.2)
+        card(mb, (math.cos(a) * 0.6, math.sin(a) * 0.6), 3.0, 3.6, math.degrees(a) + 90 + r.uniform(-20, 20), 'tamarisk', tilt=r.uniform(-10, 10), z0=1.3)
+    _crown(mb, [t + V((0, 0, 0.3)) for t in tips], 2.4, 'tamarisk', r, flat=0.2)
 
 def b_grass_tuft_dry(mb):
     for k in range(3):
@@ -3199,6 +3342,8 @@ PROPS = {
     'palm_a': (b_palm_a, 'veg', None), 'palm_b': (b_palm_b, 'veg', None), 'palm_c': (b_palm_c, 'veg', None),
     'shrub_dry': (b_shrub_dry, 'veg', None), 'bush_oleander': (b_bush_oleander, 'veg', None), 'dead_tree': (b_dead_tree, 'veg', None),
     'reeds': (b_reeds, 'veg', None), 'grass_tuft_dry': (b_grass_tuft_dry, 'veg', None),
+    'tree_eucalyptus': (b_tree_eucalyptus, 'veg', None), 'tree_eucalyptus_b': (b_tree_eucalyptus_b, 'veg', None),
+    'tree_orchard': (b_tree_orchard, 'veg', None), 'tree_tamarisk': (b_tree_tamarisk, 'veg', None),
     'water_tank': (b_water_tank, 'city', None), 'water_tank_steel': (b_water_tank_steel, 'city', 'xy'), 'ac_split': (b_ac_split, 'city', 'xy'),
     'ac_window': (b_ac_window, 'city', 'xy'), 'sat_dish': (b_sat_dish, 'city', None), 'antenna_tv': (b_antenna_tv, 'city', None),
     'solar_heater': (b_solar_heater, 'city', 'xy'), 'generator_small': (b_generator_small, 'city', 'xy'), 'roof_clutter': (b_roof_clutter, 'city', 'xy'),
@@ -3221,7 +3366,7 @@ PROPS = {
     'arch_gate': (b_arch_gate, 'arch', None), 'fountain_basin': (b_fountain_basin, 'arch', None),
 }
 PROPS.update(INTERIOR_PROPS)
-BUDGET = {'palm_a': 6000, 'palm_b': 6000, 'palm_c': 6000, 'minaret': 8000, 'dome_large': 8000, 'dome_small': 8000, 'guard_tower': 6000}
+BUDGET = {'tree_eucalyptus': 3000, 'tree_eucalyptus_b': 3000, 'tree_orchard': 2000, 'tree_tamarisk': 2000, 'palm_a': 6000, 'palm_b': 6000, 'palm_c': 6000, 'minaret': 8000, 'dome_large': 8000, 'dome_small': 8000, 'guard_tower': 6000}
 MEDIUM = {'market_stall', 'hesco_wall', 'sandbags_line', 'sandbag_bunker', 'tent_military', 'camo_net', 'conex', 'wire_concertina',
           'floodlight_tower', 'cache_crate', 'cache_crate_b', 'rubble_a', 'rubble_b', 'rubble_c', 'roof_clutter', 'billboard_frame',
           'arch_gate', 'fountain_basin', 'dead_tree', 'solar_heater', 'trash_pile', 'tyres_pile', 'power_pole', 'antenna_tv', 'cart_hand'}
@@ -3268,6 +3413,7 @@ def report(roots):
 SHEETS_DEF = {
     'palms': (['palm_a', 'palm_b', 'palm_c'], dict(lens=35, el=6, az=-20, gap=4.0, target_z=6.0, dist_mul=0.85)),
     'veg': (['shrub_dry', 'bush_oleander', 'dead_tree', 'reeds', 'grass_tuft_dry'], dict(lens=40, el=10, gap=1.0)),
+    'trees': (['tree_eucalyptus', 'tree_eucalyptus_b', 'tree_orchard', 'tree_tamarisk'], dict(lens=35, el=6, az=-20, gap=3.0, target_z=6.0, dist_mul=0.85)),
     'roof': (['water_tank', 'water_tank_steel', 'ac_split', 'ac_window', 'sat_dish', 'antenna_tv', 'solar_heater', 'generator_small', 'roof_clutter', 'clothesline'], dict(lens=40, el=16, gap=0.8, rows=2)),
     'street': (['market_stall', 'awning_shop', 'shop_shutter', 'sign_shop', 'cart_hand', 'plastic_chair', 'table_plastic', 'gas_cylinder', 'oil_drum', 'oil_drum_rusty'], dict(lens=40, el=12, gap=0.7, rows=2)),
     'debris': (['tyres_pile', 'trash_pile', 'trash_bags', 'rubble_a', 'rubble_b', 'rubble_c', 'debris_slab', 'burnt_tyre', 'kerb_barrier', 'transformer_box'], dict(lens=40, el=20, gap=0.8, rows=2)),

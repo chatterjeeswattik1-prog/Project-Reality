@@ -26,6 +26,9 @@ const DYN_CAP = 6 * 700;
 const ROBUST = /^(cache_crate|market_stall|burnt_tyre|hesco|t_wall|jersey|sandbag|conex|veh:|rubble|debris_|palm|dead_tree|minaret|dome_|arch_gate|fountain|guard_tower|power_pole|street_light|floodlight|flagpole|tent_|camo_net|wire_|billboard|transformer|kerb_barrier|grass|shrub|bush|reeds)/;
 /** Props fixed to a wall or a ceiling rather than standing on a floor. */
 const HUNG = /^(ceiling_fan|bulb_hanging|picture_frame|curtain_|wall_shelf|bedsheet_window|sandbag_window|ac_split|ac_window|sign_shop|awning_shop|shop_shutter|clothesline)/;
+/** What a tank drives over: trees and palms topple; the rest is flattened. Buildings, HESCO, wrecks are not. */
+const CRUSH = /^(tree_|palm_|dead_tree|shrub|bush|reeds|grass|cart_|market_stall|plastic_|table_|trash|tyres|oil_drum|gas_cylinder|crate|pallet|cardboard|street_light|power_pole|sign_shop|kerb_barrier|generator|water_tank)/;
+const FELL = /^(tree_|palm_|dead_tree|street_light|power_pole)/;
 const SOFT = /^(floor_cushions|sofa_old|armchair|rug_|coffee_table|side_table|curtain_|bed_double|mattress_|wardrobe|dresser|clothes_pile|prayer_mat|kitchen_|table_|shoes_rack|wall_shelf|picture_frame|broken_furniture|cardboard|pallet|crate_|cart_|market_stall|plastic_|bedsheet|clothesline|trash)/;
 const MAX_RUBBLE = 2400, MAX_ACTIVE = 110;
 
@@ -98,7 +101,13 @@ export class Destruction {
   private active: { body: RAPIER.RigidBody; i: number; t: number; s: THREE.Vector3 }[] = [];
   private m4 = new THREE.Matrix4(); private q = new THREE.Quaternion(); private v = new THREE.Vector3();
   private propGone = new Set<number>();
+  /** Props falling over (trees pushed down by a tank): their instance slots rotate about the base. */
+  private falling: { slots: [THREE.InstancedMesh, number, THREE.Matrix4][]; base: THREE.Vector3; axis: THREE.Vector3; t: number }[] = [];
+  /** 8 m grids of prop and piece indices (crushing looks only at what is near a moving vehicle). */
+  private propGrid: Map<number, number[]> | null = null; private pieceGrid: Map<number, number[]> | null = null;
   private zero = new THREE.Matrix4().makeScale(0, 0, 0);
+  /** The game (sounds), set by the game after construction. */
+  g: { audio: { play: (n: string, p: [number, number, number] | null, o?: Record<string, unknown>) => unknown } } | null = null;
   /** Pieces removed so far, and the time (ms) of the last blast's stages: scan, cut, settle, physics, upload. */
   removed = 0;
   prof = [0, 0, 0, 0, 0];
@@ -347,6 +356,74 @@ export class Destruction {
     return fell;
   }
 
+  // ---------------- crushing (vehicles) ----------------
+  private gkey(ix: number, iz: number) { return (ix + 512) * 1024 + (iz + 512); }
+  private gridAdd(gr: Map<number, number[]>, i: number, x0: number, z0: number, x1: number, z1: number) {
+    for (let ix = Math.floor(x0 / 8); ix <= Math.floor(x1 / 8); ix++) for (let iz = Math.floor(z0 / 8); iz <= Math.floor(z1 / 8); iz++) { const k = this.gkey(ix, iz); const l = gr.get(k); if (l) l.push(i); else gr.set(k, [i]); }
+  }
+  private near(gr: Map<number, number[]>, x0: number, z0: number, x1: number, z1: number): Set<number> {
+    const out = new Set<number>();
+    for (let ix = Math.floor(x0 / 8); ix <= Math.floor(x1 / 8); ix++) for (let iz = Math.floor(z0 / 8); iz <= Math.floor(z1 / 8); iz++) for (const i of gr.get(this.gkey(ix, iz)) ?? []) out.add(i);
+    return out;
+  }
+  /**
+   * A vehicle pushes through the box centred on (cx, cz) with half extents (hx along its right, hz along `dir`) and
+   * heading `dir` (unit, horizontal): crushable props in it are knocked down, thin low walls (compound walls, fences;
+   * never a building's) collapse as rubble. Returns how much was crushed.
+   */
+  crush(cx: number, cz: number, hx: number, hz: number, dir: [number, number], y0: number, y1: number): number {
+    const T = this.T, P = this.P, list = this.city.props;
+    if (!this.propGrid) { this.propGrid = new Map(); list.forEach((q, i) => { if (CRUSH.test(q.id)) this.gridAdd(this.propGrid!, i, q.x, q.z, q.x, q.z); }); }
+    if (!this.pieceGrid) { this.pieceGrid = new Map(); for (let i = 0; i < T.n; i++) { const o = i * 6; this.gridAdd(this.pieceGrid, i, T.box[o], T.box[o + 2], T.box[o + 3], T.box[o + 5]); } }
+    const r = Math.hypot(hx, hz) + 1, rx = -dir[1], rz = dir[0];
+    const inBox = (x: number, z: number, m: number) => { const dx = x - cx, dz = z - cz; return Math.abs(dx * rx + dz * rz) < hx + m && Math.abs(dx * dir[0] + dz * dir[1]) < hz + m; };
+    let n = 0;
+    for (const pi of this.near(this.propGrid, cx - r, cz - r, cx + r, cz + r)) {
+      const q = list[pi];
+      if (this.propGone.has(pi) || !inBox(q.x, q.z, 0.3) || q.y > y1 || !this.W.propSlots.has(pi)) continue;
+      this.propGone.add(pi); n += q.id.startsWith('tree_euca') || q.id.startsWith('palm') ? 3 : q.id.startsWith('tree_') || FELL.test(q.id) ? 1.5 : 0.5;
+      P.removeProp(pi);
+      const slots = this.W.propSlots.get(pi)!;
+      if (FELL.test(q.id)) {
+        // Pushed over forward and to one side (to the side of the hull it was on), clearing the lane behind.
+        const side = Math.sign((q.x - cx) * rx + (q.z - cz) * rz) || (Math.random() < 0.5 ? -1 : 1);
+        // Nearly square to the line of travel: the crown lands well off the lane, only the bare trunk lies across it.
+        const a = Math.atan2(dir[1], dir[0]) + side * (1.3 + Math.random() * 0.27), fx = Math.cos(a), fz = Math.sin(a);
+        // Rotating about up × fall-direction tips the top towards the fall direction (away from the vehicle).
+        const axis = new THREE.Vector3(fz, 0, -fx).normalize();
+        this.falling.push({ slots: slots.map(([im, i]) => { const m = new THREE.Matrix4(); im.getMatrixAt(i, m); return [im, i, m]; }), base: new THREE.Vector3(q.x, q.y, q.z), axis, t: 0 });
+        this.g?.audio.play('debris_fall', [q.x, q.y + 1, q.z], { range: 120, gain: 0.5, rate: 0.6 });
+      } else {
+        for (const [im, i] of slots) { im.setMatrixAt(i, this.zero); im.instanceMatrix.needsUpdate = true; }
+        this.throwRubble([q.x - 0.4, q.y, q.z - 0.4], [q.x + 0.4, q.y + 0.8, q.z + 0.4], -1, [q.x - dir[0], q.y, q.z - dir[1]], 0, 0.08, 0.3, null, SOFT.test(q.id) ? 'wood' : 'metal');
+      }
+    }
+    let walls = 0;
+    for (const i of this.near(this.pieceGrid, cx - r, cz - r, cx + r, cz + r)) {
+      if (T.dead[i]) continue;
+      const [mn, mx] = this.bounds(i), ext = [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]];
+      if (mx[1] < y0 + 0.3 || mn[1] > y1) continue;
+      if (Math.min(ext[0], ext[2]) > 0.45 || ext[1] > 3.4) continue;
+      const col = T.col[i]; if (col < 0 || P.tagOf(col) >= 0) continue; // only free-standing walls, never a building
+      const s2 = this.surf(i); if (s2 !== 'masonry' && s2 !== 'metal' && s2 !== 'wood') continue;
+      // Does the piece reach into the box? (test its centre line at a few points along its length)
+      const along = ext[0] > ext[2] ? 0 : 2, L = along === 0 ? ext[0] : ext[2];
+      let hit = false;
+      for (let k = 0; k <= 8 && !hit; k++) { const t = k / 8, x = along === 0 ? mn[0] + L * t : (mn[0] + mx[0]) / 2, z = along === 2 ? mn[2] + L * t : (mn[2] + mx[2]) / 2; hit = inBox(x, z, 0.2); }
+      if (!hit) continue;
+      // Knock down the part of the wall in front of the hull (a breach as wide as the vehicle).
+      const t = along === 0 ? 2 : 0;
+      const ops = [{ a0: (along === 0 ? cx : cz) - hx - 0.6, a1: (along === 0 ? cx : cz) + hx + 0.6, b0: -1e3, b1: 1e3 }];
+      const out = this.cutAlong(i, t, ops);
+      if (out) { walls++; this.throwRubble(mn, mx, -1, [cx - dir[0] * 3, (mn[1] + mx[1]) / 2, cz - dir[1] * 3], 0, ext[0] * ext[1] * ext[2] * 0.5, 0.5, null, s2); for (const k of out) { const [a, b] = this.bounds(k); this.gridAdd(this.pieceGrid, k, a[0], a[2], b[0], b[2]); } }
+    }
+    if (walls) { this.settle([cx, y0, cz], 8, 0.3); this.P.commit(); this.flush(); this.g?.audio.play('debris_fall', [cx, y0 + 1, cz], { range: 150, gain: 0.9 }); }
+    else if (n) this.P.commit();
+    return n + walls;
+  }
+  /** Cut openings through a vertical piece (thin axis t), opening spans along its length and full height. */
+  private cutAlong(i: number, t: number, ops: Op[]): number[] | null { return this.cut(i, t, ops); }
+
   // ---------------- props ----------------
   /**
    * Props near a blast: small, fragile ones within `light` of it are wrecked, and any prop left standing on nothing
@@ -441,8 +518,15 @@ export class Destruction {
     this.touchedDyn.clear();
   }
 
-  /** Per frame: rubble follows its bodies; settled (or old) chunks are frozen in place. */
+  /** Per frame: rubble follows its bodies; settled (or old) chunks are frozen in place; felled trees topple. */
   update(dt: number) {
+    for (let k = this.falling.length - 1; k >= 0; k--) {
+      const f = this.falling[k]; f.t += dt;
+      const ang = Math.min(1.53, f.t * f.t * 7 + f.t * 1.2); // down in ~0.4 s
+      const R = new THREE.Matrix4().makeTranslation(f.base.x, f.base.y, f.base.z).multiply(new THREE.Matrix4().makeRotationAxis(f.axis, ang)).multiply(new THREE.Matrix4().makeTranslation(-f.base.x, -f.base.y, -f.base.z));
+      for (const [im, i, m0] of f.slots) { im.setMatrixAt(i, this.m4.copy(R).multiply(m0)); im.instanceMatrix.needsUpdate = true; }
+      if (ang >= 1.53) this.falling.splice(k, 1);
+    }
     for (let k = 0; k < 14 && this.pending.length; k++) this.make(...this.pending.shift()!);
     for (let k = this.active.length - 1; k >= 0; k--) {
       const a = this.active[k]; a.t += dt;

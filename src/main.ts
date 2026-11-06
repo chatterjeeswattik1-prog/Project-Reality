@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 import { createGfx, type Quality } from './core/gfx';
 import { Input, BIND } from './core/input';
+import { VehicleCrews } from './vehicles/crews';
+import { VEHICLES } from './game/data/vehicles';
 import { generateCity } from './world/citygen';
 import { buildProps, buildWorld } from './world/render';
 import { Physics } from './world/physics';
@@ -30,7 +32,7 @@ import { downloads, expectDownload, mb, trackDownloads } from './core/netprogres
 // Count every byte the game downloads (the loading screen shows it), and start the big shared downloads at once, while
 // the player is still in the main menu: characters, animations, weapons, the props kit and the navmesh.
 trackDownloads();
-expectDownload((new URLSearchParams(location.search).get('mode') === 'test' ? 103 : 124) * 1048576);
+expectDownload((new URLSearchParams(location.search).get('mode') === 'test' ? 103 : 133) * 1048576);
 const early = {
   chars: loadCharAssets(),
   props: gltf('models/props.glb'),
@@ -96,7 +98,7 @@ async function boot() {
   const areaArg = params.get('area')?.split(',').map(Number);
   const area: Rect | undefined = test ? (areaArg?.length === 4 ? { x0: areaArg[0], z0: areaArg[1], x1: areaArg[2], z1: areaArg[3] } : TEST_AREA) : undefined;
   bg.remove();
-  expectDownload((test ? 103 : 124) * 1048576);
+  expectDownload((test ? 103 : 133) * 1048576);
   const L0 = loadingScreen();
   // Heap at each loading stage (window.__mem, for profiling memory on the full map).
   const memLog: [string, number][] = []; (window as unknown as Record<string, unknown>).__mem = memLog;
@@ -134,6 +136,14 @@ async function boot() {
   const score = scoreboard(host);
   const mode: GameMode = test ? new Skirmish(game, area!) : new Insurgency(game, city, seed, cacheGltf?.scene.getObjectByName('cache_crate') ?? null);
   game.mode = mode;
+  // Armour: the FOB's motor pool (full map), or one vehicle beside the start zone for tests (?veh=m1a2 / m2a3).
+  {
+    const crews = new VehicleCrews(game, 'us');
+    const vq = params.get('veh');
+    const list = test ? (vq ? vq.split(',').map((id, i) => { const z = (mode as Skirmish).zone('us'); return { id, x: z[0] + 14, z: z[2] + i * 9 - 4, ry: -Math.PI / 2 }; }) : []) : city.fob.vehicles.filter((v) => VEHICLES[v.id]);
+    if (list.length) { L.set(0.84, 'Armour…'); await crews.load(list.map((v) => v.id)); for (const v of list) crews.add(v.id, v.x, v.z, v.ry); }
+    game.crews = crews;
+  }
   game.events.onDown = (v, by, killed) => {
     mode.onDown(v, by, killed);
     if (by?.isPlayer && v.team !== by.team) hud.flash(killed ? 'Enemy killed' : 'Enemy down');
@@ -237,7 +247,7 @@ async function boot() {
     me = game.spawn(kitById(kit.id), faction, safeSpawn(P, nav, spawn.pos, test ? 1.5 : 4), faction === 'us' ? 'You (Alpha)' : 'You', facing);
     me.isPlayer = true;
     if (full && alpha && faction === 'us') { me.squad = 1; alpha.members.push(me); if (me.kit.leader) alpha.leader = me; }
-    else if (full) { const c = full.cells[0]; c.members.push(me); me.squad = 100; }
+    else if (full && faction === 'ins' && full.cells[0]) { const c = full.cells[0]; c.members.push(me); me.squad = 100; }
     lastKit = kit.id;
     if (!player) { player = new Player(game, me, input); game.player = player; } else player.setSoldier(me);
     lastState = 'alive'; deadT = 0;

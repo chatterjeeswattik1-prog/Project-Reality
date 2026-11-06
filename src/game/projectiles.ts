@@ -2,7 +2,7 @@
 // gravity; each step is a segment tested against the static world (Rapier ray cast) and the soldiers' hit capsules.
 import { AMMO, type Ammo, type WeaponDef } from './data/weapons';
 import type { Capsule, HitPart, Soldier } from './soldier';
-import { G_VEH, G_WORLD, type Physics } from '../world/physics';
+import { G_VEH, G_WORLD, type Physics, type RayHit } from '../world/physics';
 import type { Surface } from '../world/sink';
 
 export type V3 = [number, number, number];
@@ -16,9 +16,13 @@ export interface ProjectileHooks {
   body: (id: number, kind: 'rocket' | 'gl' | 'grenade' | 'smoke' | 'c4', p: V3 | null, v?: V3) => void;
   /** Smoke grenade started emitting. */
   smoke: (p: V3) => void;
+  /** A round hit a vehicle (its armour decides): returns true when the hook handled it (the round stops there). */
+  armour?: (wh: RayHit, d: V3, speed: number, ammo: Ammo, by: Soldier) => boolean;
 }
 
-interface Bullet { cracked?: Set<number>; id: number; p: V3; v: V3; ammo: Ammo; owner: Soldier; t: number; dist: number; tracer: boolean; pens: number; armed: number; boostT: number }
+interface Bullet { cracked?: Set<number>; id: number; p: V3; v: V3; ammo: Ammo; owner: Soldier; t: number; dist: number; tracer: boolean; pens: number; armed: number; boostT: number; guide?: (p: V3) => V3 | null }
+/** Drawn as a body in flight: rockets/missiles, 40 mm grenades, tank shells. */
+const bodyKind = (a: Ammo): 'rocket' | 'gl' | null => (a.visual === 'gl' ? 'gl' : a.visual === 'rocket' ? 'rocket' : null);
 interface Thrown { id: number; body: import('@dimforge/rapier3d-compat').RigidBody; ammo: Ammo; owner: Soldier; fuse: number; kind: 'grenade' | 'smoke' | 'c4'; smoking: number }
 
 /** Penetration class an ammunition needs to go through a surface (see Ammo.pen). */
@@ -31,12 +35,13 @@ export class Projectiles {
   private caps: Capsule[] = [];
   constructor(private P: Physics, private soldiers: () => Soldier[], private H: ProjectileHooks) {}
 
-  fire(owner: Soldier, def: WeaponDef, ammoId: string, origin: V3, dir: V3, tracerShot: boolean) {
+  /** `guide` (wire-guided missiles): the point the missile should fly to (on the gunner's sight line), null = wire cut. */
+  fire(owner: Soldier, def: WeaponDef | null, ammoId: string, origin: V3, dir: V3, tracerShot: boolean, guide?: (p: V3) => V3 | null) {
     const a = AMMO[ammoId as keyof typeof AMMO];
     const v0 = a.v0;
-    const b: Bullet = { id: pid++, p: [...origin], v: [dir[0] * v0, dir[1] * v0, dir[2] * v0], ammo: a, owner, t: 0, dist: 0, tracer: tracerShot, pens: 0, armed: a.id === 'hedp40' ? 18 : 0, boostT: a.rocket ? a.rocket.burn : 0 };
+    const b: Bullet = { id: pid++, p: [...origin], v: [dir[0] * v0, dir[1] * v0, dir[2] * v0], ammo: a, owner, t: 0, dist: 0, tracer: tracerShot || a.visual === 'shell', pens: 0, armed: a.id === 'hedp40' ? 18 : a.guided ? 65 : 0, boostT: a.rocket ? a.rocket.burn : 0, guide };
     this.bullets.push(b);
-    if (a.rocket || a.id === 'hedp40' || a.id === 'heat84') this.H.body(b.id, a.id === 'hedp40' ? 'gl' : 'rocket', b.p, b.v);
+    const k = bodyKind(a); if (k) this.H.body(b.id, k, b.p, b.v);
     void def;
   }
 
@@ -75,6 +80,18 @@ export class Projectiles {
         const gain = Math.max(0, a.rocket.cruise - sp) * 3.2;
         ax += (b.v[0] / sp) * gain; ay += (b.v[1] / sp) * gain + 9.81 * 0.85; az += (b.v[2] / sp) * gain;
       }
+      // Wire guidance (SACLOS): steer towards the gunner's sight line, at most ~0.5 rad/s; the motor holds altitude.
+      if (a.guided && b.t > 0.35) {
+        const tgt = b.guide?.(b.p) ?? null;
+        if (tgt) {
+          const w: V3 = [tgt[0] - b.p[0], tgt[1] - b.p[1], tgt[2] - b.p[2]], wl = Math.hypot(w[0], w[1], w[2]) || 1;
+          const cur: V3 = [b.v[0] / sp, b.v[1] / sp, b.v[2] / sp], k = Math.min(1, 0.5 * dt * 6);
+          const nd: V3 = [cur[0] + (w[0] / wl - cur[0]) * k, cur[1] + (w[1] / wl - cur[1]) * k, cur[2] + (w[2] / wl - cur[2]) * k];
+          const nl = Math.hypot(nd[0], nd[1], nd[2]);
+          b.v = [nd[0] / nl * sp, nd[1] / nl * sp, nd[2] / nl * sp];
+          ay += 9.81;
+        }
+      }
       const nv: V3 = [b.v[0] + ax * dt, b.v[1] + ay * dt, b.v[2] + az * dt];
       const seg: V3 = [(b.v[0] + nv[0]) * 0.5 * dt, (b.v[1] + nv[1]) * 0.5 * dt, (b.v[2] + nv[2]) * 0.5 * dt];
       const L = Math.hypot(seg[0], seg[1], seg[2]), d: V3 = [seg[0] / L, seg[1] / L, seg[2] / L];
@@ -86,7 +103,7 @@ export class Projectiles {
       let best = null as { s: Soldier; t: number; part: HitPart } | null;
       for (const s of sol) {
         if (s === b.owner && b.t < 0.2) continue;
-        if (s.state === 'dead') continue;
+        if (s.state === 'dead' || s.vehicle) continue;
         const cx = s.pos[0] - b.p[0], cz = s.pos[2] - b.p[2];
         // Broad phase: distance from the segment's line to the soldier.
         const along = cx * d[0] + cz * d[2];
@@ -118,6 +135,8 @@ export class Projectiles {
       }
       if (wh) {
         if (b.tracer) this.H.tracer(prev, wh.point, a);
+        // Armoured vehicles: the armour model decides (and explodes HEAT on the plate).
+        if (this.H.armour && (b.dist + wh.dist >= b.armed || !a.explosive) && this.H.armour(wh, d, sp, a, b.owner)) { this.removeBullet(i); continue; }
         if (a.explosive) {
           if (b.dist + wh.dist >= b.armed) this.H.explode([wh.point[0] + wh.normal[0] * 0.2, wh.point[1] + wh.normal[1] * 0.2, wh.point[2] + wh.normal[2] * 0.2], a, b.owner, wh.normal);
           else this.H.impact(wh.point, wh.normal, wh.surf, a); // dud: armed too close
@@ -151,14 +170,14 @@ export class Projectiles {
       }
       if (b.tracer) this.H.tracer(prev, [b.p[0] + seg[0], b.p[1] + seg[1], b.p[2] + seg[2]], a);
       b.p = [b.p[0] + seg[0], b.p[1] + seg[1], b.p[2] + seg[2]]; b.v = nv; b.dist += L;
-      if (a.rocket || a.id === 'hedp40' || a.id === 'heat84') this.H.body(b.id, a.id === 'hedp40' ? 'gl' : 'rocket', b.p, b.v);
+      const bk = bodyKind(a); if (bk) this.H.body(b.id, bk, b.p, b.v);
       const selfD = a.rocket?.selfDestruct;
       if (selfD && b.dist > selfD) { this.H.explode(b.p, a, b.owner); this.removeBullet(i); continue; }
-      if (b.t > 6 || (sp < 60 && !a.explosive) || b.p[1] < -50) this.removeBullet(i);
+      if ((b.t > 6 && !a.guided) || b.t > 25 || (sp < 60 && !a.explosive) || b.p[1] < -50) this.removeBullet(i);
     }
   }
 
-  private removeBullet(i: number) { const b = this.bullets[i]; if (b.ammo.rocket || b.ammo.id === 'hedp40' || b.ammo.id === 'heat84') this.H.body(b.id, 'rocket', null); this.bullets.splice(i, 1); }
+  private removeBullet(i: number) { const b = this.bullets[i]; if (bodyKind(b.ammo)) this.H.body(b.id, 'rocket', null); this.bullets.splice(i, 1); }
   private removeThrown(i: number) { const t = this.thrown[i]; this.H.body(t.id, t.kind, null); this.P.world.removeRigidBody(t.body); this.thrown.splice(i, 1); }
 }
 

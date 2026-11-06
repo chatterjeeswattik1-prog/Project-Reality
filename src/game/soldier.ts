@@ -40,6 +40,10 @@ export class Soldier {
   kit: Kit;
   squad = 0;
   isPlayer = false;
+  /** Riding in a vehicle (seat index): the vehicle carries him; his own collider is off and he has no hit capsules. */
+  vehicle: import('../vehicles/vehicle').Vehicle | null = null; seat = -1;
+  /** Moved without walking (out of a vehicle): his bot must find its place on the navmesh again. */
+  teleported = false;
   // body
   pos: [number, number, number];
   vel: [number, number, number] = [0, 0, 0];
@@ -144,8 +148,8 @@ export class Soldier {
 
   /** Move with a desired horizontal velocity (m/s, world) and an optional jump. */
   move(dt: number, want: [number, number], jump: boolean) {
-    // Dead: the body's collider is gone (die()); nothing moves any more.
-    if (this.state === 'dead') { this.vel = [0, 0, 0]; return; }
+    // Dead: the body's collider is gone (die()); nothing moves any more. Mounted: the vehicle places him.
+    if (this.state === 'dead' || this.vehicle) { this.vel = [0, 0, 0]; return; }
     const P = this.P;
     if (!this.alive) { want = [0, 0]; jump = false; }
     const accel = this.onGround ? 14 : 2;
@@ -176,7 +180,7 @@ export class Soldier {
    * (interpolated along the path's corner points, which lie on walkable surfaces).
    */
   moveOnPath(dt: number, want: [number, number], groundY: number | null) {
-    if (this.state === 'dead') { this.vel = [0, 0, 0]; return; }
+    if (this.state === 'dead' || this.vehicle) { this.vel = [0, 0, 0]; return; }
     if (!this.alive) want = [0, 0];
     this.vel[0] += (want[0] - this.vel[0]) * damp(14, dt); this.vel[2] += (want[1] - this.vel[2]) * damp(14, dt); this.vel[1] = 0;
     const nx = this.pos[0] + this.vel[0] * dt, nz = this.pos[2] + this.vel[2] * dt, ny = groundY ?? this.pos[1];
@@ -191,7 +195,7 @@ export class Soldier {
    * can never pass through geometry even when its path or goal is bad. Returns the new polygon ref.
    */
   moveNav(dt: number, want: [number, number], nav: { step: (ref: number, a: [number, number, number], b: [number, number, number]) => { p: [number, number, number]; ref: number } | null; ref: (p: [number, number, number]) => number }, ref: number): number {
-    if (this.state === 'dead') { this.vel = [0, 0, 0]; return ref; }
+    if (this.state === 'dead' || this.vehicle) { this.vel = [0, 0, 0]; return ref; }
     if (!this.alive) want = [0, 0];
     this.vel[0] += (want[0] - this.vel[0]) * damp(14, dt); this.vel[2] += (want[1] - this.vel[2]) * damp(14, dt); this.vel[1] = 0;
     if (!ref) ref = nav.ref(this.pos);
@@ -391,6 +395,7 @@ export class Soldier {
   /** Hit capsules in world space, from the stance (good enough for hit detection; the visible body follows the same pose). */
   hitboxes(out: Capsule[] = []): Capsule[] {
     out.length = 0;
+    if (this.vehicle) return out; // inside the armour: rounds hit the vehicle (vehicles/armour.ts reaches the crew)
     const [x, y, z] = this.pos, fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw), rx = -fz, rz = fx;
     const P = (f: number, r: number, h: number): [number, number, number] => [x + fx * f + rx * r, y + h, z + fz * f + rz * r];
     if (this.stance === 'prone' || this.state !== 'alive') {

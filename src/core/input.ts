@@ -14,7 +14,7 @@ export class Input {
   private wheelAcc = 0; private wheelT = 0;
   constructor(private el: HTMLElement) {
     addEventListener('keydown', (e) => {
-      if (e.code === 'Tab' || (e.code.startsWith('Digit') && this.locked) || e.code === 'Space' || e.code === 'AltLeft') e.preventDefault();
+      if (e.code === 'Tab' || ((e.code.startsWith('Digit') || /^F[1-9]$/.test(e.code)) && this.locked) || e.code === 'Space' || e.code === 'AltLeft') e.preventDefault();
       if (!e.repeat) this.pressed.add(e.code);
       this.down.add(e.code);
     });

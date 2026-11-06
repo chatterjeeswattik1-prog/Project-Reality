@@ -126,7 +126,9 @@ export class Fireteam extends Brain {
   private cmd: { kind: 'follow' | 'hold' | 'move'; p?: V3 } = { kind: 'follow' };
   private suppressAt: V3 | null = null; private suppressUntil = 0;
   /** Room clearing (FM 3-06.11): the stack outside a doorway, the grenade, then the flow into the room. */
-  private breach: { b: BuildingInfo; door: V3; out: [number, number]; along: [number, number]; side: number; phase: 'stack' | 'bang' | 'flow' | 'clear'; t: number; team: Bot[]; corners: V3[] } | null = null;
+  private breach: { b: BuildingInfo; door: V3; out: [number, number]; along: [number, number]; side: number; phase: 'stack' | 'bang' | 'flow' | 'clear'; t: number; team: Bot[]; corners: V3[]; rooms: BuildingInfo['rooms']; bang: boolean } | null = null;
+  /** Clearing a building on the director's plan (house-to-house), rather than assaulting a contact. */
+  clearing: BuildingInfo | null = null;
 
   /** Player order: 'move' / 'suppress' need the point aimed at; 'hold' toggles hold ↔ form up. */
   command(kind: 'move' | 'hold' | 'suppress', p?: V3) {
@@ -213,7 +215,10 @@ export class Fireteam extends Brain {
         else if (g.time - this.enemyT > 25) this.search();
         break;
       }
-      case 'breach': { this.runBreach(dt); break; }
+      case 'breach': {
+        if (this.clearing && (this.hitRecently(1) || (anySees && !this.breach?.team.some((b) => b.target)))) { this.breach = null; this.clearing = null; this.contact(); break; }
+        this.runBreach(dt); break;
+      }
       case 'search': {
         if (anySees || this.hitRecently(1.5) || fresh) { this.contact(); break; }
         if (this.alive().every((b) => b.taskDone) || this.stateT > 40) { this.objective = this.enemyAt ?? this.objective; this.enemyAt = null; this.set('move'); this.say('Area clear, moving on.'); }
@@ -325,33 +330,68 @@ export class Fireteam extends Brain {
    * Plan a room clearing: the exterior doorway of the house nearest the team; stack points along the wall on the near
    * side of it; entry points in the room behind it (the two corners along the entry wall, then the centre).
    */
-  private planBreach(b: BuildingInfo, team: Bot[]): boolean {
-    const c = this.centroid(), cx = (b.spec.x0 + b.spec.x1) / 2, cz = (b.spec.z0 + b.spec.z1) / 2;
+  private planBreach(b: BuildingInfo, team: Bot[], bang = true): boolean {
+    const c = this.centroid();
     const doors = b.doorways.filter((d) => d.exterior && d.floor === 0).sort((d1, d2) => flat([d1.x, 0, d1.z], c) - flat([d2.x, 0, d2.z], c));
     const d = doors[0]; if (!d) return false;
-    // Outward normal: across the wall, away from the house centre.
-    const n: [number, number] = d.axis === 'x' ? [0, Math.sign(d.z - cz) || 1] : [Math.sign(d.x - cx) || 1, 0];
-    const along: [number, number] = d.axis === 'x' ? [1, 0] : [0, 1];
-    // Stack on the side of the door the team is on.
-    const side = Math.sign((c[0] - d.x) * along[0] + (c[2] - d.z) * along[1]) || 1;
-    const door: V3 = [d.x, d.y, d.z];
-    // Entry points: corners of the room just inside (inset 0.7 m), then its middle.
-    const inPt: V3 = [d.x - n[0] * 1.5, d.y, d.z - n[1] * 1.5];
-    const room = b.rooms.find((r) => r.floor === 0 && inPt[0] > r.x0 && inPt[0] < r.x1 && inPt[2] > r.z0 && inPt[2] < r.z1);
-    let corners: V3[];
-    if (room) {
+    // Every room, floor by floor, nearest the way in first (the stairwell takes the team up).
+    const rooms = [...b.rooms].sort((r1, r2) => r1.floor - r2.floor || flat([(r1.x0 + r1.x1) / 2, 0, (r1.z0 + r1.z1) / 2], [d.x, 0, d.z]) - flat([(r2.x0 + r2.x1) / 2, 0, (r2.z0 + r2.z1) / 2], [d.x, 0, d.z]));
+    this.breach = { b, door: [0, 0, 0], out: [0, 1], along: [1, 0], side: 1, phase: 'stack', t: 0, team: team.slice(0, 4), corners: [], rooms, bang };
+    if (!this.nextRoom(d)) { this.breach = null; return false; }
+    this.set('breach');
+    this.say(this.clearing ? 'Stack up — clearing this house.' : 'Stack up on that door!');
+    return true;
+  }
+
+  /**
+   * Set up the entry into the next room on the list: its doorway (the given exterior one for the first room, else an
+   * interior doorway on its boundary), the stack on the team's side, and the points of domination inside (the two
+   * corners along the entry wall, then the middle). Returns false when no room is left.
+   */
+  private nextRoom(first?: BuildingInfo['doorways'][number]): boolean {
+    const B = this.breach!, b = B.b, c = this.centroid();
+    while (B.rooms.length) {
+      const room = B.rooms[0];
+      const onEdge = (d: BuildingInfo['doorways'][number]) => d.floor === room.floor && d.x > room.x0 - 0.6 && d.x < room.x1 + 0.6 && d.z > room.z0 - 0.6 && d.z < room.z1 + 0.6 &&
+        (Math.min(Math.abs(d.x - room.x0), Math.abs(d.x - room.x1)) < 0.6 || Math.min(Math.abs(d.z - room.z0), Math.abs(d.z - room.z1)) < 0.6);
+      const rc: V3 = [(room.x0 + room.x1) / 2, room.y, (room.z0 + room.z1) / 2];
+      const d = first && onEdge(first) ? first : b.doorways.filter(onEdge).sort((d1, d2) => flat([d1.x, 0, d1.z], c) - flat([d2.x, 0, d2.z], c))[0];
+      first = undefined;
+      if (!d) {
+        // No marked doorway (an open archway, the stair landing): walk in and take the corners.
+        B.rooms.shift();
+        B.door = rc; B.out = [0, 1]; B.along = [1, 0]; B.side = 1;
+        B.corners = [this.snap([room.x0 + 0.8, room.y, room.z0 + 0.8], 1.5), this.snap([room.x1 - 0.8, room.y, room.z1 - 0.8], 1.5), this.snap(rc, 1.5)];
+        B.phase = 'flow'; B.t = 0;
+        return true;
+      }
+      B.rooms.shift();
+      // Outward normal: across the wall, away from the room's centre.
+      const n: [number, number] = d.axis === 'x' ? [0, Math.sign(d.z - rc[2]) || 1] : [Math.sign(d.x - rc[0]) || 1, 0];
+      const along: [number, number] = d.axis === 'x' ? [1, 0] : [0, 1];
+      const side = Math.sign((c[0] - d.x) * along[0] + (c[2] - d.z) * along[1]) || 1;
       const near = n[0] !== 0 ? (n[0] > 0 ? room.x1 - 0.7 : room.x0 + 0.7) : (n[1] > 0 ? room.z1 - 0.7 : room.z0 + 0.7);
       const a0 = (n[0] !== 0 ? room.z0 : room.x0) + 0.7, a1 = (n[0] !== 0 ? room.z1 : room.x1) - 0.7;
       const P = (u: number, v: number): V3 => n[0] !== 0 ? [v, d.y, u] : [u, d.y, v];
-      // #1 crosses to the far side of the door, #2 hooks to the near side, #3 takes the centre of the room.
+      // #1 crosses to the far side of the door, #2 hooks to the near side, #3 and #4 take the middle and the far wall.
       const far = side > 0 ? a0 : a1, nearSide = side > 0 ? a1 : a0;
-      corners = [P(far, near), P(nearSide, near), [(room.x0 + room.x1) / 2, d.y, (room.z0 + room.z1) / 2]];
-    } else corners = [inPt, [inPt[0] - n[0] * 1.5, inPt[1], inPt[2] - n[1] * 1.5], inPt];
-    corners = corners.map((p) => this.snap(p, 1.5));
-    this.breach = { b, door, out: n, along, side, phase: 'stack', t: 0, team: team.slice(0, 3), corners };
-    this.set('breach');
-    this.say('Stack up on that door!');
-    return true;
+      const deep = n[0] !== 0 ? (n[0] > 0 ? room.x0 + 0.9 : room.x1 - 0.9) : (n[1] > 0 ? room.z0 + 0.9 : room.z1 - 0.9);
+      B.door = [d.x, d.y, d.z]; B.out = n; B.along = along; B.side = side;
+      B.corners = [P(far, near), P(nearSide, near), rc, P((a0 + a1) / 2, deep)].map((p) => this.snap(p, 1.5));
+      B.phase = 'stack'; B.t = 0;
+      return true;
+    }
+    return false;
+  }
+
+  /** House-to-house: clear building b room by room (quiet entries unless the enemy is known to be inside). */
+  clearBuilding(b: BuildingInfo): boolean {
+    if (this.state === 'react' || this.state === 'fix' || this.state === 'assault' || this.state === 'breach') return false;
+    const team = this.alive(); if (!team.length) return false;
+    this.clearing = b;
+    const ok = this.planBreach(b, team, false);
+    if (!ok) this.clearing = null;
+    return ok;
   }
 
   private runBreach(dt: number) {
@@ -368,11 +408,16 @@ export class Fireteam extends Brain {
           b.setTask({ kind: 'hold', p, face: yawTo(p, [d[0] - n[0], d[1], d[2] - n[1]]) });
         });
         const set = team.every((b) => b.task?.kind === 'hold' && flat(b.s.pos, b.task.p) < 1);
-        if (set || B.t > 14) { B.phase = 'bang'; B.t = 0; }
+        // Already inside and at the door (moving room to room): straight in.
+        const inside = team.every((b) => flat(b.s.pos, d) < 4);
+        if (set || B.t > 8 || (inside && B.t > 1)) { B.phase = 'bang'; B.t = 0; }
         break;
       }
       case 'bang': {
-        // The number one throws a grenade into the room; everybody waits for the bang.
+        // The number one throws a grenade into the room (when the enemy is known to be inside); everybody waits for the
+        // bang. A quiet entry otherwise.
+        const hot = B.bang || (this.enemyAt && g.time - this.enemyT < 30 && this.buildingAt(this.enemyAt, 0.3)?.id === B.b.id);
+        if (!hot) { B.phase = 'flow'; B.t = 0; break; }
         if (B.t < dt * 1.5) { this.say('Frag out!'); team[0].fragInto([d[0] - n[0] * 3, d[1], d[2] - n[1] * 3]); }
         if (B.t > 5.2) { B.phase = 'flow'; B.t = 0; this.say('Go, go, go!'); }
         break;
@@ -380,7 +425,7 @@ export class Fireteam extends Brain {
       case 'flow': {
         // One after another, ~0.7 s apart, each to his point of domination, shooting whatever shows.
         team.forEach((b, i) => { if (B.t > i * 0.7) b.setTask({ kind: 'move', p: B.corners[i % B.corners.length], run: true }); });
-        if (team.every((b) => b.taskDone) || B.t > 12) {
+        if (team.every((b) => b.taskDone) || B.t > 8) {
           B.phase = 'clear'; B.t = 0;
           team.forEach((b, i) => b.setTask({ kind: 'hold', p: [...b.s.pos], face: yawTo(b.s.pos, B.corners[(i + 2) % B.corners.length]) }));
           this.say('Room clear!');
@@ -388,7 +433,14 @@ export class Fireteam extends Brain {
         break;
       }
       case 'clear': {
-        if (B.t > 2) { this.enemyAt = [B.b.spots[0]?.[0] ?? d[0], B.b.spots[0]?.[1] ?? d[1], B.b.spots[0]?.[2] ?? d[2]]; this.breach = null; this.search(); }
+        // Next room (interior doors, then up the stairs), until the whole house is clear.
+        if (B.t > 1.5) {
+          if (this.nextRoom()) { if ((B.phase as string) === 'stack') this.say(B.rooms.length ? 'Next room!' : 'Last room!'); break; }
+          this.g.cleared[this.team].add(B.b.id);
+          this.say('Building clear!');
+          const was = this.clearing; this.breach = null; this.clearing = null;
+          if (was) this.set('move'); else { this.enemyAt = [B.b.spots[0]?.[0] ?? d[0], B.b.spots[0]?.[1] ?? d[1], B.b.spots[0]?.[2] ?? d[2]]; this.search(); }
+        }
         break;
       }
     }

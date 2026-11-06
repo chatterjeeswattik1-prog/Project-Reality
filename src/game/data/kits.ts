@@ -9,7 +9,7 @@ export interface Kit {
   /** Character model id. */ model: string[];
   /** Max per squad for bots. */ perSquad: number;
 }
-export type KitRole = 'leader' | 'rifleman' | 'grenadier' | 'ar' | 'mg' | 'marksman' | 'medic' | 'engineer' | 'lat' | 'at' | 'sapper';
+export type KitRole = 'leader' | 'rifleman' | 'grenadier' | 'ar' | 'mg' | 'marksman' | 'medic' | 'engineer' | 'lat' | 'at' | 'sapper' | 'crew';
 
 export const KITS: Kit[] = [
   // US Army
@@ -21,11 +21,14 @@ export const KITS: Kit[] = [
   { id: 'us_eng', name: 'Combat Engineer', faction: 'us', role: 'engineer', items: [{ weapon: 'm4a1', count: 5 }, { weapon: 'c4', count: 2 }, { weapon: 'm67', count: 1 }], bandages: 4, model: ['us_rifleman', 'us_rifleman_b'], perSquad: 1 },
   { id: 'us_lat', name: 'Rifleman AT (LAT)', faction: 'us', role: 'lat', items: [{ weapon: 'm4a1', count: 5 }, { weapon: 'm136', count: 1 }, { weapon: 'm18', count: 1 }], bandages: 4, model: ['us_rifleman', 'us_rifleman_b'], perSquad: 1 },
   { id: 'us_mg', name: 'Machine Gunner', faction: 'us', role: 'mg', items: [{ weapon: 'm240b', count: 3 }, { weapon: 'm9', count: 3 }], bandages: 4, model: ['us_rifleman', 'us_rifleman_b'], perSquad: 1 },
+  // Armour crewman (PR: needed to drive and fight a tank or IFV): carbine, pistol, smoke; no body armour plates.
+  { id: 'us_crew', name: 'Crewman', faction: 'us', role: 'crew', items: [{ weapon: 'm4a1', count: 3 }, { weapon: 'm9', count: 2 }, { weapon: 'm18', count: 1 }], bandages: 3, model: ['us_rifleman', 'us_rifleman_b'], perSquad: 0 },
   { id: 'us_sniper', name: 'Sniper', faction: 'us', role: 'marksman', items: [{ weapon: 'm24', count: 6 }, { weapon: 'm9', count: 3 }], bandages: 4, model: ['us_rifleman', 'us_rifleman_b'], perSquad: 1 },
   // Insurgents
   { id: 'ins_cell', name: 'Cell Leader', faction: 'ins', role: 'leader', items: [{ weapon: 'akm', count: 5 }, { weapon: 'makarov', count: 2 }, { weapon: 'f1', count: 1 }], bandages: 3, leader: true, model: ['insurgent_c', 'insurgent_a'], perSquad: 1 },
   { id: 'ins_rifle', name: 'Insurgent', faction: 'ins', role: 'rifleman', items: [{ weapon: 'akm', count: 6 }, { weapon: 'f1', count: 1 }], bandages: 3, model: ['insurgent_a', 'insurgent_b', 'insurgent_c'], perSquad: 8 },
   { id: 'ins_rifle2', name: 'Insurgent (AK-47)', faction: 'ins', role: 'rifleman', items: [{ weapon: 'ak47', count: 6 }, { weapon: 'f1', count: 1 }], bandages: 3, model: ['insurgent_b', 'insurgent_a'], perSquad: 8 },
+  { id: 'ins_at2', name: 'Anti-Tank (RPG, PG-7VR)', faction: 'ins', role: 'at', items: [{ weapon: 'aks74u', count: 3 }, { weapon: 'rpg7vr', count: 2 }], bandages: 3, model: ['insurgent_a', 'insurgent_c'], perSquad: 1 },
   { id: 'ins_at', name: 'Anti-Tank (RPG)', faction: 'ins', role: 'at', items: [{ weapon: 'aks74u', count: 3 }, { weapon: 'rpg7', count: 3 }], bandages: 3, model: ['insurgent_a', 'insurgent_c'], perSquad: 2 },
   { id: 'ins_mg', name: 'Machine Gunner', faction: 'ins', role: 'mg', items: [{ weapon: 'pkm', count: 2 }, { weapon: 'makarov', count: 2 }], bandages: 3, model: ['insurgent_c', 'insurgent_b'], perSquad: 1 },
   { id: 'ins_rpk', name: 'Automatic Rifleman', faction: 'ins', role: 'ar', items: [{ weapon: 'rpd', count: 3 }, { weapon: 'f1', count: 1 }], bandages: 3, model: ['insurgent_b', 'insurgent_a'], perSquad: 1 },

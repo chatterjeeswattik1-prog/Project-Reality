@@ -4,7 +4,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import type { City } from './citygen';
 import type { PropBox } from './render';
 import type { Surface } from './sink';
-import { groundH } from './terrain';
+import { AO, groundH } from './terrain';
 
 export const G_WORLD = 0x0001, G_CHAR = 0x0002, G_VEH = 0x0004, G_DEBRIS = 0x0008;
 /** Play-area boundary barriers: stop soldiers and vehicles only (never bullets, sight lines or grenades). */
@@ -38,7 +38,7 @@ export class Physics {
   static async create(): Promise<Physics> { await RAPIER.init(); return new Physics(); }
 
   /** Static boxes kept for surface lookups (trimesh hits carry no per-triangle data). */
-  private boxes: { c: number[]; h: number[]; ry: number; q?: number[]; s: Surface; tag: number; dead?: boolean; grp?: string; tris?: { pos: Float32Array; idx: Uint32Array } }[] = [];
+  private boxes: { c: number[]; h: number[]; ry: number; q?: number[]; s: Surface; tag: number; dead?: boolean; grp?: string; tris?: { pos: Float32Array; idx: Uint32Array }; pid?: string }[] = [];
   /** Box indices of each solid prop (index in city.props). */
   private propBoxes = new Map<number, number[]>();
   /**
@@ -78,7 +78,7 @@ export class Physics {
     for (const p of props) {
       const cs = p.tris ? 128 : 32, bi = this.boxes.length, grp = `${p.tris ? "t" : "p"}${Math.floor((p.c[0] + 2048) / cs) + Math.floor((p.c[2] + 2048) / cs) * 256}`;
       // Real-shape props: their triangles collide; the (shrunk) box stays only for surface lookups.
-      this.boxes.push({ c: p.c, h: p.h, ry: p.ry, q: [0, Math.sin(p.ry / 2), 0, Math.cos(p.ry / 2)], s: propSurface(p.id), tag: -1, grp, tris: p.tris });
+      this.boxes.push({ c: p.c, h: p.h, ry: p.ry, q: [0, Math.sin(p.ry / 2), 0, Math.cos(p.ry / 2)], s: propSurface(p.id), tag: -1, grp, tris: p.tris, pid: p.id });
       if (p.tris) {
         const C = Physics.cell, r = Math.hypot(p.h[0], p.h[2]) + 1;
         for (let ix = Math.floor((p.c[0] - r) / C); ix <= Math.floor((p.c[0] + r) / C); ix++) for (let iz = Math.floor((p.c[2] - r) / C); iz <= Math.floor((p.c[2] + r) / C); iz++) {
@@ -90,8 +90,8 @@ export class Physics {
       if (p.pi !== undefined) { const l = this.propBoxes.get(p.pi); if (l) l.push(bi); else this.propBoxes.set(p.pi, [bi]); }
     }
     this.commit();
-    // Terrain heightfield: 4 m cells over ±1000 m (rows along z, columns along x, column-major).
-    const N = 500, size = 2000, heights = new Float32Array((N + 1) * (N + 1));
+    // Terrain heightfield: 4 m cells over ±1100 m (rows along z, columns along x, column-major); covers the AO.
+    const N = 550, size = 2200, heights = new Float32Array((N + 1) * (N + 1));
     for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) heights[i + j * (N + 1)] = groundH(-size / 2 + (j * size) / N, -size / 2 + (i * size) / N);
     const terr = w.createCollider(R.ColliderDesc.heightfield(N, N, heights, { x: size, y: 1, z: size }).setCollisionGroups(g).setFriction(0.9), body);
     this.surf.set(terr.handle, 'dirt');
@@ -103,8 +103,9 @@ export class Physics {
         this.surf.set(c.handle, 'sandbag');
       }
     }
-    // Invisible walls at the map edge (soldiers may not leave the AO; vehicles neither).
-    for (const [cx, cz, hx, hz] of [[0, -700, 720, 2], [0, 700, 720, 2], [-700, 0, 2, 720], [700, 0, 2, 720]]) {
+    // Invisible walls at the edge of the AO (soldiers may not leave it; vehicles neither).
+    const mx = (AO.x0 + AO.x1) / 2, mz = (AO.z0 + AO.z1) / 2, hx0 = (AO.x1 - AO.x0) / 2 + 20, hz0 = (AO.z1 - AO.z0) / 2 + 20;
+    for (const [cx, cz, hx, hz] of [[mx, AO.z0 - 2, hx0, 2], [mx, AO.z1 + 2, hx0, 2], [AO.x0 - 2, mz, 2, hz0], [AO.x1 + 2, mz, 2, hz0]]) {
       const c = w.createCollider(R.ColliderDesc.cuboid(hx, 60, hz).setTranslation(cx, 20, cz).setCollisionGroups(groups(G_BOUND, G_CHAR | G_VEH)), body);
       this.surf.set(c.handle, 'dirt');
     }
@@ -130,8 +131,13 @@ export class Physics {
     if (L.grp) { this.grps.get(L.grp)!.boxes.push(bi); this.dirty.add(L.grp); }
     return bi;
   }
+  /** Every live static box (city and props): centre, half extents, rotation (props), surface, building tag. */
+  eachBox(fn: (c: number[], h: number[], q: number[] | undefined, s: Surface, tag: number, prop: string | null) => void) {
+    for (let i = 0; i < this.boxes.length; i++) { const b = this.boxes[i]; if (!b.dead && !b.tris) fn(b.c, b.h, b.q, b.s, b.tag, i >= this.cityBoxN ? b.pid ?? '' : null); }
+  }
   /** Destruction: a prop is gone (all its collision boxes). */
   removeProp(pi: number) { for (const bi of this.propBoxes.get(pi) ?? []) this.removeBox(bi); }
+  tagOf(bi: number): number { return this.boxes[bi]?.tag ?? -1; }
   surfOf(bi: number): Surface | null { return this.boxes[bi]?.s ?? null; }
   /** Rebuild the trimesh of every group that changed. */
   commit() {
@@ -166,7 +172,10 @@ export class Physics {
 
   /** First hit along a ray (dir normalised), against the given collision groups. */
   castRay(o: [number, number, number] | number[], d: [number, number, number] | number[], max: number, filter = G_WORLD | G_VEH, exclude?: RAPIER.Collider): RayHit | null {
-    this.ray.origin = { x: o[0], y: o[1], z: o[2] }; this.ray.dir = { x: d[0], y: d[1], z: d[2] };
+    // A perfectly vertical ray landing exactly on a heightfield vertex (x, z multiples of 4 m) misses the terrain
+    // (Rapier edge case): nudge such rays off the grid by a millimetre.
+    const vert = d[0] === 0 && d[2] === 0;
+    this.ray.origin = { x: o[0] + (vert ? 1.3e-3 : 0), y: o[1], z: o[2] + (vert ? 0.7e-3 : 0) }; this.ray.dir = { x: d[0], y: d[1], z: d[2] };
     const h = this.world.castRayAndGetNormal(this.ray, max, true, undefined, groups(0xffff, filter), exclude);
     if (!h) return null;
     const t = h.timeOfImpact;

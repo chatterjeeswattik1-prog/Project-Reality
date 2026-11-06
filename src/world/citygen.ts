@@ -1,12 +1,14 @@
 // Map generator for "Al Zahran", a fictional mid-sized Iraqi river town (1.3 km playable, 13×13 grid of 100 m).
 // Layout (north is −z): canal + palm groves + farmland in the west; old town north of the boulevard with the souk and
 // the Grand Mosque; the war-damaged southern old town ("the Ruins"); a modern apartment district (New Town) and a civic
-// district east of the avenue; industrial zone in the south; walled compounds on the northern outskirts; the US FOB on
-// the eastern edge. Deterministic from the seed. Pure data: no three.js.
+// district east of the avenue; industrial zone in the south; walled compounds on the northern outskirts. East of the
+// town a farmland belt (fields, orchards, tamarisk hedgerows, a low ridge, two eucalyptus woods) runs out to FOB Hammer
+// near the eastern edge of the AO: the US armour stages in the woods and attacks across it. Deterministic from the
+// seed (the belt uses its own random stream, so the town is unchanged by it). Pure data: no three.js.
 import { building, type BuildingInfo, type BuildingSpec, type Side } from './building';
 import { F, Sink, type MatId } from './sink';
 import { hash2, mulberry, pick, range } from '../core/rng';
-import { CANAL_W, canalX, groundH, HALF } from './terrain';
+import { AO, CANAL_W, canalX, groundH, HALF, RIDGE_X } from './terrain';
 
 export interface Rect { x0: number; z0: number; x1: number; z1: number }
 export type RoadKind = 'boulevard' | 'avenue' | 'street' | 'lane' | 'alley' | 'dirt' | 'market';
@@ -30,9 +32,11 @@ export interface City {
   cacheSpots: Spot[];
   roofSpots: Spot[];
   landmarks: { name: string; x: number; z: number }[];
+  /** Eucalyptus woods (dense: they hide what is behind them from sight lines, see Game.foliageBlocks). */
+  woods: Rect[];
   bridges: Rect[];
 }
-export const MASK_HALF = 704, MASK_RES = 1, MASK_N = (2 * MASK_HALF) / MASK_RES;
+export const MASK_HALF = 1056, MASK_RES = 1.5, MASK_N = (2 * MASK_HALF) / MASK_RES;
 
 const WALL_SETS: Record<string, MatId[]> = {
   old: ['clay', 'plaster_a', 'plaster_b', 'plastered', 'sandstone', 'brick', 'clay'],
@@ -60,7 +64,7 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
   const play: Rect | null = area && { ...area }, footprints: Rect[] = [];
   const roads: Road[] = [], props: Prop[] = [], buildings: BuildingInfo[] = [], districtOf = new Map<number, District>();
   const mask = new Uint8Array(MASK_N * MASK_N * 4);
-  const landmarks: City['landmarks'] = [], bridges: Rect[] = [];
+  const landmarks: City['landmarks'] = [], bridges: Rect[] = [], woods: Rect[] = [];
   let nextId = 0;
 
   // ---------- helpers ----------
@@ -600,7 +604,6 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
   }
   S.box([-330, H(0, 0) - 0.3, -1], [494, H(0, 0) + 0.2, 1], 'kerb', [0.9, 0.88, 0.84], F.all ^ F.ny);
   for (let z = -510; z < 510; z += 30) { if (Math.abs(z) < 20) continue; prop('street_light', 120, z, -Math.PI / 2, 1, undefined, true); }
-  for (const z of [-7, 7]) prop('jersey_barrier', 470, z, Math.PI / 2, 1, undefined, true);
   prop('sandbag_bunker', 474, -16, 0, 1, undefined, true);
   prop('sandbag_bunker', 474, 16, Math.PI, 1, undefined, true);
   // Power poles along streets and lanes.
@@ -627,40 +630,125 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
     }
   }
 
-  // ---------- US FOB (main base) ----------
-  const fobR: Rect = { x0: 530, z0: -95, x1: 640, z1: 95 };
+  // ---------- Eastern belt: farmland, orchards, the ridge, eucalyptus woods (own random stream) ----------
+  // Real Iraqi river plains: irrigated plots of 40–90 m with earth bunds and ditches, citrus/date orchards, tamarisk
+  // along the ditches, eucalyptus windbreaks along roads and in woodlots.
+  const er = mulberry(seed ^ 0x5eed);
+  const eRange = (a: number, b: number) => a + (b - a) * er();
+  const ePick = <T,>(xs: T[]) => xs[Math.floor(er() * xs.length) % xs.length];
+  const X0 = 520, X1 = 850; // belt between the town's edge and the FOB
+  const fobR: Rect = { x0: 872, z0: -95, x1: 982, z1: 95 };
+  // Roads: the highway on to the FOB, and the northern and southern streets continued as farm tracks.
+  road({ x0: HALF + 60, z0: -8, x1: AO.x1 + 80, z1: 8 }, 'avenue');
+  road({ x0: 512, z0: -327, x1: X1 + 3, z1: -321 }, 'dirt');
+  road({ x0: 512, z0: 261, x1: X1 + 3, z1: 267 }, 'dirt');
+  road({ x0: X1 - 3, z0: -327, x1: X1 + 3, z1: -8 }, 'dirt');
+  road({ x0: X1 - 3, z0: 8, x1: X1 + 3, z1: 267 }, 'dirt');
+  road({ x0: X1, z0: -60, x1: fobR.x0 + 6, z1: -54 }, 'dirt');
+  road({ x0: X1, z0: 54, x1: fobR.x0 + 6, z1: 60 }, 'dirt');
+  const roadZ = [0, -324, 264];
+  const nearRoad = (r: Rect, m: number) => roadZ.some((zc) => r.z0 < zc + m && r.z1 > zc - m) || (r.x1 > X1 - 6 - m && r.x0 < X1 + 6 + m);
+  // The two woods (staging areas), either side of the highway just short of the FOB.
+  woods.push({ x0: 700, z0: -265, x1: X1 - 12, z1: -24 }, { x0: 700, z0: 24, x1: X1 - 12, z1: 236 });
+  const inWoods = (x: number, z: number, m = 0) => woods.some((w) => x > w.x0 - m && x < w.x1 + m && z > w.z0 - m && z < w.z1 + m);
+  const tree = (id: string, x: number, z: number, s = 1) => prop(id, x, z, er() * 6.28, s, undefined, true);
+  for (const w of woods) {
+    paint(w, 3, 0.45, 8, 0.6);
+    // Clearings for the vehicles (laagers) and a track from each to the highway.
+    const cl: Rect = { x0: w.x0 + 40, z0: (w.z0 + w.z1) / 2 - 22, x1: w.x0 + 95, z1: (w.z0 + w.z1) / 2 + 22 };
+    paint(cl, 0, 0.55, 3, 0.4);
+    const tz = (cl.z0 + cl.z1) / 2, toward = tz < 0 ? -8 : 8;
+    road({ x0: (cl.x0 + cl.x1) / 2 - 3, z0: Math.min(tz, toward), x1: (cl.x0 + cl.x1) / 2 + 3, z1: Math.max(tz, toward) }, 'dirt');
+    for (let x = w.x0 + 3; x < w.x1 - 3; x += eRange(6, 9)) for (let z = w.z0 + 3; z < w.z1 - 3; z += eRange(6, 9)) {
+      const jx = x + eRange(-2.5, 2.5), jz = z + eRange(-2.5, 2.5);
+      if (jx > cl.x0 - 3 && jx < cl.x1 + 3 && jz > cl.z0 - 3 && jz < cl.z1 + 3) continue;
+      if (Math.abs(jx - (cl.x0 + cl.x1) / 2) < 6 && (tz < 0 ? jz > tz : jz < tz)) continue; // the track
+      const u = er();
+      if (u < 0.08) continue;
+      tree(u < 0.62 ? 'tree_eucalyptus' : 'tree_eucalyptus_b', jx, jz, eRange(0.8, 1.15));
+      if (er() < 0.25) prop(ePick(['shrub_dry', 'bush_oleander', 'grass_tuft_dry', 'dead_tree']), jx + eRange(-3, 3), jz + eRange(-3, 3), er() * 6.28, eRange(0.7, 1.2));
+    }
+    landmarks.push({ name: tz < 0 ? 'North Woods' : 'South Woods', x: (w.x0 + w.x1) / 2, z: (w.z0 + w.z1) / 2 });
+  }
+  // Windbreaks along the highway between the ridge and the woods.
+  for (let x = RIDGE_X + 30; x < 700; x += eRange(6, 8)) for (const zs of [-15, 15]) if (er() < 0.85) tree(er() < 0.5 ? 'tree_eucalyptus' : 'tree_eucalyptus_b', x, zs + eRange(-1.5, 1.5), eRange(0.8, 1.1));
+  // Farm plots west of the woods and north/south of them: fields, orchards; tamarisk on some bunds.
+  for (let x = X0; x < X1 - 20; x += eRange(55, 85)) for (let z = -AO.z1 + 25; z < AO.z1 - 25; z += eRange(45, 70)) {
+    const r: Rect = { x0: x + 3, z0: z + 3, x1: Math.min(X1 - 15, x + eRange(48, 80)), z1: z + eRange(38, 62) };
+    if (r.x1 - r.x0 < 30 || nearRoad(r, 10) || woods.some((w) => r.x1 > w.x0 - 6 && r.x0 < w.x1 + 6 && r.z1 > w.z0 - 6 && r.z0 < w.z1 + 6)) continue;
+    if (Math.abs((r.x0 + r.x1) / 2 - RIDGE_X) < 30 && er() < 0.7) { paint(r, 0, 0.35, 6, 0.6); continue; } // ridge: rough grazing
+    const kind = er();
+    if (kind < 0.22) {
+      // Orchard: rows of citrus (or date palms), 6 m apart.
+      const palms = er() < 0.3;
+      paint(r, 3, 0.5, 4, 0.5);
+      for (let ox = r.x0 + 3; ox < r.x1 - 2; ox += 6) for (let oz = r.z0 + 3; oz < r.z1 - 2; oz += 6) {
+        if (er() < 0.08) continue;
+        if (palms) prop('palm_' + ePick(['a', 'b', 'c']), ox + eRange(-0.6, 0.6), oz + eRange(-0.6, 0.6), er() * 6.28, eRange(0.75, 1.0));
+        else tree('tree_orchard', ox + eRange(-0.4, 0.4), oz + eRange(-0.4, 0.4), eRange(0.85, 1.1));
+      }
+    } else if (kind < 0.85) paint(r, 2, eRange(0.6, 0.95), 2.5, 0.35); // field (crops/stubble)
+    else paint(r, 0, 0.5, 4, 0.5); // fallow
+    // Ditch with tamarisk / reeds along one edge; earth bund on another.
+    if (er() < 0.55) {
+      const alongX = er() < 0.5, zz = er() < 0.5 ? r.z0 - 2 : r.z1 + 2, xx = er() < 0.5 ? r.x0 - 2 : r.x1 + 2;
+      paint(alongX ? { x0: r.x0, z0: zz - 1, x1: r.x1, z1: zz + 1 } : { x0: xx - 1, z0: r.z0, x1: xx + 1, z1: r.z1 }, 3, 0.9, 2);
+      const L = alongX ? r.x1 - r.x0 : r.z1 - r.z0;
+      for (let a = 2; a < L - 2; a += eRange(4, 7)) {
+        const px = alongX ? r.x0 + a : xx, pz = alongX ? zz : r.z0 + a;
+        const u = er();
+        if (u < 0.45) tree('tree_tamarisk', px + eRange(-0.8, 0.8), pz + eRange(-0.8, 0.8), eRange(0.7, 1.2));
+        else if (u < 0.6) prop('reeds', px, pz, er() * 6.28, eRange(0.8, 1.1));
+      }
+    }
+  }
+  // A few farmsteads in the belt (walled compound, house, palms): cover for both sides on the approach.
+  for (const [fx, fz] of [[560, -470], [610, -180], [585, 150], [640, 420], [760, -560], [770, 520], [560, 600]]) {
+    const c: Rect = { x0: fx + eRange(-8, 8), z0: fz + eRange(-8, 8), x1: 0, z1: 0 };
+    c.x1 = c.x0 + eRange(28, 36); c.z1 = c.z0 + eRange(26, 34);
+    if (nearRoad(c, 8) || inWoods((c.x0 + c.x1) / 2, (c.z0 + c.z1) / 2, 10)) continue;
+    compound(c, 'rural');
+  }
+  landmarks.push({ name: 'Ridge', x: RIDGE_X, z: -140 });
+  landmarks.push({ name: 'Farms', x: 600, z: 470 });
+
+  // ---------- US FOB Hammer (main base, staging for the armour) ----------
   paint(fobR, 1, 0.75, 3, 0.2);
   {
     const step = 1.06 * 5;
-    const wallLine = (x0: number, z0: number, x1: number, z1: number, gap?: [number, number]) => {
+    const wallLine = (x0: number, z0: number, x1: number, z1: number, gaps: [number, number][] = []) => {
       const alongX = Math.abs(x1 - x0) > Math.abs(z1 - z0), len = Math.hypot(x1 - x0, z1 - z0);
       for (let a = step / 2; a < len; a += step) {
         const x = alongX ? x0 + a : x0, z = alongX ? z0 : z0 + a;
-        if (gap && (alongX ? x : z) > gap[0] && (alongX ? x : z) < gap[1]) continue;
+        if (gaps.some((g) => (alongX ? x : z) > g[0] && (alongX ? x : z) < g[1])) continue;
         prop('hesco_wall', x, z, alongX ? 0 : Math.PI / 2, 1, undefined, true);
       }
     };
+    const fx = fobR.x0, X = (dx: number) => fx + dx;
+    // West wall: gates on the highway and on the two tracks to the woods (wide enough for a tank: 8 m).
     wallLine(fobR.x0, fobR.z0, fobR.x1, fobR.z0); wallLine(fobR.x0, fobR.z1, fobR.x1, fobR.z1);
-    wallLine(fobR.x1, fobR.z0, fobR.x1, fobR.z1); wallLine(fobR.x0, fobR.z0, fobR.x0, fobR.z1, [-9, 9]);
-    for (const [x, z] of [[fobR.x0 + 4, fobR.z0 + 4], [fobR.x1 - 4, fobR.z0 + 4], [fobR.x0 + 4, fobR.z1 - 4], [fobR.x1 - 4, fobR.z1 - 4], [fobR.x0 + 4, -14]]) prop('guard_tower', x, z, x < 600 ? -Math.PI / 2 : Math.PI / 2, 1, undefined, true);
-    for (let i = 0; i < 3; i++) for (let j = 0; j < 4; j++) prop('tent_military', 595 + i * 14, -70 + j * 14, 0, 1, undefined, true);
-    for (let j = 0; j < 4; j++) prop('conex', 625, 20 + j * 7, Math.PI / 2, 1, undefined, true);
-    for (let x = 548; x < 590; x += 1.6) prop('t_wall', x, 40, 0, 1, undefined, true);
-    prop('flagpole', 575, -30);
-    prop('floodlight_tower', 560, 60, 0, 1, undefined, true);
-    prop('camo_net', 570, 70, 0, 1, undefined, true);
-    prop('sandbags_line', fobR.x0 - 3, -12, Math.PI / 2, 1, undefined, true);
-    prop('sandbags_line', fobR.x0 - 3, 12, Math.PI / 2, 1, undefined, true);
-    for (let i = 0; i < 6; i++) prop('crate_ammo', 600 + (i % 3) * 1.2, 30 + Math.floor(i / 3) * 1.0, 0, 1, undefined, true);
+    wallLine(fobR.x1, fobR.z0, fobR.x1, fobR.z1, [[-9, 9]]); wallLine(fobR.x0, fobR.z0, fobR.x0, fobR.z1, [[-9, 9], [-62, -52], [52, 62]]);
+    for (const [x, z] of [[fobR.x0 + 4, fobR.z0 + 4], [fobR.x1 - 4, fobR.z0 + 4], [fobR.x0 + 4, fobR.z1 - 4], [fobR.x1 - 4, fobR.z1 - 4], [fobR.x0 + 4, -14]]) prop('guard_tower', x, z, x < fx + 50 ? -Math.PI / 2 : Math.PI / 2, 1, undefined, true);
+    // Living area (tents) in the north-east, logistics in the south-east, the motor pool (armour) along the west wall.
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 4; j++) prop('tent_military', X(62) + i * 14, -78 + j * 14, 0, 1, undefined, true);
+    for (let j = 0; j < 4; j++) prop('conex', X(95), 22 + j * 7, Math.PI / 2, 1, undefined, true);
+    for (let x = X(55); x < X(100); x += 1.6) prop('t_wall', x, 15, 0, 1, undefined, true);
+    prop('flagpole', X(45), -30);
+    prop('floodlight_tower', X(30), 40, 0, 1, undefined, true);
+    prop('floodlight_tower', X(30), -40, 0, 1, undefined, true);
+    for (let i = 0; i < 4; i++) prop('camo_net', X(28), -72 + i * 48, 0, 1, undefined, true);
+    for (let i = 0; i < 6; i++) prop('crate_ammo', X(70) + (i % 3) * 1.2, 30 + Math.floor(i / 3) * 1.0, 0, 1, undefined, true);
+    paint({ x0: X(10), z0: fobR.z0 + 8, x1: X(45), z1: fobR.z1 - 8 }, 0, 0.8, 2, 0.3); // motor pool (churned earth)
   }
-  landmarks.push({ name: 'FOB Hammer', x: 585, z: 0 });
+  landmarks.push({ name: 'FOB Hammer', x: fobR.x0 + 55, z: 0 });
 
   // ---------- gameplay points ----------
   const cacheSpots: Spot[] = [], roofSpots: Spot[] = [];
   for (const b of buildings) {
     const d = districtOf.get(b.id)!;
     if (d === 'rural' && b.spec.x0 < -530 && b.spec.z0 > -80 && b.spec.z1 < -10) continue; // insurgent base
-    if (b.spec.damage < 0.7) for (const [x, y, z, floor] of b.spots) if (floor <= 1 && d !== 'fob') cacheSpots.push({ x, y, z, b: b.id, district: d, floor });
+    // Caches are in the town and the west (not in the farms on the US side of the ridge, where the armour stages).
+    if (b.spec.damage < 0.7 && b.spec.x1 < 500) for (const [x, y, z, floor] of b.spots) if (floor <= 1 && d !== 'fob') cacheSpots.push({ x, y, z, b: b.id, district: d, floor });
     for (const [x, y, z] of b.roof) roofSpots.push({ x, y, z, b: b.id, district: d, floor: -1 });
   }
 
@@ -681,11 +769,16 @@ export function generateCity(seed = 1337, opts: CityOptions = {}): City {
   unstickProps(props, S.colliders);
   return {
     area: play ?? undefined,
-    seed, sink: S, buildings, districtOf, roads, props, mask, bridges, landmarks, cacheSpots, roofSpots,
+    seed, sink: S, buildings, districtOf, roads, props, mask, bridges, landmarks, cacheSpots, roofSpots, woods,
     fob: {
-      rect: fobR, flag: [575, -30],
-      spawns: [[600, H(600, -40), -40], [606, H(606, -20), -20], [590, H(590, 10), 10], [612, H(612, -55), -55]],
-      vehicles: [{ id: 'm1114', x: 560, z: -40, ry: -Math.PI / 2 }, { id: 'm1114', x: 560, z: -52, ry: -Math.PI / 2 }, { id: 'm1114', x: 560, z: -64, ry: -Math.PI / 2 }],
+      rect: fobR, flag: [fobR.x0 + 45, -30],
+      spawns: [[fobR.x0 + 60, H(fobR.x0 + 60, -40), -40], [fobR.x0 + 66, H(fobR.x0 + 66, -20), -20], [fobR.x0 + 50, H(fobR.x0 + 50, 10), 10], [fobR.x0 + 72, H(fobR.x0 + 72, -55), -55]],
+      // Motor pool along the west wall, facing the town: two M1A2 and two M2A3 (and the HMMWVs).
+      vehicles: [
+        { id: 'm1a2', x: fobR.x0 + 20, z: -38, ry: Math.PI / 2 }, { id: 'm1a2', x: fobR.x0 + 20, z: -26, ry: Math.PI / 2 },
+        { id: 'm2a3', x: fobR.x0 + 20, z: 26, ry: Math.PI / 2 }, { id: 'm2a3', x: fobR.x0 + 20, z: 38, ry: Math.PI / 2 },
+        { id: 'm1114', x: fobR.x0 + 36, z: 70, ry: Math.PI / 2 }, { id: 'm1114', x: fobR.x0 + 36, z: 80, ry: Math.PI / 2 },
+      ],
     },
     insBase: {
       rect: insRect,

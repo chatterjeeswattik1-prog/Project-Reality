@@ -6,7 +6,7 @@ import { CHUNK, MATS } from './sink';
 import { cityMaterials, interiorLit } from './citymat';
 import { fittedBoxes, solidBox, type PropCol } from './navgeom';
 import { type City, MASK_HALF, MASK_N } from './citygen';
-import { canalX, CANAL_W, groundH, HALF, OUTER, WATER_Y } from './terrain';
+import { AO, canalX, CANAL_W, groundH, OUTER, WATER_Y } from './terrain';
 
 export interface WorldView {
   root: THREE.Group;
@@ -74,10 +74,11 @@ export async function buildWorld(city: City, quality: 'low' | 'medium' | 'high')
 function axisSamples(): number[] {
   // Dense (5 m) inside the playable area, then growing spacing out to the horizon.
   const xs: number[] = [];
-  for (let x = -HALF - 80; x <= HALF + 80; x += 5) xs.push(x);
-  let s = 5, x = HALF + 80;
+  const E = Math.max(-AO.x0, AO.x1, -AO.z0, AO.z1) + 80;
+  for (let x = -E; x <= E; x += 5) xs.push(x);
+  let s = 5, x = E;
   while (x < OUTER) { s *= 1.12; x += s; xs.push(Math.min(x, OUTER)); }
-  const neg = xs.filter((v) => v > HALF + 80).map((v) => -v).reverse();
+  const neg = xs.filter((v) => v > E).map((v) => -v).reverse();
   return [...neg, ...xs];
 }
 
@@ -123,7 +124,14 @@ vec3 field = texture2D(uField, wuv / 6.0).rgb * vec3(0.95, 0.95, 0.85);
 vec3 col = base;
 col = mix(col, dirt, smoothstep(0.15, 0.75, mk.r + (n2 - 0.5) * 0.35));
 col = mix(col, grav, smoothstep(0.2, 0.8, mk.g + (n2 - 0.5) * 0.3));
-col = mix(col, field, smoothstep(0.2, 0.8, mk.b + (n1 - 0.5) * 0.4));
+// Fields: crop rows 0.8 m apart, running along x or z by plot; green crop (wheat/barley) where the mask is strong,
+// golden stubble on ploughed earth elsewhere.
+float alongX = step(0.5, vn(wuv * 0.016 + 7.3));
+float rows = 0.5 + 0.5 * sin(mix(wuv.y, wuv.x, alongX) * 7.85);
+vec3 crop = mix(vec3(0.24, 0.32, 0.11), vec3(0.36, 0.42, 0.16), n2) * mix(0.7, 1.0, rows);
+vec3 stub = mix(field, vec3(0.70, 0.60, 0.38), 0.55) * mix(0.82, 1.04, rows);
+vec3 fcol = mix(stub, crop, smoothstep(0.74, 0.8, mk.b));
+col = mix(col, fcol, smoothstep(0.2, 0.8, mk.b + (n1 - 0.5) * 0.4));
 col *= mix(1.0, 0.72, mk.a * smoothstep(1.0, -2.5, vWPos.y));
 diffuseColor.rgb *= col;`)
       .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>')
@@ -251,7 +259,7 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
       list.forEach((p, i) => {
         q.setFromAxisAngle(up, p.ry); sc.setScalar(p.s ?? 1); tr.set(p.x, p.y, p.z);
         im.setMatrixAt(i, m4.compose(tr, q, sc).multiply(part.local));
-        if (!IMPOSTOR.has(id)) { const sl = world.propSlots.get(idx[i]); if (sl) sl.push([im, i]); else world.propSlots.set(idx[i], [[im, i]]); }
+        const sl = world.propSlots.get(idx[i]); if (sl) sl.push([im, i]); else world.propSlots.set(idx[i], [[im, i]]);
       });
       im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere();
       im.castShadow = shadows && !id.startsWith('grass'); im.receiveShadow = true; im.name = `prop:${id}`;
@@ -267,7 +275,7 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
       if (!imp) { imp = makeImpostor(renderer, kit?.scene.getObjectByName(id) ?? null, boxes.get(id)!); impostors.set(id, imp); }
       if (imp) {
         const im = new THREE.InstancedMesh(imp.geo, imp.mat, list.length);
-        list.forEach((p, i) => { q.setFromAxisAngle(up, p.ry); sc.setScalar(p.s ?? 1); tr.set(p.x, p.y, p.z); im.setMatrixAt(i, m4.compose(tr, q, sc)); });
+        list.forEach((p, i) => { q.setFromAxisAngle(up, p.ry); sc.setScalar(p.s ?? 1); tr.set(p.x, p.y, p.z); im.setMatrixAt(i, m4.compose(tr, q, sc)); const sl = world.propSlots.get(idx[i]); if (sl) sl.push([im, i]); else world.propSlots.set(idx[i], [[im, i]]); });
         im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere(); im.name = `impostor:${id}`; im.castShadow = false;
         root.add(im);
         const [, gx, gz, cs] = key.split('|').map(Number);
@@ -309,7 +317,7 @@ export async function buildProps(city: City, world: WorldView, shadows: boolean,
 /** Props that collide with their real mesh: mounds and wrecks, whose sloped and broken surfaces boxes fit badly. */
 const EXACT = /^(rubble_|debris_|veh:.*_wreck|burnt_tyre|market_stall|dome_|minaret|fountain)/;
 
-const IMPOSTOR = new Set(['palm_a', 'palm_b', 'palm_c']);
+const IMPOSTOR = new Set(['palm_a', 'palm_b', 'palm_c', 'tree_eucalyptus', 'tree_eucalyptus_b', 'tree_orchard', 'tree_tamarisk']);
 /** Interior furniture ids (from the furniture kit); skipped entirely while the kit lacks them. */
 const INTERIOR = /^(floor_cushions|sofa_old|armchair|rug_|coffee_table|tv_crt|side_table|curtain_|bed_double|mattress_|wardrobe|dresser|clothes_pile|prayer_mat|kitchen_|fridge_old|gas_stove|table_dining|water_cooler|cardboard_boxes|plastic_crates|shoes_rack|wall_shelf|ceiling_fan|bulb_hanging|picture_frame|broken_furniture|sandbag_window|bedsheet_window)/;
 

@@ -5,6 +5,11 @@
 // defend the active caches from windows and roofs round them (ambush, shoot and scoot, stalk, fall back); roaming
 // cells hide in houses in the town and hunt when they hear fighting. Both sides respawn: US at the FOB (costs
 // tickets), insurgents at undiscovered caches or their base; reinforcements join their squad's or cell's brain.
+// Combined arms: each US squad rides its M2A3 to a dismount point ~140 m short of the objective while its M1A2 takes
+// an overwatch position further back on the same route; dismounted, the squad clears the houses round the objective
+// room by room and both vehicles follow 60–90 m behind it, putting fire on whatever the squad is in contact with.
+// Reinforcements arrive at the squad's Bradley. The insurgents have command-wire IEDs on the approaches (with
+// triggermen in nearby houses) and ATGM teams on roofs at the eastern edge of the town.
 import type { Game } from '../game/game';
 import type { Soldier } from '../game/soldier';
 import type { Insurgency, Cache } from '../game/insurgency';
@@ -16,16 +21,22 @@ import type { Nav } from './nav';
 import type { V3 } from '../game/projectiles';
 import { mulberry, pick } from '../core/rng';
 import { Cell as CellBrain, Fireteam } from './team';
+import { InsurgentAT } from './threats';
+import type { BuildingInfo } from '../world/building';
+import type { Vehicle } from '../vehicles/vehicle';
+import { groundH } from '../world/terrain';
 
 const US_NAMES = ['Miller', 'Johnson', 'Garcia', 'Rodriguez', 'Davis', 'Martinez', 'Wilson', 'Anderson', 'Taylor', 'Thomas', 'Moore', 'Jackson', 'Martin', 'Lee', 'Harris', 'Clark', 'Lewis', 'Walker', 'Young', 'King', 'Wright', 'Lopez', 'Hill', 'Scott', 'Green', 'Baker', 'Nelson', 'Carter', 'Mitchell', 'Perez'];
 const INS_NAMES = ['Ahmed', 'Omar', 'Yusuf', 'Khalid', 'Hassan', 'Ali', 'Mahmoud', 'Saeed', 'Tariq', 'Hamza', 'Bilal', 'Faisal', 'Karim', 'Nasser', 'Rashid', 'Samir', 'Walid', 'Ziad', 'Jamal', 'Murad', 'Idris', 'Qasim', 'Adnan', 'Fadi'];
 const US_SQUAD = ['us_sl', 'us_rifle', 'us_ar', 'us_medic', 'us_eng', 'us_gren'];
 const US_SQUAD2 = ['us_sl', 'us_rifle', 'us_ar', 'us_medic', 'us_eng', 'us_lat'];
-const INS_POOL = ['ins_rifle', 'ins_rifle', 'ins_rifle2', 'ins_rifle', 'ins_at', 'ins_rpk', 'ins_rifle2', 'ins_mg', 'ins_marks', 'ins_rifle', 'ins_cell', 'ins_medic'];
+const INS_POOL = ['ins_rifle', 'ins_rifle', 'ins_rifle2', 'ins_rifle', 'ins_at', 'ins_rpk', 'ins_rifle2', 'ins_mg', 'ins_marks', 'ins_rifle', 'ins_cell', 'ins_medic', 'ins_at2', 'ins_at'];
 
 interface Squad {
   id: number; name: string; team: Faction; members: Soldier[]; leader: Soldier | null; kits: string[]; target: Cache | null; phase: 'move' | 'search' | 'secure'; searchT: number;
-  brain: Fireteam | null; plan: V3[]; planI: number; wasSearching: boolean; secured: boolean;
+  brain: Fireteam | null; plan: BuildingInfo[]; planI: number; wasSearching: boolean; secured: boolean;
+  /** Attached vehicles (motor-pool slots) and the mechanised phase. */
+  ifvSlot: number; tankSlot: number; mech: 'none' | 'mount' | 'ride' | 'dismounted'; mechT: number; supportT: number; stuckT?: number; ridingHp?: number;
 }
 interface Cell { id: number; members: Soldier[]; role: 'defend' | 'roam'; cache: Cache | null; patrol: V3; size: number; brain: CellBrain | null }
 
@@ -42,7 +53,7 @@ export class Director {
 
   /** Create the initial forces. `playerSquad` gets 5 bots (the player is the sixth). */
   setup(player: Soldier | null) {
-    const sq0 = { leader: null, target: null, phase: 'move' as const, searchT: 0, brain: null, plan: [], planI: 0, wasSearching: false, secured: false };
+    const sq0 = { leader: null, target: null, phase: 'move' as const, searchT: 0, brain: null, plan: [], planI: 0, wasSearching: false, secured: false, ifvSlot: -1, tankSlot: -1, mech: 'none' as Squad['mech'], mechT: 0, supportT: 0 };
     const us1: Squad = { ...sq0, id: 1, name: 'Alpha', team: 'us', members: [], kits: US_SQUAD };
     const us2: Squad = { ...sq0, id: 2, name: 'Bravo', team: 'us', members: [], kits: US_SQUAD2 };
     this.squads.push(us1, us2);
@@ -68,6 +79,13 @@ export class Director {
       sq.brain.say = (t) => { if (sq.brain!.playerLed) this.mode.say(`${sq.name}: ${t}`, 'us'); };
       if (sq.brain.playerLed) g.fireteam = sq.brain;
     }
+    // Armour: a Bradley (mounted infantry) and a tank per squad.
+    const crews = g.crews;
+    if (crews) {
+      const ifvs = crews.slots.map((x, i) => [x.id, i] as const).filter((x) => x[0] === 'm2a3'), tanks = crews.slots.map((x, i) => [x.id, i] as const).filter((x) => x[0] === 'm1a2');
+      this.squads.forEach((sq, k) => { sq.ifvSlot = ifvs[k]?.[1] ?? -1; sq.tankSlot = tanks[k]?.[1] ?? -1; sq.mech = sq.ifvSlot >= 0 && !sq.brain!.playerLed ? 'mount' : 'none'; });
+    }
+    this.setupThreats();
     for (const cell of this.cells) {
       const bots = cell.members.filter((m) => !m.isPlayer).map((m) => this.bots.get(m.id)).filter((b): b is Bot => !!b);
       cell.brain = new CellBrain(g, this.nav, 'ins', bots, cell.cache ? cell.cache.pos : cell.patrol, this.fobPoint());
@@ -78,11 +96,146 @@ export class Director {
     }
   }
 
+  private veh(slot: number): Vehicle | null { const v = slot >= 0 ? this.g.crews?.slots[slot]?.v ?? null : null; return v && !v.dead ? v : null; }
+  /** A vehicle the player crews is his to drive: the director does not order it about. */
+  private playerCrewed(v: Vehicle) { return v.seats.some((x) => x.who?.isPlayer && x.def.role !== 'cargo'); }
+
+  /** IEDs on the approaches into town (each with a triggerman watching from a house) and three ATGM teams. */
+  private setupThreats() {
+    const g = this.g, at = new InsurgentAT(g); g.insAT = at;
+    const spots: [number, number][] = [[536, 2.5], [592, -3], [563, -325], [618, -322], [549, 265], [604, 262], [493, 1.5]];
+    for (const [x, z] of spots) {
+      const ied = at.addIed([x, groundH(x, z), z]);
+      const post = this.watchPost([x, groundH(x, z) + 0.5, z], 40, 170);
+      const s = this.spawnLone('ins_sapper', post.p, post.face);
+      ied.trigger = s;
+    }
+    // ATGM teams: roofs at the eastern edge of the town with a view of the ridge and the farmland.
+    const bands: [number, number][] = [[-420, -120], [-120, 120], [120, 420]];
+    for (const [z0, z1] of bands) {
+      let best: { p: V3; sc: number } | null = null;
+      for (const r of this.city.roofSpots) {
+        if (r.x < 360 || r.x > 515 || r.z < z0 || r.z > z1 || r.y < 4) continue;
+        const eye: V3 = [r.x, r.y + 1.2, r.z];
+        let seen = 0;
+        for (const tz of [r.z - 120, r.z, r.z + 120]) for (const tx of [600, 662, 760]) if (g.P.clear(eye, [tx, groundH(tx, tz) + 2, tz])) seen++;
+        const sc = seen * 10 + r.y;
+        if (seen >= 3 && (!best || sc > best.sc)) best = { p: [r.x, r.y, r.z], sc };
+      }
+      if (!best) continue;
+      const site = at.addSite(best.p, -Math.PI / 2);
+      site.gunner = this.spawnLone('ins_rifle', [best.p[0] - 0.8, best.p[1] + 0.1, best.p[2]], -Math.PI / 2);
+    }
+  }
+
+  /** A window or roof within [rMin, rMax] of p with a clear view of it (else a point on the navmesh near it). */
+  private watchPost(p: V3, rMin: number, rMax: number): { p: V3; face: number } {
+    let best: { p: V3; face: number; d: number } | null = null;
+    for (const b of this.city.buildings) {
+      const cx = (b.spec.x0 + b.spec.x1) / 2, cz = (b.spec.z0 + b.spec.z1) / 2, dd = Math.hypot(cx - p[0], cz - p[2]);
+      if (dd > rMax + 20 || dd < rMin - 20) continue;
+      for (const w of b.windows) {
+        const d = Math.hypot(w.x - p[0], w.z - p[2]); if (d < rMin || d > rMax) continue;
+        if (!this.g.P.clear([w.x, w.y + 1.4, w.z], p)) continue;
+        if (!best || d < best.d) best = { p: [w.x, w.y, w.z], face: Math.atan2(-(p[0] - w.x), -(p[2] - w.z)), d };
+      }
+    }
+    if (best) return { p: this.nav?.closest(best.p, 1.5) ?? best.p, face: best.face };
+    const q: V3 = [p[0] - 70, p[1], p[2] + 25];
+    return { p: this.nav?.closest(q, 25) ?? q, face: Math.atan2(-(p[0] - q[0]), -(p[2] - q[2])) };
+  }
+
+  /** An insurgent with a fixed post (IED triggerman, ATGM gunner): no cell, no respawn. */
+  private spawnLone(kitId: string, p: V3, face: number): Soldier {
+    const s = this.g.spawn(kitById(kitId), 'ins', p, this.name('ins'), face);
+    s.squad = 200;
+    const bot = new Bot(this.g, s, this.nav, { kind: 'defend', pos: p, stance: 'crouch', facing: face }, 0.5 + this.rng() * 0.3);
+    this.bots.set(s.id, bot);
+    return s;
+  }
+
+  /**
+   * Mounted infantry and armour support for a squad: mount at the FOB, ride to the dismount point, dismount at the
+   * ramp; then the Bradley and the tank follow the squad and fire where it is in contact.
+   */
+  private mech(sq: Squad, dt: number, objective: V3) {
+    const ifv = this.veh(sq.ifvSlot), tank = this.veh(sq.tankSlot), B = sq.brain!, g = this.g;
+    sq.mechT += dt;
+    const live = sq.members.filter((m) => m.alive);
+    const player = g.player?.s;
+    const withPlayer = !!player && live.includes(player);
+    // The player's squad goes nowhere without him: mounting waits for him to get in.
+    if (sq.mech === 'mount' && withPlayer && player!.vehicle !== ifv) { sq.mech = 'none'; for (const m of live) { if (m.vehicle === ifv && ifv) ifv.exit(m, true); } return false; }
+    // The player's squad: when he gets into the Bradley's troop seats, his bots mount up with him.
+    if (sq.mech === 'none' && ifv && player && live.includes(player) && player.vehicle === ifv && ifv.seats[ifv.seatOf(player)]?.def.role === 'cargo') { sq.mech = 'mount'; sq.mechT = 0; this.mode.say(`${sq.name}: mounting up!`, 'us'); }
+    if ((sq.mech === 'mount' || sq.mech === 'ride') && (!ifv || ifv.burning)) {
+      // The Bradley is gone or on fire: everybody out, carry on on foot.
+      if (ifv) for (const st of ifv.seats) if (st.who && st.def.role === 'cargo') ifv.exit(st.who, true);
+      sq.mech = 'dismounted';
+    }
+    if (sq.mech === 'mount' && ifv) {
+      const free = () => ifv.seats.findIndex((x) => x.def.role === 'cargo' && !x.who);
+      const rear = ifv.nodePos('exit_rear');
+      for (const m of live) {
+        if (m.isPlayer || m.vehicle) continue;
+        const b = this.bots.get(m.id); if (!b) continue;
+        if (Math.hypot(m.pos[0] - rear[0], m.pos[2] - rear[2]) < 3.5) { const i = free(); if (i >= 0) { b.setTask(null); ifv.enter(m, i); } }
+        else b.setTask({ kind: 'move', p: this.nav?.closest(rear, 4) ?? rear, run: true });
+      }
+      const aboard = live.filter((m) => m.vehicle === ifv).length;
+      if ((aboard >= live.length || sq.mechT > 70) && aboard > 0) {
+        sq.mech = 'ride'; sq.mechT = 0;
+        const path = this.g.crews!.planner.path(ifv.pos(), objective);
+        const at = (dist: number): V3 => {
+          if (!path || path.length < 2) return objective;
+          let acc = 0;
+          for (let i = path.length - 1; i > 0; i--) { const a = path[i], b = path[i - 1], l = Math.hypot(a[0] - b[0], a[2] - b[2]); if (acc + l >= dist) { const t = (dist - acc) / l; return [a[0] + (b[0] - a[0]) * t, a[1], a[2] + (b[2] - a[2]) * t]; } acc += l; }
+          return path[0];
+        };
+        if (!this.playerCrewed(ifv)) ifv.ai?.driveTo(at(140));
+        if (tank && !this.playerCrewed(tank)) tank.ai?.driveTo(at(230));
+        if (B.playerLed) this.mode.say(`${sq.name}: all aboard — moving out.`, 'us');
+      }
+    }
+    if (sq.mech === 'ride' && ifv) {
+      const arrived = !ifv.ai?.moving && ifv.speed < 0.6 && sq.mechT > 5;
+      // Dismount under fire (the vehicle hit) or when it cannot get on (blocked for 15 s).
+      sq.stuckT = ifv.speed < 0.6 ? (sq.stuckT ?? 0) + dt : 0;
+      const hit = ifv.integrity < (sq.ridingHp ??= ifv.integrity) - 0.1;
+      if (arrived || sq.mechT > 240 || hit || sq.stuckT > 15) {
+        for (const st of ifv.seats) if (st.who && st.def.role === 'cargo') ifv.exit(st.who, true);
+        sq.mech = 'dismounted'; sq.mechT = 0; sq.supportT = 10; sq.stuckT = 0; sq.ridingHp = undefined; // let them clear the ramp
+        if (ifv.ai?.moving) ifv.ai.stop();
+        this.mode.say(`${sq.name}: dismount, dismount!`, 'us');
+      }
+      return true; // riding: the brain waits
+    }
+    if (sq.mech === 'mount') return true;
+    // Support: follow the squad (60 m behind for the Bradley, 90 m for the tank) and fire where it is in contact.
+    const L = B.leader();
+    if (L && (sq.supportT -= dt) <= 0) {
+      sq.supportT = 8;
+      const dx = L.pos[0] - objective[0], dz = L.pos[2] - objective[2], dl = Math.hypot(dx, dz) || 1;
+      for (const [v, back, side] of [[ifv, 60, 10], [tank, 90, -14]] as [Vehicle | null, number, number][]) {
+        if (!v || this.playerCrewed(v) || !v.ai) continue;
+        const q: V3 = [L.pos[0] + dx / dl * back - dz / dl * side, 0, L.pos[2] + dz / dl * back + dx / dl * side];
+        const vp = v.pos();
+        if (Math.hypot(vp[0] - q[0], vp[2] - q[2]) > 25 && (!v.ai.goal || Math.hypot(v.ai.goal[0] - q[0], v.ai.goal[2] - q[2]) > 20)) v.ai.driveTo(q);
+      }
+    }
+    const k = this.g.contacts.us, fresh = [...k.values()].filter((c) => g.time - c.t < 8 && L && Math.hypot(c.p[0] - L.pos[0], c.p[2] - L.pos[2]) < 250);
+    if (fresh.length) { const c = fresh[0].p; for (const v of [ifv, tank]) if (v?.ai && !v.ai.target) v.ai.fireAt([c[0], c[1] + 1.2, c[2]]); }
+    return false;
+  }
+
   private name(team: Faction) { this.nameI++; return team === 'us' ? `${pick(this.rng, ['Pvt.', 'PFC', 'Spc.', 'Cpl.'])} ${US_NAMES[this.nameI % US_NAMES.length]}` : INS_NAMES[this.nameI % INS_NAMES.length]; }
 
   private spawnUS(sq: Squad, kitId: string) {
     const sp = this.city.fob.spawns[Math.floor(this.rng() * this.city.fob.spawns.length)];
-    const p: V3 = [sp[0] + (this.rng() - 0.5) * 6, sp[1] + 0.1, sp[2] + (this.rng() - 0.5) * 6];
+    let p: V3 = [sp[0] + (this.rng() - 0.5) * 6, sp[1] + 0.1, sp[2] + (this.rng() - 0.5) * 6];
+    // Reinforcements arrive at the squad's Bradley when it is up with the squad (and not under fire).
+    const ifv = this.veh(sq.ifvSlot);
+    if (ifv && sq.mech === 'dismounted' && !ifv.burning && ifv.speed < 1 && this.g.time - (ifv.seats[0].who?.lastHitT ?? -99) > 10) { const r = ifv.nodePos('exit_rear'); p = [r[0], r[1] + 0.1, r[2]]; }
     const kit = kitById(kitId), s = this.g.spawn(kit, 'us', safeSpawn(this.g.P, this.nav, p), (kit.leader ? 'Sgt. ' : '') + this.name('us').replace(/^(Pvt\.|PFC|Spc\.|Cpl\.) /, kit.leader ? '' : '$1 '), Math.PI / 2);
     s.squad = sq.id; sq.members.push(s);
     if (kit.leader && !sq.leader) sq.leader = s;
@@ -113,7 +266,8 @@ export class Director {
   private fobPoint(): V3 { const f = this.city.fob.flag; return [f[0], 0, f[1]]; }
 
   private randomTownPoint(): V3 {
-    const b = this.city.buildings[Math.floor(this.rng() * this.city.buildings.length)];
+    const town = this.city.buildings.filter((x) => x.spec.x1 < 500);
+    const b = town[Math.floor(this.rng() * town.length)];
     const d = b.doors[0] ?? [b.spec.x0, b.spec.y0, b.spec.z0];
     return [d[0], d[1], d[2]];
   }
@@ -154,33 +308,45 @@ export class Director {
       if (sq.brain) sq.brain.bots = sq.brain.bots.filter((b) => g.soldiers.includes(b.s));
       const live = sq.members.filter((m) => m.alive);
       if (!sq.leader || !sq.leader.alive) sq.leader = live.find((m) => m.kit.leader) ?? live.find((m) => !m.isPlayer) ?? null;
+      if (sq.brain) { sq.brain.playerLed = sq.members.some((m) => m.isPlayer && m.alive); if (sq.brain.playerLed) g.fireteam = sq.brain; }
       const L = sq.brain?.leader() ?? sq.leader; if (!L || !sq.brain) continue;
       if (!sq.target || sq.target.state !== 'active') { sq.target = this.nearestCache(L.pos, true); sq.phase = 'move'; sq.plan = []; sq.secured = false; }
       const tgt = sq.target, B = sq.brain;
-      if (!tgt) { B.objective = this.nav?.closest(this.randomTownPoint(), 10) ?? B.objective; B.update(dt); continue; }
+      if (!tgt) {
+        if (!sq.plan.length || B.state === 'move') B.objective = this.nav?.closest(this.randomTownPoint(), 10) ?? B.objective;
+        if (sq.mech !== 'none' && this.mech(sq, dt, B.objective)) continue;
+        B.update(dt); continue;
+      }
       const markerP: V3 = [tgt.marker[0], tgt.pos[1], tgt.marker[1]];
+      if (sq.mech !== 'none' && this.mech(sq, dt, markerP)) continue;
       if (tgt.found) sq.phase = 'secure';
       else if (sq.phase === 'move' && Math.hypot(markerP[0] - L.pos[0], markerP[2] - L.pos[2]) < 60) {
         // Search plan: the buildings round the marker, nearest first (the team clears each one's rooms).
         sq.phase = 'search'; sq.searchT = 0; sq.planI = 0;
+        const ctr = (b: BuildingInfo): V3 => [(b.spec.x0 + b.spec.x1) / 2, 0, (b.spec.z0 + b.spec.z1) / 2];
         sq.plan = this.city.buildings
-          .filter((b) => Math.hypot((b.spec.x0 + b.spec.x1) / 2 - markerP[0], (b.spec.z0 + b.spec.z1) / 2 - markerP[2]) < REVEAL_R && b.doors.length)
-          .map((b) => [b.doors[0][0], b.doors[0][1], b.doors[0][2]] as V3)
-          // The 12 houses nearest the marker (the cache is within REVEAL_OFFSET of it), visited nearest-first from the team.
-          .sort((a, b) => Math.hypot(a[0] - markerP[0], a[2] - markerP[2]) - Math.hypot(b[0] - markerP[0], b[2] - markerP[2])).slice(0, 12)
-          .sort((a, b) => Math.hypot(a[0] - L.pos[0], a[2] - L.pos[2]) - Math.hypot(b[0] - L.pos[0], b[2] - L.pos[2]));
+          .filter((b) => Math.hypot(ctr(b)[0] - markerP[0], ctr(b)[2] - markerP[2]) < REVEAL_R && b.doorways.some((d) => d.exterior) && !b.spec.hall)
+          // The 12 houses nearest the marker (the cache is within REVEAL_OFFSET of it), cleared nearest-first from the team.
+          .sort((a, b) => Math.hypot(ctr(a)[0] - markerP[0], ctr(a)[2] - markerP[2]) - Math.hypot(ctr(b)[0] - markerP[0], ctr(b)[2] - markerP[2])).slice(0, 12)
+          .sort((a, b) => Math.hypot(ctr(a)[0] - L.pos[0], ctr(a)[2] - L.pos[2]) - Math.hypot(ctr(b)[0] - L.pos[0], ctr(b)[2] - L.pos[2]));
       }
       if (sq.phase === 'move') { B.objective = this.nav?.closest(markerP, 20) ?? markerP; B.update(dt); }
       else if (sq.phase === 'search') {
         sq.searchT += dt;
-        // Next building when the team finished clearing this one (its search ended and it is moving again).
-        const searching = B.state === 'search';
-        if (sq.wasSearching && !searching && B.state === 'move') sq.planI++;
-        sq.wasSearching = searching;
-        const obj = sq.plan[sq.planI % Math.max(1, sq.plan.length)] ?? markerP;
-        B.objective = this.nav?.closest(obj, 6) ?? obj;
+        // House-to-house: clear the buildings round the marker one after another, room by room (skipping any another
+        // squad has cleared); between houses, and in a fight, the brain runs as usual.
+        if (B.state === 'move' && !B.clearing) {
+          while (sq.planI < sq.plan.length && g.cleared.us.has(sq.plan[sq.planI].id)) sq.planI++;
+          const next = sq.plan[sq.planI];
+          if (next) {
+            const door = next.doorways.find((d) => d.exterior) ?? next.doorways[0];
+            const dp: V3 = [door.x, door.y, door.z];
+            if (Math.hypot(dp[0] - L.pos[0], dp[2] - L.pos[2]) < 25) { if (!B.clearBuilding(next)) sq.planI++; else sq.planI++; }
+            else B.objective = this.nav?.closest(dp, 6) ?? dp;
+          } else B.objective = this.nav?.closest(markerP, 20) ?? markerP;
+        }
         B.update(dt);
-        if (sq.searchT > 300 || (sq.plan.length && sq.planI >= sq.plan.length * 2)) tgt.found = true; // they eventually stumble on it
+        if (sq.searchT > 420 || (sq.plan.length && sq.planI >= sq.plan.length && B.state === 'move' && !B.clearing)) tgt.found = true; // they eventually stumble on it
       } else {
         // Secure: the engineer demolishes, the rest hold round the cache (orders, not brain tasks).
         if (!sq.secured) { sq.secured = true; for (const b of B.bots) b.setTask(null); if (B.playerLed) this.mode.say(`${sq.name}: cache found — securing it, engineer to the cache!`, 'us'); }

@@ -7,6 +7,8 @@ import { CAM_RECOIL, Viewmodel } from './viewmodel';
 import { WeaponLight, hasLight } from './weaponlight';
 import { clamp, damp } from '../core/rng';
 import { G_WORLD } from '../world/physics';
+import { VehicleControl } from '../vehicles/control';
+import type { Vehicle } from '../vehicles/vehicle';
 type V3 = [number, number, number];
 
 /** Vertical field of view (degrees); PR/BF2 is about 55° vertical (≈ 90° horizontal at 16:9). Set from the menu. */
@@ -24,6 +26,8 @@ export class Player {
   private indoorT = 0; private indoor = 0; private filt = 0;
   /** Freelook (hold Alt): the head turns, the weapon stays on the aim. */
   freeYaw = 0; freePitch = 0;
+  /** Controls while riding in a vehicle. */
+  vc: VehicleControl;
 
   constructor(private g: Game, public s: Soldier, private input: Input) {
     this.vm = new Viewmodel(g.gfx.camera, g.assets.weapons, s.team === 'us' ? 0x7d7f6c : 0x5a4e3e, g.assets.fpRigs);
@@ -33,7 +37,26 @@ export class Player {
     this.vm.onCue = (name, gain) => g.audio.play(name, null, { gain });
     this.vm.onEject = (p, v, link) => g.fx.casing(p, v, link);
     this.light = new WeaponLight(g.gfx.scene, g.gfx.quality);
+    this.vc = new VehicleControl(g, input);
     s.isPlayer = true;
+  }
+
+  /** The friendly vehicle within reach (hull within ~2.5 m) and the seat F would take. */
+  vehicleFor(s: Soldier): { v: Vehicle; seat: number } | null {
+    let best: Vehicle | null = null, bd = 1e9;
+    for (const v of this.g.vehicles) {
+      if (v.dead || v.team !== s.team) continue;
+      const p = v.pos(), d = Math.hypot(p[0] - s.pos[0], p[2] - s.pos[2]) - Math.max(v.def.hull[0], v.def.hull[2]) / 2;
+      if (d < 2.5 && d < bd && Math.abs(p[1] - s.pos[1]) < 3) { bd = d; best = v; }
+    }
+    if (!best) return null;
+    const crew = s.kit.role === 'crew';
+    const order = ['driver', 'gunner', 'commander', 'loader', 'cargo'];
+    for (const role of order) {
+      const i = best.seats.findIndex((x) => x.def.role === role && (!x.def.crew || crew) && (!x.who || (!x.who.isPlayer && crew && x.def.crew)));
+      if (i >= 0) return { v: best, seat: i };
+    }
+    return { v: best, seat: -1 };
   }
 
   setSoldier(s: Soldier) { this.s = s; s.isPlayer = true; this.vm.preload(s.slots.map((x) => x.def.model)); this.vm.set(s.weapon.model, s); this.vm.setBody(this.g.assets.models.get(s.kit.model[0])); }
@@ -46,6 +69,13 @@ export class Player {
 
   update(dt: number) {
     const s = this.s, I = this.input, cam = this.g.gfx.camera;
+    // In a vehicle: its seat, views and weapons (vehicles/control.ts).
+    if (s.vehicle) {
+      this.vc.update(dt, s); this.zoom = 1; this.shake *= Math.exp(-5 * dt);
+      this.vm.group.visible = false; this.g.hud?.prompt(null);
+      return;
+    }
+    this.vc.setFilter('');
     if (s.alive && I.locked) {
       // Look: slower when zoomed.
       const sens = I.sens / Math.max(1, this.zoom * 0.85);
@@ -80,10 +110,15 @@ export class Player {
         s.glRange = GL_RANGES[j]; this.g.audio.play('switch_fire_mode', null, { gain: 0.35, rate: 0.8 }); this.g.hud.flash(`M203 ${s.glRange} m`);
       }
       if (I.hit(BIND.mode)) { const m = s.weapon.modes; s.slot.mode = m[(m.indexOf(s.slot.mode) + 1) % m.length]; this.g.audio.play('switch_fire_mode', null, { gain: 0.5 }); this.g.hud.flash(`${s.slot.mode.toUpperCase()}`); }
-      // F: pick up the weapon looked at, else open/close the door in front, otherwise apply a field dressing.
-      const pk = s.alive ? this.g.pickupFor(s) : null;
-      this.g.hud?.prompt(pk ? `F — pick up ${pk.slot.def.name} (${pk.slot.mags.length + (pk.slot.loaded > 0 ? 1 : 0)} mag${pk.slot.mags.length + (pk.slot.loaded > 0 ? 1 : 0) === 1 ? '' : 's'})` : null);
-      if (I.hit(BIND.use) && pk) { this.g.pickUp(s, pk); this.g.hud?.flash(pk.slot.def.name.toUpperCase()); }
+      // F: get into a vehicle beside you, pick up the weapon looked at, else open/close the door in front, otherwise
+      // apply a field dressing.
+      const vh = s.alive ? this.vehicleFor(s) : null;
+      const pk = s.alive && !vh ? this.g.pickupFor(s) : null;
+      if (vh) this.g.hud?.prompt(vh.seat >= 0 ? `F — get in the ${vh.v.def.name} (${vh.v.seats[vh.seat].def.label})` : `${vh.v.def.name}: crew seats need the Crewman kit`);
+      if (vh && I.hit(BIND.use)) { if (vh.seat >= 0) this.vc.trySeat(s, vh.v, vh.seat); }
+      else if (!vh) this.g.hud?.prompt(pk ? `F — pick up ${pk.slot.def.name} (${pk.slot.mags.length + (pk.slot.loaded > 0 ? 1 : 0)} mag${pk.slot.mags.length + (pk.slot.loaded > 0 ? 1 : 0) === 1 ? '' : 's'})` : null);
+      if (vh) { /* handled above */ }
+      else if (I.hit(BIND.use) && pk) { this.g.pickUp(s, pk); this.g.hud?.flash(pk.slot.def.name.toUpperCase()); }
       else if (I.hit(BIND.use)) {
         if (this.g.doors?.use(s.eye, s.aimDir())) this.g.audio.play('car_door', null, { gain: 0.5, rate: 0.8 });
         else if (s.startBandage()) this.g.audio.play('bandage', null);

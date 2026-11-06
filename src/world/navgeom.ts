@@ -1,11 +1,11 @@
 // Navmesh input geometry: every static collider box (and solid prop box) as triangles, plus the terrain inside the
 // playable area. Shared by the offline baker (scripts/navmesh.ts) and the runtime fallback.
 import type { City } from './citygen';
-import { groundH, HALF } from './terrain';
+import { AO, groundH } from './terrain';
 
 export interface Box { c: number[]; h: number[]; q?: number[]; ry?: number; tris?: { pos: Float32Array; idx: Uint32Array } }
 
-export const NAV_BOUNDS: [[number, number, number], [number, number, number]] = [[-HALF - 10, -8, -HALF - 10], [HALF + 10, 45, HALF + 10]];
+export const NAV_BOUNDS: [[number, number, number], [number, number, number]] = [[AO.x0 - 10, -8, AO.z0 - 10], [AO.x1 + 10, 45, AO.z1 + 10]];
 export const NAV_CONFIG = {
   cs: 0.2, ch: 0.1, walkableSlopeAngle: 50, walkableHeight: 17, walkableClimb: 4, walkableRadius: 1,
   maxEdgeLen: 60, maxSimplificationError: 1.3, minRegionArea: 8, mergeRegionArea: 20, maxVertsPerPoly: 6,
@@ -53,6 +53,8 @@ export function solidBox(id: string, min: number[], max: number[], p: { x: numbe
   let hx = ((max[0] - min[0]) / 2) * s, hy = ((max[1] - min[1]) / 2) * s, hz = ((max[2] - min[2]) / 2) * s;
   let cx = ((max[0] + min[0]) / 2) * s, cz = ((max[2] + min[2]) / 2) * s;
   const cy = ((max[1] + min[1]) / 2) * s;
+  // Trees: the trunk only, from the ground to where it branches (the crown neither blocks bullets nor sight lines).
+  if (id.startsWith('tree_')) { const r = id.startsWith('tree_euca') ? 0.26 : 0.14, top = id.startsWith('tree_euca') ? 4 : 1.2; hx = hz = r; cx = cz = 0; return { id, c: [p.x, p.y + top / 2, p.z], h: [r, top / 2, r], ry: p.ry }; }
   if (id.startsWith('palm') || id === 'power_pole' || id === 'street_light' || id === 'flagpole' || id === 'antenna_tv' || id === 'dead_tree') { hx = hz = 0.2; cx = cz = 0; }
   const c = Math.cos(p.ry), sn = Math.sin(p.ry);
   // Rotation about Y (three.js convention: x' = x cos + z sin, z' = −x sin + z cos).

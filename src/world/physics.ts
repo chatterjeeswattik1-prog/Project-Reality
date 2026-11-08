@@ -171,12 +171,12 @@ export class Physics {
   }
 
   /** First hit along a ray (dir normalised), against the given collision groups. */
-  castRay(o: [number, number, number] | number[], d: [number, number, number] | number[], max: number, filter = G_WORLD | G_VEH, exclude?: RAPIER.Collider): RayHit | null {
+  castRay(o: [number, number, number] | number[], d: [number, number, number] | number[], max: number, filter = G_WORLD | G_VEH, exclude?: RAPIER.Collider, keep?: (c: RAPIER.Collider) => boolean): RayHit | null {
     // A perfectly vertical ray landing exactly on a heightfield vertex (x, z multiples of 4 m) misses the terrain
     // (Rapier edge case): nudge such rays off the grid by a millimetre.
     const vert = d[0] === 0 && d[2] === 0;
     this.ray.origin = { x: o[0] + (vert ? 1.3e-3 : 0), y: o[1], z: o[2] + (vert ? 0.7e-3 : 0) }; this.ray.dir = { x: d[0], y: d[1], z: d[2] };
-    const h = this.world.castRayAndGetNormal(this.ray, max, true, undefined, groups(0xffff, filter), exclude);
+    const h = this.world.castRayAndGetNormal(this.ray, max, true, undefined, groups(0xffff, filter), exclude, undefined, keep);
     if (!h) return null;
     const t = h.timeOfImpact;
     const hit: RayHit = {

@@ -17,6 +17,9 @@ export interface PackDef {
   /** Hip position of the grip and hip rotation (rad, YXZ) in camera space: the pose the pack was animated for, relative
    *  to its own camera (other poses show the cut-off ends of the arms and the magazine swap off-screen in the pack). */ hip: V3; hipRot: V3;
   /** Sound when the charge bone comes home in a reload (bolt release / charging handle let go). */ chargeSound: string;
+  /** Pitch (rad) of the whole rig about the eye while reloading: the pack's own camera looked further down than the
+   *  game's view, so its magazine change happened below our screen. Tilting the rig up about the eye is the same as
+   *  that camera looking down (the pack's perspective is kept; lifting it instead brought the forearm over the grip). */ reloadTilt?: number;
 }
 export const PACKS: Record<string, PackDef> = {
   m4: {
@@ -29,13 +32,24 @@ export const PACKS: Record<string, PackDef> = {
     frame: { o: [0.11354, 0.23363, -0.16501], r: [0.98734, 0.02089, 0.15722], f: [-0.0309, 0.99763, 0.06152], u: [-0.15556, -0.0656, 0.98565] },
     chargeFollows: ['aks74u', 'akm', 'ak47', 'rpk', 'svd'], chargeSound: 'charging_handle_ak', hip: [0.1333, -0.1539, -0.3587], hipRot: [0.0616, 0.031, 0.1582],
   },
+  // "FPS pistol animations" by Cransh (CC BY 4.0). Frame measured off the pack's own pistol at idle (its slide's long
+  // axis forward, up away from the magazine), placed so the M9's slide sits where the pack's slide does (rear-top
+  // corners together); hip = that grip point in the pack camera's (Head_Cam) space.
+  pistol: {
+    url: 'models/fp/fp_pistol.glb', bone: 'PBody_058', mag: 'Pmag_061', charge: 'Rif_059',
+    frame: { o: [-0.06203, -0.35267, 0.05198], r: [-0.95753, -0.08449, 0.27566], f: [0.09006, -0.99591, 0.00759], u: [0.27389, 0.0321, 0.96122] },
+    chargeFollows: ['m9'], chargeSound: 'bolt_release',
+    // (Raised ~4 cm from the pack's framing so the magazine change stays in view at the game's field of view.)
+    hip: [0.062, -0.122, -0.335], hipRot: [0.0076, 0.0902, 0.2793], reloadTilt: 0.22,
+  },
 };
 /** Which rig a weapon model uses (the user asked for the M4 clips on the M16 too, the AKS-74U clips on every AK rifle). */
 export const PACK_OF: Record<string, string> = {
   m4a1: 'm4', m4a1_m203: 'm4', m16a4: 'm4',
   aks74u: 'ak', akm: 'ak', ak47: 'ak', rpk: 'ak', svd: 'ak',
+  m9: 'pistol', makarov: 'pistol',
 };
-export type ClipName = 'fire' | 'reload' | 'reload_empty' | 'draw' | 'holster';
+export type ClipName = 'fire' | 'reload' | 'reload_empty' | 'draw' | 'holster' | 'idle' | 'walk';
 
 /** Blender world (Z up) -> three.js world (Y up). */
 const cv = (v: V3) => new THREE.Vector3(v[0], v[2], -v[1]);

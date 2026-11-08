@@ -11,6 +11,10 @@ export interface Armour { ke: number; ce: number; era?: number }
 export interface ArmourSet { front: Armour; side: Armour; rear: Armour; top: Armour; bottom: Armour }
 
 export interface MountDef {
+  /** A pintle / ring-mounted gun the occupant swings himself (the model's nodes `yaw` > `pitch`, his eye `eye`):
+   *  elevation limits (rad), slew rates (rad/s: traverse, elevation), muzzle climb per shot (rad). */
+  station?: { yaw: string; pitch: string; eye: string; elev: [number, number]; rate: [number, number]; kick: number;
+    /** Remotely operated (CROWS): the operator sits inside and sees through the mount's own sight camera. */ remote?: boolean };
   id: string;
   /** Ammunition types (the gunner switches between them: a reload). */ ammo: AmmoId[];
   /** Rounds ready per type, and stowed (moved to ready by the crew between engagements). */ ready: number[]; stowed: number[];
@@ -50,6 +54,9 @@ export interface VehicleDef {
   /** Smoke grenade salvos (M250 / M257 launchers). */ smoke: number;
   engine: 'turbine' | 'diesel';
   /** Respawn time at the FOB after destruction (s). */ respawn: number;
+  /** Crew view style (vehicles/control.ts): the Abrams driver looks through a periscope under the gun (the turret is
+   *  not drawn for him), the Bradley driver through a bank of vision blocks; the gunners' sight reticles. */
+  sights: 'abrams' | 'bradley';
 }
 
 const A = (ke: number, ce: number, era = 0): Armour => ({ ke, ce, era });
@@ -57,8 +64,8 @@ const A = (ke: number, ce: number, era = 0): Armour => ({ ke, ce, era });
 export const VEHICLES: Record<string, VehicleDef> = {
   // M1A2 Abrams (SEP-era, with TUSK side tiles): 62.1 t, 9.83 m with the gun forward, hull 7.93 m, 3.66 m wide,
   // 2.44 m high. AGT1500 gas turbine 1,500 hp; 67 km/h road (governed), ~48 km/h cross-country. Turret 360° in ~9 s,
-  // gun −9° / +20°. 120 mm M256 (42 rounds; 34 ready in the bustle behind blow-out panels), coax M240C, loader's
-  // M240, commander's M2HB on CROWS. Armour (~, RHA equivalent): turret front ~950 KE / ~1500 CE, glacis ~570 / ~800.
+  // gun −9° / +20°. 120 mm M256 (42 rounds; 34 ready in the bustle behind blow-out panels), coax M240C, commander's
+  // M2HB on CROWS. Crewed by three here (driver, gunner, commander), as in Project Reality: the loader is assumed. Armour (~, RHA equivalent): turret front ~950 KE / ~1500 CE, glacis ~570 / ~800.
   m1a2: {
     id: 'm1a2', name: 'M1A2 Abrams', model: 'm1a2', mass: 62100,
     hull: [3.5, 1.15, 7.9], turret: [3.3, 0.85, 5.6], ringR: 1.5,
@@ -70,20 +77,22 @@ export const VEHICLES: Record<string, VehicleDef> = {
     seats: [
       { role: 'driver', node: 'seat_driver', label: 'Driver', mounts: [], zoom: [1], view: 'hull', crew: true, thermal: true },
       { role: 'gunner', node: 'seat_gunner', label: 'Gunner', mounts: ['main', 'coax'], zoom: [3, 10], view: 'gun', crew: true, thermal: true },
-      { role: 'commander', node: 'seat_commander', label: 'Commander (CROWS .50)', mounts: ['cmdr'], zoom: [1, 4], view: 'station', crew: true, thermal: true },
-      { role: 'loader', node: 'seat_loader', label: 'Loader (M240)', mounts: ['loader'], zoom: [1], view: 'hatch', crew: true },
+      { role: 'commander', node: 'seat_commander', label: 'Commander (CROWS .50)', mounts: ['cmdr'], zoom: [1.5, 4, 10], view: 'station', crew: true, thermal: true },
     ],
     mounts: [
       { id: 'main', ammo: ['120apfsds', '120heat'], ready: [17, 17], stowed: [4, 4], node: 'muzzle', aim: 'gun', rpm: 0, reload: [6, 15], spread: 0.15, tracer: 1, sound: 'tank_fire', far: 'explosion_far' },
       { id: 'coax', ammo: ['762x51'], ready: [1000], stowed: [9000], node: 'coax', aim: 'gun', rpm: 750, reload: [6, 6], belt: 200, spread: 0.7, tracer: 5, sound: 'm240_shot', far: 'heavy_far' },
-      { id: 'cmdr', ammo: ['50bmg'], ready: [400], stowed: [500], node: 'mg_cmdr', aim: 'station', rpm: 500, reload: [8, 8], belt: 100, spread: 0.9, tracer: 5, sound: 'm2_shot', far: 'heavy_far' },
-      { id: 'loader', ammo: ['762x51'], ready: [600], stowed: [800], node: 'mg_loader', aim: 'station', rpm: 650, reload: [6, 6], belt: 200, spread: 1.4, tracer: 5, sound: 'm240_shot', far: 'heavy_far' },
+      // Commander's M2HB on CROWS (Common Remotely Operated Weapon Station, M153): fought from inside the turret on a
+      // video sight (day / thermal, laser rangefinder) and a joystick; the stabilized mount slews at ~60°/s, −20° / +60°,
+      // 100-round box per load (the box is changed from the hatch: slow), ~1 mil dispersion on the stable mount.
+      { id: 'cmdr', ammo: ['50bmg'], ready: [400], stowed: [500], node: 'cws_muzzle', aim: 'station', rpm: 500, reload: [12, 12], belt: 100, spread: 1.0, tracer: 5, sound: 'm2_shot', far: 'heavy_far',
+        station: { yaw: 'cws', pitch: 'cws_gun', eye: 'cws_eye', elev: [-0.35, 1.05], rate: [1.05, 1.0], kick: 0.0012, remote: true } },
     ],
-    smoke: 2, engine: 'turbine', respawn: 600,
+    smoke: 2, engine: 'turbine', respawn: 600, sights: 'abrams',
   },
   // M2A3 Bradley IFV: 30.4 t, 6.55 m, 3.6 m wide (with tiles), 2.98 m high; Cummins VTA-903T 600 hp, 61 km/h road.
   // Turret ~60°/s, gun −9° / +59°. 25 mm M242 Bushmaster (300 ready: 70 AP + 230 HE; single, 100 or 200 rpm), coax
-  // M240C, twin TOW launcher (2 ready, 5 stowed; erected and fired only at a halt). Crew 3 + 6 dismounts.
+  // M240C, twin TOW launcher (2 ready, 5 stowed; erected and fired only at a halt). Crewed here by driver and gunner + 6 dismounts.
   // Armour (~): aluminium hull with spaced steel, ~30 mm-class protection front against 30 mm, BRAT reactive tiles.
   m2a3: {
     id: 'm2a3', name: 'M2A3 Bradley', model: 'm2a3', mass: 30400,
@@ -96,7 +105,6 @@ export const VEHICLES: Record<string, VehicleDef> = {
     seats: [
       { role: 'driver', node: 'seat_driver', label: 'Driver', mounts: [], zoom: [1], view: 'hull', crew: true },
       { role: 'gunner', node: 'seat_gunner', label: 'Gunner', mounts: ['main', 'coax', 'tow'], zoom: [4, 12], view: 'gun', crew: true, thermal: true },
-      { role: 'commander', node: 'seat_commander', label: 'Commander', mounts: [], zoom: [1, 4], view: 'station', crew: false, thermal: true },
       ...[0, 1, 2, 3, 4, 5].map((i): SeatDef => ({ role: 'cargo', node: `seat_cargo_${i}`, label: `Dismount ${i + 1}`, mounts: [], zoom: [1], view: 'cargo', crew: false })),
     ],
     mounts: [
@@ -104,6 +112,6 @@ export const VEHICLES: Record<string, VehicleDef> = {
       { id: 'coax', ammo: ['762x51'], ready: [800], stowed: [1400], node: 'coax', aim: 'gun', rpm: 750, reload: [6, 6], belt: 200, spread: 0.7, tracer: 5, sound: 'm240_shot', far: 'heavy_far' },
       { id: 'tow', ammo: ['tow2'], ready: [2], stowed: [5], node: 'tow', aim: 'launcher', rpm: 0, reload: [40, 60], spread: 0.3, sound: 'tow_launch', far: 'explosion_far', still: 4 },
     ],
-    smoke: 2, engine: 'diesel', respawn: 480,
+    smoke: 2, engine: 'diesel', respawn: 480, sights: 'bradley',
   },
 };

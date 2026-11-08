@@ -9,6 +9,7 @@ export type AmmoId = '556' | '545' | '762x39' | '762x51' | '762x51lr' | '762x54'
 export interface Ammo {
   id: AmmoId; name: string;
   /** Muzzle velocity m/s (for rockets: launch speed; `boost` brings it to cruise). */ v0: number;
+  /** Kinetic penetrator: radius (m) of the hole it punches through masonry / concrete it hits (~). */ punch?: number;
   /** Drag factor 1/m. */ k: number;
   /** Damage to an unarmoured torso at the muzzle (HP out of 100). */ dmg: number;
   /** Penetration class: 0 pistol, 1 intermediate rifle, 2 full-power rifle, 3 heavy MG. Decides what walls it goes through. */ pen: number;
@@ -54,12 +55,12 @@ export const AMMO: Record<AmmoId, Ammo> = {
   // PG-7VR: tandem HEAT for the RPG-7, ~600 mm behind ERA, heavier and slower than the PG-7VL.
   pg7vr: { id: 'pg7vr', name: 'PG-7VR tandem HEAT', v0: 110, k: 2.4e-4, dmg: 320, pen: 3, explosive: { radius: 9, dmg: 220, kill: 3, heat: true, breach: 0.75, light: 1.1 }, ce: 600, tandem: true, visual: 'rocket', rocket: { boost: 0.3, cruise: 250, burn: 1.0, selfDestruct: 700 } },
   // M829A3 APFSDS-T (120 mm, M1A2): 1555 m/s, ~750–800 mm RHA at 2 km; a long rod, no explosive (punches clean holes).
-  '120apfsds': { id: '120apfsds', name: '120 mm M829A3 APFSDS', v0: 1555, k: 4.0e-5, dmg: 400, pen: 9, ap: 800, visual: 'shell' },
+  '120apfsds': { id: '120apfsds', name: '120 mm M829A3 APFSDS', v0: 1555, k: 4.0e-5, dmg: 400, pen: 9, ap: 800, visual: 'shell', punch: 0.3 },
   // M830A1 HEAT-MP-T: 1410 m/s, ~600 mm CE, fragmentation and blast for soft targets, bunkers and buildings.
   '120heat': { id: '120heat', name: '120 mm M830A1 HEAT-MP', v0: 1410, k: 9.0e-5, dmg: 400, pen: 9, explosive: { radius: 14, dmg: 330, kill: 5, heat: true, breach: 1.25, light: 2.2 }, ce: 600, visual: 'shell' },
   // 25 mm M242: M919 APFSDS-T (~1385 m/s, ~100 mm at 1 km) and M792 HEI-T (1100 m/s, small blast).
-  '25ap': { id: '25ap', name: '25 mm M919 APFSDS-T', v0: 1385, k: 2.2e-4, dmg: 180, pen: 6, ap: 110, crack: true },
-  '25he': { id: '25he', name: '25 mm M792 HEI-T', v0: 1100, k: 4.5e-4, dmg: 150, pen: 3, explosive: { radius: 5, dmg: 110, kill: 1.5, breach: 0.22, light: 0.5 }, crack: true },
+  '25ap': { id: '25ap', name: '25 mm M919 APFSDS-T', v0: 1385, k: 2.2e-4, dmg: 180, pen: 6, ap: 110, crack: true, punch: 0.14 },
+  '25he': { id: '25he', name: '25 mm M792 HEI-T', v0: 1100, k: 4.5e-4, dmg: 150, pen: 3, explosive: { radius: 5, dmg: 110, kill: 1.5, breach: 0.26, light: 0.5 }, crack: true },
   // BGM-71E TOW-2A: wire-guided, tandem HEAT ~900 mm, ~280 m/s, 3750 m.
   tow2: { id: 'tow2', name: 'BGM-71E TOW-2A', v0: 70, k: 1.0e-4, dmg: 400, pen: 9, explosive: { radius: 10, dmg: 260, kill: 3, heat: true, breach: 1.1, light: 1.6 }, ce: 900, tandem: true, guided: true, visual: 'rocket', rocket: { boost: 0.2, cruise: 280, burn: 15, selfDestruct: 3800 } },
   // 9M113M Konkurs-M: wire-guided, tandem HEAT ~750 mm, ~200 m/s, 4000 m (the insurgents' ATGM teams).

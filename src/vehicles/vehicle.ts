@@ -2,7 +2,7 @@
 // suspension (5 points per track) with track traction modelled at the hull: a speed target per throttle (road /
 // cross-country limits, acceleration limit), sideslip killed by the tracks' grip and a yaw-rate target for skid
 // steering (pivot turns in place). Turret and gun slew towards the aim at their real rates. Weapons per mount (ready /
-// stowed ammunition, reload with or without a loader, ammunition switch = reload, belts, TOW at a halt), smoke
+// stowed ammunition, reload (the loader is assumed), ammunition switch = reload, belts, TOW at a halt), smoke
 // salvos, armour and damage (vehicles/armour.ts), burning, the wreck, and the seats and crew.
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
@@ -24,7 +24,7 @@ export interface Mount {
   /** Cannon/launcher: a round is chambered (of type `loadedType`); automatic: rounds left in the belt. */
   loaded: boolean; loadedType: number; belt: number;
   /** Seconds until loaded / belt changed, and until the next shot (rate of fire). */ reloadT: number; cool: number;
-  /** Remote station aim (relative to the turret): yaw, pitch. */ yaw: number; pitch: number;
+  /** Station gun (relative to the turret): where it points (yaw, pitch) and where its gunner is swinging it. */ yaw: number; pitch: number; aimYaw: number; aimPitch: number;
   rate: number; shots: number;
 }
 
@@ -89,7 +89,7 @@ export class Vehicle {
     this.turretCol = w.createCollider(R.ColliderDesc.cuboid(tw / 2, th / 2, tl / 2).setTranslation(this.ring.x, this.ring.y + th / 2, this.ring.z + 0.4).setDensity((def.mass * 0.18) / vTur).setFriction(0.6).setCollisionGroups(gr), this.body);
     for (const c of [this.hullCol, this.turretCol]) { g.P.surf.set(c.handle, 'metal'); g.vehicleOf.set(c.handle, this); }
     this.seats = def.seats.map((d) => ({ def: d, who: null, t: 0 }));
-    this.mounts = def.mounts.map((d) => ({ def: d, sel: 0, ready: [...d.ready], stowed: [...d.stowed], loaded: d.rpm === 0 && d.ready[0] > 0, loadedType: 0, belt: d.belt ? Math.min(d.belt, d.ready[0]) : 0, reloadT: 0, cool: 0, yaw: 0, pitch: 0, rate: d.rpm, shots: 0 }));
+    this.mounts = def.mounts.map((d) => ({ def: d, sel: 0, ready: [...d.ready], stowed: [...d.stowed], loaded: d.rpm === 0 && d.ready[0] > 0, loadedType: 0, belt: d.belt ? Math.min(d.belt, d.ready[0]) : 0, reloadT: 0, cool: 0, yaw: 0, pitch: 0, aimYaw: 0, aimPitch: 0, rate: d.rpm, shots: 0 }));
     // A round chambered / a belt on the gun, taken from the ready racks.
     for (const m of this.mounts) { if (m.def.rpm === 0 && m.loaded) m.ready[0]--; else m.ready[0] -= m.belt; }
     this.smoke = def.smoke;
@@ -124,6 +124,7 @@ export class Vehicle {
   /** Put a soldier in seat i (the soldier's own body stops colliding; it rides with the vehicle). */
   enter(s: Soldier, i: number): boolean {
     const st = this.seats[i]; if (!st || (st.who && st.who !== s) || this.dead) return false;
+    if (this.netRemote && s.netSlave) this.g.netVehicle?.('enter', this, { i }, s);
     const cur = s.vehicle === this ? this.seatOf(s) : -1;
     if (cur >= 0) this.seats[cur].who = null;
     else if (s.vehicle) s.vehicle.exit(s, false);
@@ -135,6 +136,7 @@ export class Vehicle {
   }
   /** Get out at the nearest free exit (or anywhere free around the hull). */
   exit(s: Soldier, place = true) {
+    if (this.netRemote && s.netSlave) this.g.netVehicle?.('exit', this, {}, s);
     const i = this.seatOf(s); if (i >= 0) this.seats[i].who = null;
     s.vehicle = null; s.seat = -1; s.teleported = true;
     if (s.state === 'dead') return; // his body was removed from the physics world when he died
@@ -156,7 +158,11 @@ export class Vehicle {
   }
 
   // ---------------- per frame (before the physics step) ----------------
+  /** Multiplayer client: a puppet posed by the host's snapshots (no driving, firing or damage here). */
+  netRemote = false;
+  /** Multiplayer client: why each mount cannot fire (by mount id), as the host reports it. */ netBlocked: Record<string, string | null> = {};
   update(dt: number) {
+    if (this.netRemote) { if (this.dead) this.burn(dt); return; }
     const d = this.def, g = this.g;
     // A crewman killed in his seat stays aboard until the vehicle is cleared; a wounded one is pulled out beside it.
     for (const st of this.seats) if (st.who) { st.t += dt; if (st.who.state === 'dead') { st.who.vehicle = null; st.who.seat = -1; st.who = null; } else if (!st.who.alive) this.exit(st.who, true); }
@@ -225,8 +231,18 @@ export class Vehicle {
       const er = d.elevRate * dt;
       this.gunPitch += Math.max(-er, Math.min(er, want - this.gunPitch));
     }
+    // Pintle guns: swung by their gunner towards his aim at the rate a man can haul it round (turret-relative: the
+    // mount turns with the turret); elevation within the cradle's limits; the burst's climb is pulled back the same way.
+    for (const mt of this.mounts) {
+      const st = mt.def.station; if (!st) continue;
+      mt.aimPitch = Math.max(st.elev[0], Math.min(st.elev[1], mt.aimPitch));
+      const dyw = Math.atan2(Math.sin(mt.aimYaw - mt.yaw), Math.cos(mt.aimYaw - mt.yaw));
+      mt.yaw += Math.max(-st.rate[0] * dt, Math.min(st.rate[0] * dt, dyw));
+      mt.pitch += Math.max(-st.rate[1] * dt, Math.min(st.rate[1] * dt, mt.aimPitch - mt.pitch));
+      mt.pitch = Math.max(st.elev[0], Math.min(st.elev[1] + 0.05, mt.pitch));
+    }
     // ---- weapons ----
-    const loader = this.crewIn('loader');
+    const loader = true; // crew of three: the loader is assumed (Project Reality)
     for (const mt of this.mounts) {
       mt.cool = Math.max(0, mt.cool - dt);
       if (mt.reloadT > 0) {
@@ -261,7 +277,10 @@ export class Vehicle {
     const p = this.pos(), yaw = this.yaw(), s = Math.sign(this.vf), f: [number, number] = [-Math.sin(yaw) * s, -Math.cos(yaw) * s];
     // A strip from the bow to ~3 m ahead: things go down before the hull reaches them.
     const reach = this.def.hull[2] / 2 + 1.5;
-    const n = this.g.destruct.crush(p[0] + f[0] * reach, p[2] + f[1] * reach, this.def.hull[0] / 2 + 0.1, 1.6, f, p[1], p[1] + 2.6);
+    const cx = p[0] + f[0] * reach, cz = p[2] + f[1] * reach, hx = this.def.hull[0] / 2 + 0.1;
+    const n = this.g.destruct.crush(cx, cz, hx, 1.6, f, p[1], p[1] + 2.6);
+    // (Multiplayer: the players' maps crush the same walls and trees.)
+    if (n && this.g.netRole === 'host') this.g.netEmit?.({ t: 'crush', c: [cx, cz, hx, 1.6], f, y: [p[1], p[1] + 2.6] });
     // Pushing trees and walls over costs momentum (a big eucalyptus takes ~1.5 m/s off a 62 t tank, more off a Bradley).
     if (n > 0) { const lv = this.body.linvel(), k = Math.max(0.35, 1 - (n * 0.5 * 62000) / this.def.mass / Math.max(3, this.speed)); this.body.setLinvel({ x: lv.x * k, y: lv.y, z: lv.z * k }, true); }
   }
@@ -300,6 +319,12 @@ export class Vehicle {
     const t = this.body.translation(), r = this.body.rotation();
     this.root.position.set(t.x, t.y, t.z); this.root.quaternion.set(r.x, r.y, r.z, r.w);
     this.turret.rotation.y = this.turretYaw; this.gun.rotation.x = this.gunPitch;
+    // Pintle guns: post traverses, cradle elevates.
+    for (const mt of this.mounts) {
+      const st = mt.def.station; if (!st) continue;
+      const a = this.nodes.get(st.yaw), b = this.nodes.get(st.pitch);
+      if (a) a.rotation.y = mt.yaw; if (b) b.rotation.x = mt.pitch;
+    }
     // Turret collider follows the turret.
     const off = new THREE.Vector3(0, this.def.turret[1] / 2, 0.4).applyAxisAngle(UP, this.turretYaw).add(this.ring);
     this.turretCol.setTranslationWrtParent({ x: off.x, y: off.y, z: off.z });
@@ -325,8 +350,9 @@ export class Vehicle {
   /** Select the ammunition type of a cannon (a different round means unloading and loading: PR's switch delay). */
   selectAmmo(mt: Mount, type: number) {
     if (type === mt.sel || type >= mt.def.ammo.length) return;
+    if (this.netRemote) this.g.netVehicle?.('ammo', this, { m: this.mounts.indexOf(mt), k: type });
     mt.sel = type;
-    const loader = this.crewIn('loader') || this.def.id !== 'm1a2';
+    const loader = true; // crew of three: the loader is assumed (Project Reality)
     if (mt.def.rpm === 0) { if (mt.loaded) { mt.ready[mt.loadedType]++; mt.loaded = false; } mt.reloadT = mt.def.reload[loader ? 0 : 1]; }
     else { mt.ready[mt.loadedType] += mt.belt; mt.belt = 0; mt.loadedType = type; mt.reloadT = 1.5; }
   }
@@ -347,10 +373,13 @@ export class Vehicle {
 
   /** Fire a mount (the occupant of `seat` pulls the trigger). Station mounts aim along `dir` (world). */
   fire(mt: Mount, seat: number, dir?: V3): boolean {
+    // A multiplayer client's vehicle is the host's: the trigger goes there (he fires it; the shot comes back).
+    if (this.netRemote) return !!this.g.netVehicle?.('fire', this, { m: this.mounts.indexOf(mt) });
     const shooter = this.seats[seat]?.who; if (!shooter || this.blocked(mt, seat)) return false;
     const d = mt.def, g = this.g, type = d.rpm === 0 ? mt.loadedType : mt.sel, ammoId = d.ammo[type] as AmmoId, a: Ammo = AMMO[ammoId];
     const o = this.nodePos(d.node);
-    let dv: V3 = d.aim === 'station' && dir ? dir : d.aim === 'launcher' ? this.sightDir() : this.nodeDir('gun');
+    // (A pintle gun fires along its own barrel, wherever its gunner has swung it.)
+    let dv: V3 = d.station ? this.nodeDir(d.station.pitch) : d.aim === 'station' && dir ? dir : d.aim === 'launcher' ? this.sightDir() : this.nodeDir('gun');
     if (d.aim === 'launcher') dv = [dv[0], dv[1] + 0.02, dv[2]];
     const sp = (d.spread / 1000) * (0.5 + Math.random() * 0.5), ang = Math.random() * Math.PI * 2;
     dv = jitter(dv, sp, ang);
@@ -359,7 +388,7 @@ export class Vehicle {
     mt.shots++;
     if (d.rpm === 0) {
       mt.loaded = false;
-      const loader = this.crewIn('loader') || this.def.id !== 'm1a2';
+      const loader = true; // crew of three: the loader is assumed (Project Reality)
       if (mt.ready[mt.sel] + mt.stowed[mt.sel] > 0) mt.reloadT = d.reload[loader ? 0 : 1];
     } else {
       mt.belt--; mt.cool = 60 / (mt.rate || d.rpm);
@@ -367,7 +396,9 @@ export class Vehicle {
     }
     // Effects: muzzle blast and dust (the 120 mm raises a cloud and rocks the hull), sound.
     const big = ammoId.startsWith('120');
-    g.fx.muzzle(o, dv, big ? 6 : ammoId.startsWith('25') ? 2.2 : d.aim === 'launcher' ? 1.5 : 1, shooter.isPlayer && !!g.player && !g.player.third);
+    g.fx.muzzle(o, dv, big ? 6 : ammoId.startsWith('25') ? 2.2 : d.aim === 'launcher' ? 1.5 : 1, false);
+    // A pintle gun jumps on its mount: the burst climbs and wanders until the gunner hauls it back.
+    if (d.station) { mt.pitch += d.station.kick * (0.7 + Math.random() * 0.6); mt.yaw += (Math.random() - 0.5) * d.station.kick; }
     if (big) {
       g.fx.explosion([o[0] + dv[0] * 1.5, o[1], o[2] + dv[2] * 1.5], 0.6, dv);
       const kick = new THREE.Vector3(-dv[0], 0, -dv[2]).multiplyScalar(this.def.mass * 0.05);
@@ -393,6 +424,7 @@ export class Vehicle {
 
   /** Laser rangefinder (gunner): range along the sight; the FCS sets the superelevation for the selected round. */
   lase(): number {
+    if (this.netRemote) this.g.netVehicle?.('lase', this, {});
     // From the muzzle along the sight line (the laser must not range the vehicle's own gun).
     const o = this.nodePos('muzzle'), d = this.sightDir();
     const h = this.g.P.castRay([o[0] + d[0] * 0.5, o[1] + d[1] * 0.5, o[2] + d[2] * 0.5], d, 4000);
@@ -405,6 +437,7 @@ export class Vehicle {
 
   /** Smoke salvo: a screen 30–40 m ahead across the turret's front. */
   popSmoke(): boolean {
+    if (this.netRemote) return !!this.g.netVehicle?.('smoke', this, {});
     if (this.smoke <= 0 || this.smokeT < 5 || this.dead) return false;
     this.smoke--; this.smokeT = 0;
     const yaw = this.yaw() + this.turretYaw, p = this.pos();

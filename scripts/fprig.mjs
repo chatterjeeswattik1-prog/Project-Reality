@@ -1,5 +1,5 @@
 // First-person rigs from the user's animated weapon packs (arms + weapon bones + clips) -> public/models/fp/<id>.glb
-//   node scripts/fprig.mjs [m4] [ak]
+//   node scripts/fprig.mjs [m4] [ak] [pistol]
 // Kept as glTF (not round-tripped through Blender, whose importer mangles these skins): the packs' own weapon meshes
 // are dropped (the game hangs the contract weapon GLB on the weapon bones instead, see src/player/fprig.ts), clips are
 // renamed and moved to start at 0, spec-gloss materials become metal-rough, textures are resized and re-encoded as WebP.
@@ -25,6 +25,15 @@ const PACKS = {
     drop: (n) => /^Object_1[012]$|^Icosphere/.test(n),
     sleeve: [/arms/, 0.0035, 0.06],
   },
+  // "FPS pistol animations" by Cransh (CC BY 4.0): arms with a striker pistol; the game hangs the M9 / Makarov on its
+  // frame (PBody), slide (Rif) and magazine (Pmag) bones. No draw clip: the game lowers the arms while switching.
+  pistol: {
+    src: `${SRC}/Pistol/fps_pistol_animations.glb`,
+    clips: { 'Armature|FPS_Pistol_Fire': 'fire', 'Armature|FPS_Pistol_Reload_easy': 'reload', 'Armature|FPS_Pistol_Reload_full': 'reload_empty',
+      'Armature|FPS_Pistol_Idle': 'idle', 'Armature|FPS_Pistol_Walk': 'walk' },
+    drop: (n) => /^Object_9[135]$/.test(n),
+    sleeve: null, // (extruding its shoulder rings stretched a spike across the view)
+  },
 };
 
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ sharp });
@@ -35,7 +44,7 @@ for (const id of process.argv.slice(2).length ? process.argv.slice(2) : Object.k
   const root = doc.getRoot();
   for (const n of root.listNodes()) if (n.getMesh() && P.drop(n.getName())) n.setMesh(null);
   // Longer sleeves: the cut ends at the shoulders stay out of view on wide screens.
-  extendSleeves(doc, P.sleeve[0], P.sleeve[1], P.sleeve[2]);
+  if (P.sleeve) extendSleeves(doc, P.sleeve[0], P.sleeve[1], P.sleeve[2]);
   // Clips: rename, drop unknown ones, shift every clip so it starts at t = 0.
   const shifted = new Map();
   for (const a of root.listAnimations()) {

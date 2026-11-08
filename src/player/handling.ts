@@ -108,21 +108,37 @@ const BOLT: Choreo = {
   cues: [[0.1, 'bolt_action_cycle'], [0.4, 'casing_drop', 0.5], [0.6, 'casing_drop', 0.5], [0.8, 'casing_drop', 0.5], [0.88, 'bolt_release']],
 };
 
+/**
+ * Pistol (two-handed, magazine in the grip). The pistol comes in to the workspace in front of the chin, muzzle up a
+ * little and canted so the magazine well faces the support hand; the thumb presses the release and the empty
+ * magazine drops free out of the grip (it is not caught); the support hand goes to the pouch on the belt, brings the
+ * new magazine up under the grip, lines it up with the well, pushes it in and slaps it home with the palm; the
+ * support hand goes back round the firing hand and the pistol is pushed back out to the ready.
+ */
+const P_POS: V3 = [-0.08, 0.15, 0.06], P_ROT: V3 = [0.3, 0.3, -0.55];
 const PISTOL: Choreo = {
-  pos: [[0, Z], [0.15, [-0.03, 0.05, 0.02]], [0.85, [-0.03, 0.05, 0.02]], [1, Z]],
-  rot: [[0, Z], [0.15, [0.45, 0.05, -0.35]], [0.85, [0.45, 0.05, -0.35]], [1, Z]],
-  magPos: [[0, Z]], magRock: [[0, 0]], magShow: [[0, 1], [0.3, 0], [0.45, 1]],
-  magSlide: [[0.15, 0], [0.3, 0.6], [0.45, 0.6], [0.62, 0.1], [0.7, 0]],
-  hand: [[0.05, 'grip'], [0.2, 'away'], [0.45, 'mag'], [0.72, 'mag'], [0.9, 'grip']],
+  pos: [[0, Z], [0.12, P_POS], [0.64, P_POS], [0.665, [-0.08, 0.16, 0.055]], [0.69, P_POS], [0.74, P_POS], [0.95, Z]],
+  rot: [[0, Z], [0.12, P_ROT], [0.64, P_ROT], [0.665, [0.34, 0.3, -0.57]], [0.69, P_ROT], [0.74, P_ROT], [0.95, Z]],
+  // The old magazine drops out along the grip (0.14–0.3); the new one arrives from the pouch (below, left, behind)
+  // to just under the well (0.55), then slides home (0.64).
+  magPos: [[0.3, Z], [0.31, [-0.12, -0.3, 0.12]], [0.38, [-0.12, -0.3, 0.12]], [0.52, [-0.01, -0.02, 0.01]], [0.55, Z]],
+  magRock: [[0, 0]], magShow: [[0, 1], [0.3, 0], [0.38, 1]],
+  magSlide: [[0.13, 0], [0.16, 0.03], [0.3, 0.55], [0.31, 0.1], [0.52, 0.07], [0.6, 0.02], [0.645, 0]],
+  hand: [[0.06, 'grip'], [0.18, 'away'], [0.36, 'away'], [0.42, 'mag'], [0.7, 'mag'], [0.82, 'grip']],
   charge: [[0, 0]],
-  cues: [[0.17, 'mag_out'], [0.7, 'mag_in']],
+  cues: [[0.14, 'mag_out'], [0.4, 'aim_cloth', 0.35], [0.645, 'mag_in']],
 };
+/** Empty: the slide is locked back on the empty magazine; once the new one is home the firing thumb presses the
+ *  slide stop and the slide runs forward, chambering a round (the support hand is already back on the grip). */
 const PISTOL_EMPTY: Choreo = {
   ...PISTOL,
-  hand: [[0.05, 'grip'], [0.2, 'away'], [0.45, 'mag'], [0.7, 'mag'], [0.78, 'charge'], [0.84, 'charge'], [0.95, 'grip']],
-  charge: [[0, 1], [0.8, 1], [0.83, 1], [0.86, 0]],
-  cues: [...PISTOL.cues, [0.85, 'bolt_release']],
+  charge: [[0, 1], [0.7, 1], [0.725, 0]],
+  cues: [...PISTOL.cues, [0.72, 'bolt_release']],
 };
+/** Pistols: the aimed eye relief (rear sight ahead of the eye, arms out but not locked) and the support hand's palm
+ *  centre on the grip (left of and below the firing hand's), in the pistol's frame. */
+export const PISTOL_RELIEF = 0.5;
+export const PISTOL_GRIP_L: V3 = [-0.034, -0.035, -0.004];
 
 /** RPG-7: the next rocket is fetched from the back and pushed into the muzzle until it seats. */
 const RPG: Choreo = {

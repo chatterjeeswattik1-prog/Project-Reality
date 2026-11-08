@@ -20,6 +20,11 @@ const OPEN = Math.PI / 2 * 0.95;
 
 export class Doors {
   list: Door[] = [];
+  /**
+   * Multiplayer: a door was swung (`target`: 0 closed … OPEN) or torn out (`removed`); `byUse` when the local player
+   * used it. The host reports every change; a joiner sends his own use (net/host.ts, net/client.ts).
+   */
+  onChange: ((i: number, target: number, removed: boolean, byUse: boolean) => void) | null = null;
   private q = new THREE.Quaternion(); private up = new THREE.Vector3(0, 1, 0);
   private grid = new Map<number, Door[]>();
   private im: { wood: THREE.InstancedMesh; metal: THREE.InstancedMesh } | null = null;
@@ -113,6 +118,7 @@ export class Doors {
     }
     if (!best) return false;
     best.target = best.target > 0.4 ? 0 : OPEN; this.moving.add(best);
+    this.onChange?.(this.list.indexOf(best), best.target, false, true);
     return true;
   }
 
@@ -123,7 +129,7 @@ export class Doors {
       if (d.target > 0.4 || d.w <= 0) continue;
       const mid = d.hinge.clone().addScaledVector(this.leafDir(d, 0), d.w / 2);
       const dx = mid.x - p[0], dz = mid.z - p[2], dist = Math.hypot(dx, dz);
-      if (dist < 1.6 && Math.abs(mid.y - p[1]) < 1.5 && (dx * vel[0] + dz * vel[2]) / (dist * sp) > 0.2) { d.target = OPEN; this.moving.add(d); }
+      if (dist < 1.6 && Math.abs(mid.y - p[1]) < 1.5 && (dx * vel[0] + dz * vel[2]) / (dist * sp) > 0.2) { d.target = OPEN; this.moving.add(d); this.onChange?.(this.list.indexOf(d), OPEN, false, false); }
     }
   }
 
@@ -143,16 +149,30 @@ export class Doors {
         && solidAt(c.x, d.hinge.y + d.h + 0.15, c.z);
       const near = Math.hypot(mid.x - p[0], d.hinge.y + d.h / 2 - p[1], mid.z - p[2]) < r;
       if (!near && standing) continue;
-      this.P.world.removeRigidBody(d.body);
-      d.w = 0; this.moving.delete(d);
-      const im = d.metal ? this.im!.metal : this.im!.wood;
-      im.setMatrixAt(d.inst, this.m4.makeScale(0, 0, 0)); im.instanceMatrix.needsUpdate = true;
+      this.kill(d);
+      this.onChange?.(this.list.indexOf(d), 0, true, false);
       const e = d.h / 2;
       out.push({ min: [mid.x - 0.5, d.hinge.y, mid.z - 0.5], max: [mid.x + 0.5, d.hinge.y + e * 2, mid.z + 0.5], metal: d.metal });
     }
     return out;
   }
 
+  /** Tear a leaf out (blast). */
+  private kill(d: Door) {
+    if (d.w <= 0) return;
+    this.P.world.removeRigidBody(d.body);
+    d.w = 0; this.moving.delete(d);
+    const im = d.metal ? this.im!.metal : this.im!.wood;
+    im.setMatrixAt(d.inst, this.m4.makeScale(0, 0, 0)); im.instanceMatrix.needsUpdate = true;
+  }
+  /** Multiplayer: a door as the host has it (swinging to `target`, or gone). */
+  setState(i: number, target: number, removed: boolean) {
+    const d = this.list[i]; if (!d || d.w <= 0) return;
+    if (removed) { this.kill(d); return; }
+    if (Math.abs(d.target - target) > 1e-3) { d.target = target; this.moving.add(d); }
+  }
+  /** Multiplayer: every door's state for a player joining mid-match (target, or −1 when torn out). */
+  states(): number[] { return this.list.map((d) => (d.w <= 0 ? -1 : Math.round(d.target * 1e4) / 1e4)); }
   /** Doors swinging right now (only these are updated). */
   private moving = new Set<Door>();
   update(dt: number) {

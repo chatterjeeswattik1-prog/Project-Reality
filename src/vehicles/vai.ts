@@ -189,9 +189,12 @@ export class VehicleAI {
     const T = this.cmdTarget; if (!T?.s?.alive) return;
     const tp = this.tp(T), o = v.nodePos(mt.def.node), dx = tp[0] - o[0], dy = tp[1] - o[1], dz = tp[2] - o[2], d = Math.hypot(dx, dy, dz);
     const wantYaw = wrap(Math.atan2(-dx, -dz) - v.yaw() - v.turretYaw), wantP = Math.asin(dy / d);
-    mt.yaw += Math.max(-1.2 * dt, Math.min(1.2 * dt, wrap(wantYaw - mt.yaw)));
-    mt.pitch += Math.max(-0.8 * dt, Math.min(0.8 * dt, wantP - mt.pitch));
-    if (Math.abs(wrap(wantYaw - mt.yaw)) < 0.02) {
+    if (mt.def.station) { mt.aimYaw = wantYaw; mt.aimPitch = wantP; } // the vehicle swings the pintle gun after it
+    else {
+      mt.yaw += Math.max(-1.2 * dt, Math.min(1.2 * dt, wrap(wantYaw - mt.yaw)));
+      mt.pitch += Math.max(-0.8 * dt, Math.min(0.8 * dt, wantP - mt.pitch));
+    }
+    if (Math.abs(wrap(wantYaw - mt.yaw)) < 0.03) {
       const yaw = v.yaw() + v.turretYaw + mt.yaw, dir: V3 = [-Math.sin(yaw) * Math.cos(mt.pitch), Math.sin(mt.pitch), -Math.cos(yaw) * Math.cos(mt.pitch)];
       if (Math.random() < 0.7) v.fire(mt, seat, dir);
     }

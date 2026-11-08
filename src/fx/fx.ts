@@ -4,9 +4,11 @@ import * as THREE from 'three';
 import { LiquidBlood } from './liquid';
 const _v3 = new THREE.Vector3();
 import type { Surface } from '../world/sink';
+import { addScorch } from '../world/citymat';
 
 type V3 = [number, number, number];
 const MAX_P = 6000, MAX_DECALS = 1500, MAX_TRACERS = 300, MAX_CASES = 2000;
+const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 
 function softDot(): THREE.Texture {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -128,7 +130,7 @@ const DUST: Record<Surface, V3> = {
 
 export class FX {
   smoke: ParticleSet; glow: ParticleSet;
-  decals: THREE.InstancedMesh; decalN = 0;
+  decals: THREE.InstancedMesh; decalN = 0; private decalPos = new Float32Array(MAX_DECALS * 3);
   scorch: THREE.InstancedMesh; scorchN = 0;
   tracers: THREE.LineSegments; private tr = new Float32Array(MAX_TRACERS * 6); private trc = new Float32Array(MAX_TRACERS * 6); private trLife = new Float32Array(MAX_TRACERS); private trN = 0;
   lights: THREE.PointLight[] = []; private lightT: number[] = [];
@@ -142,6 +144,8 @@ export class FX {
   /** Ejected cases: brass (rifles, pistols) or belt links, flying, bouncing once or twice and lying for a while. */
   private cases: THREE.InstancedMesh; private caseN = 0;
   private cs: { p: THREE.Vector3; v: THREE.Vector3; q: THREE.Quaternion; w: THREE.Vector3; floor: number; t: number; rest: boolean }[] = [];
+  /** Terrain height (set by the game): the scorch decal goes only on the ground; city surfaces scorch in their shader. */
+  terrainAt: (x: number, z: number) => number = () => -1e4;
   /** Ground height below a point (set by the game; null = no ground found). */
   floorAt: (p: V3) => number | null = () => null;
   /** First static-world hit along a segment (set by the game): distance and surface normal, or null. */
@@ -221,7 +225,7 @@ export class FX {
     const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), n = Math.min(24, Math.ceil(L / 2.5));
     for (let k = 1; k <= n; k++) { const t = k / n; this.glow.spawn([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], [0, 0, 0], 0.16 * (0.5 + t * 0.5), 0, 0.045, 0.9, col); }
   }
-  impact(p: V3, n: V3, surf: Surface, big = 1) {
+  impact(p: V3, n: V3, surf: Surface, big = 1, hole = true) {
     const c = DUST[surf] ?? DUST.concrete;
     if (surf === 'water') { for (let i = 0; i < 6; i++) this.smoke.spawn(p, [(Math.random() - 0.5) * 1.5, 3 + Math.random() * 3, (Math.random() - 0.5) * 1.5], 0.3, 0.6, 0.7, 0.5, c, 1, 9.8); return; }
     // Every hit must read from 50–100 m away: a fast jet of dust straight out of the hole, a billowing puff that
@@ -236,7 +240,7 @@ export class FX {
     const sparks = surf === 'metal' ? 9 : surf === 'concrete' || surf === 'masonry' ? (Math.random() < 0.5 ? 3 : 0) : 0;
     for (let i = 0; i < sparks * big; i++) this.glow.spawn(o, [n[0] * 5 + R() * 9, n[1] * 5 + Math.random() * 4, n[2] * 5 + R() * 9], 0.06, 0, 0.12 + Math.random() * 0.15, 1, [1, 0.72, 0.35], 0.4, 9.8);
     if (surf === 'metal') this.glow.spawn(o, [0, 0, 0], 0.35 * big, 0, 0.05, 1, [1, 0.8, 0.5]);
-    if (surf !== 'flesh' && surf !== 'glass') this.decal(p, n, (0.09 + Math.random() * 0.05) * (big > 1 ? 1.6 : 1));
+    if (hole && surf !== 'flesh' && surf !== 'glass') this.decal(p, n, (0.09 + Math.random() * 0.05) * (big > 1 ? 1.6 : 1));
   }
   /** Bullet hit on a body: a mist puff, a spray of droplets thrown along the bullet's path, and a few that fall. */
   blood(p: V3, dir: V3, big = 1) {
@@ -265,6 +269,7 @@ export class FX {
     const i = this.decalN % MAX_DECALS; this.decalN++;
     this.q.setFromUnitVectors(this.up, new THREE.Vector3(n[0], n[1], n[2]));
     this.m4.compose(new THREE.Vector3(p[0] + n[0] * 0.01, p[1] + n[1] * 0.01, p[2] + n[2] * 0.01), this.q, new THREE.Vector3(size, size, size));
+    this.decalPos.set([p[0], p[1], p[2]], i * 3);
     this.decals.setMatrixAt(i, this.m4); this.decals.count = Math.min(MAX_DECALS, this.decalN); this.decals.instanceMatrix.needsUpdate = true;
   }
   /**
@@ -301,7 +306,10 @@ export class FX {
     for (let i = 0; i < 24 * P; i++) this.glow.spawn(p, [(rnd() - 0.5) * 34, rnd() * 20, (rnd() - 0.5) * 34], 0.05, 0, 0.4 + rnd() * 0.7, 1, [1, 0.8, 0.45], 0.25, 9.8, [1, 0.35, 0.1]);
     // Ground shockwave.
     if (up) { const r = this.rings.find((x) => x.t >= 1) ?? this.rings[0]; r.t = 0; r.r = 9 * P; r.m.position.set(p[0], p[1] + 0.08, p[2]); r.m.visible = true; }
-    if (up) {
+    // Scorch: city surfaces (roofs, floors, walls: anything that can be holed) darken in their shader; the decal only
+    // on open ground, where nothing can fall away from under it.
+    addScorch(p, 0.1 + power * 0.36); // (a 25 mm shell ~0.3 m, a grenade ~0.5 m, an RPG ~0.8 m)
+    if (up && Math.abs(p[1] - this.terrainAt(p[0], p[2])) < 0.4) {
       const i = this.scorchN % 120; this.scorchN++;
       this.q.setFromUnitVectors(this.up, new THREE.Vector3(0, 1, 0));
       this.m4.compose(new THREE.Vector3(p[0], p[1] - 0.05, p[2]), this.q, new THREE.Vector3(3.5 * P, 3.5 * P, 1));
@@ -317,6 +325,21 @@ export class FX {
       this.smoke.spawn([p[0] + n[0] * off + R() * r, p[1] + n[1] * off + R() * r, p[2] + n[2] * off + R() * r], [n[0] * s + R() * 1.2, n[1] * s + rnd() * 0.7, n[2] * s + R() * 1.2],
         sz, 0.5 + r * 0.45, 4 + rnd() * 5, 0.75, [0.68, 0.62, 0.52], 1.6, -0.04, [0.76, 0.71, 0.62]);
     }
+  }
+  /**
+   * A breach in a wall or floor: soot, cracks and fragment pocks round it on both faces. Drawn by the city shader
+   * (world/citymat.ts addScorch), so the marks lie only on surface that is still there.
+   */
+  blastMark(p: V3, _n: V3, r: number) { addScorch(p, r); }
+  /** Bullet holes (and other small decals) that sat on a piece of wall now gone are removed with it. */
+  clearDecals(boxes: [number[], number[]][]) {
+    if (!boxes.length) return;
+    const n = Math.min(MAX_DECALS, this.decalN), e = 0.06; let hit = false;
+    for (let i = 0; i < n; i++) {
+      const x = this.decalPos[i * 3], y = this.decalPos[i * 3 + 1], z = this.decalPos[i * 3 + 2];
+      for (const [a, b] of boxes) if (x > a[0] - e && x < b[0] + e && y > a[1] - e && y < b[1] + e && z > a[2] - e && z < b[2] + e) { this.decals.setMatrixAt(i, ZERO); this.decalPos[i * 3 + 1] = -1e4; hit = true; break; }
+    }
+    if (hit) this.decals.instanceMatrix.needsUpdate = true;
   }
   /** Smoke grenade: emits for ~50 s. */
   smokeScreens: { p: V3; t: number; col: V3 }[] = [];

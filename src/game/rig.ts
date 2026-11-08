@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { Soldier } from './soldier';
 import { damp } from '../core/rng';
-import { choreo, hand as handTrack, num, vec, type HandAt, type V3 } from '../player/handling';
+import { choreo, hand as handTrack, num, step, vec, PISTOL_GRIP_L, PISTOL_RELIEF, type HandAt, type V3 } from '../player/handling';
 import { Ragdoll } from './ragdoll';
 import type { Physics } from '../world/physics';
 
@@ -64,16 +64,21 @@ const BODY_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0.8, 0), 2.0);
  *  l — support hand under the handguard: fingers across to the right, palm up.
  * Bones run along local +Y; which local direction is the palm is measured from the skeleton (see palmOf).
  */
-function handTarget(wq: THREE.Quaternion, side: 'r' | 'l') {
-  const y = (side === 'r' ? new THREE.Vector3(0, -0.55, -1) : new THREE.Vector3(1, 0.1, -0.3)).applyQuaternion(wq).normalize();
-  const palm = (side === 'r' ? new THREE.Vector3(-1, 0, 0) : new THREE.Vector3(0, 1, 0)).applyQuaternion(wq);
+/** How a hand holds the weapon: on a long gun, or the support hand of a two-handed pistol grip (wrapped round the
+ *  firing hand: heel of the palm filling the gap on the grip's left, fingers over the firing hand's fingers under the
+ *  trigger guard, palm facing in to the right). */
+export type GripStyle = 'rifle' | 'pistol';
+function handTarget(wq: THREE.Quaternion, side: 'r' | 'l', style: GripStyle = 'rifle') {
+  const pl = side === 'l' && style === 'pistol';
+  const y = (side === 'r' ? new THREE.Vector3(0, -0.55, -1) : pl ? new THREE.Vector3(0.35, -0.7, -0.65) : new THREE.Vector3(1, 0.1, -0.3)).applyQuaternion(wq).normalize();
+  const palm = (side === 'r' ? new THREE.Vector3(-1, 0, 0) : pl ? new THREE.Vector3(1, 0, 0.1) : new THREE.Vector3(0, 1, 0)).applyQuaternion(wq);
   palm.sub(y.clone().multiplyScalar(palm.dot(y))).normalize();
   return { y, palm };
 }
 
 /** Where the wrist (hand bone) must be so the palm closes on `grip`. */
-export function wristTarget(grip: THREE.Vector3, wq: THREE.Quaternion, side: 'r' | 'l'): THREE.Vector3 {
-  const a = handTarget(wq, side);
+export function wristTarget(grip: THREE.Vector3, wq: THREE.Quaternion, side: 'r' | 'l', style: GripStyle = 'rifle'): THREE.Vector3 {
+  const a = handTarget(wq, side, style);
   return grip.clone().addScaledVector(a.y, -0.075).addScaledVector(a.palm, -0.035);
 }
 
@@ -168,9 +173,9 @@ function palmOf(bones: Record<string, THREE.Bone>, side: 'r' | 'l', bind?: Map<T
 }
 
 /** Orient the hand on the grip (with forearm twist) and curl the fingers round it. */
-export function wrapHand(bones: Record<string, THREE.Bone>, wq: THREE.Quaternion, side: 'r' | 'l', bind?: Map<THREE.Bone, THREE.Quaternion>) {
+export function wrapHand(bones: Record<string, THREE.Bone>, wq: THREE.Quaternion, side: 'r' | 'l', bind?: Map<THREE.Bone, THREE.Quaternion>, style: GripStyle = 'rifle') {
   const hand = bones[`hand_${side}`]; if (!hand) return;
-  const t = handTarget(wq, side), pl = palmOf(bones, side, bind);
+  const t = handTarget(wq, side, style), pl = palmOf(bones, side, bind);
   // Rotation taking hand-local (Y, palm, Y×palm) to world (y, palm, y×palm).
   const L = new THREE.Matrix4().makeBasis(new THREE.Vector3(0, 1, 0), pl, new THREE.Vector3(0, 1, 0).cross(pl));
   const Wm = new THREE.Matrix4().makeBasis(t.y, t.palm, t.y.clone().cross(t.palm));
@@ -232,6 +237,8 @@ export class Rig {
   private bones: Record<string, THREE.Bone> = {};
   weapon: THREE.Object3D | null = null;
   private weaponId = '';
+  /** Weapon magazine part, its seat and withdrawal direction (pistol reloads move it). */
+  private mag: THREE.Object3D | null = null; private magHome = new THREE.Vector3(); private magDir = new THREE.Vector3(0, -1, 0);
   private mannequin: THREE.Group | null = null;
 
   private deathClip = '';
@@ -287,6 +294,12 @@ export class Rig {
     const src = this.A.tpWeapons.get(id) ?? this.A.weapons.get(id);
     this.weapon = src ? src.clone() : null;
     if (this.weapon) { this.weapon.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; }); farFigure(this.weapon); this.root.parent?.add(this.weapon); }
+    this.mag = this.weapon?.getObjectByName('mag') ?? null;
+    if (this.mag) {
+      this.magHome.copy(this.mag.position);
+      const md = this.weapon!.getObjectByName('mag_dir');
+      this.magDir.copy(md ? md.position.clone().sub(this.magHome) : new THREE.Vector3(0, -1, 0.08)).normalize();
+    }
   }
 
   private play(name: string, fade = 0.25, speed = 1) {
@@ -549,10 +562,11 @@ export class Rig {
     const shadow = camDist < 40;
     if (shadow !== this.shadow) { this.shadow = shadow; w.traverse((o) => { o.castShadow = shadow; }); this.root.traverse((o) => { o.castShadow = shadow; }); }
     const engaged = s.ads > 0.25 || now - s.lastShotT < 2 || s.stance === 'prone';
+    const pistol = s.weapon.kind === 'pistol';
     // Reloading: the same choreography as in first person (player/handling.ts), with the weapon brought in to the chest.
     const cho = s.reloadT > 0 && !s.underSel && s.stance !== 'prone' ? choreo(s.weapon, s.reloadEmpty) : null;
     const rp = cho ? Math.min(1, Math.max(0, 1 - s.reloadT / Math.max(0.1, s.reloadDur))) : 0;
-    const tAim = cho ? 0.45 : engaged ? 1 : 0, tPort = !engaged && !cho && s.sprinting ? 1 : 0;
+    const tAim = cho ? (pistol ? 0.3 : 0.45) : engaged ? 1 : 0, tPort = !engaged && !cho && s.sprinting ? 1 : 0;
     const k = Math.min(1, this.lastDt * 6);
     this.kAim += (tAim - this.kAim) * k; this.kPort += (tPort - this.kPort) * k;
     const yawQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, s.yaw, 0));
@@ -562,19 +576,32 @@ export class Rig {
     // Cheek weld: the weapon's `cheek` point (or its rear sight plus a typical eye relief) goes to the soldier's eye.
     const headB = this.bones.Head;
     const eyeW = headB ? headB.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.07, -0.09).applyQuaternion(qAim)) : chest.clone().add(new THREE.Vector3(0, 0.42, -0.05));
-    const cheekL = w.getObjectByName('cheek')?.position.clone() ?? (w.getObjectByName('eye')?.position.clone() ?? new THREE.Vector3(0, 0.12, 0)).add(new THREE.Vector3(0, 0, 0.16));
+    // A pistol is aimed at arm's length (both arms out, the sights half a metre ahead of the eyes, centred).
+    const eyeP = w.getObjectByName('eye')?.position.clone() ?? new THREE.Vector3(0, 0.12, 0);
+    const cheekL = pistol ? eyeP.add(new THREE.Vector3(0, 0, PISTOL_RELIEF)) : w.getObjectByName('cheek')?.position.clone() ?? eyeP.add(new THREE.Vector3(0, 0, 0.16));
     // A shouldered rifle sits slightly right of the eye (cheek on the stock's left side).
-    const pAim = eyeW.clone().add(new THREE.Vector3(0.025, 0, 0).applyQuaternion(yawQ)).sub(cheekL.applyQuaternion(qAim));
+    const pAim = eyeW.clone().add(new THREE.Vector3(pistol ? 0 : 0.025, 0, 0).applyQuaternion(yawQ)).sub(cheekL.applyQuaternion(qAim));
     // Low ready: grip at the right hip/chest, muzzle down and slightly inboard.
-    const qLow = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.55 + this.aimPitch * 0.3, s.yaw - 0.28, -0.1, 'YXZ'));
-    const pLow = chest.clone().add(new THREE.Vector3(0.2, -0.16, -0.2).applyQuaternion(yawQ));
-    // Low port (running): diagonally across the chest, muzzle forward-down to the left, as soldiers run with a rifle.
-    const qPort = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5, s.yaw + 0.6, 0.35, 'YXZ'));
-    const pPort = chest.clone().add(new THREE.Vector3(0.12, -0.2, -0.26).applyQuaternion(yawQ));
+    // (Pistol: low ready in both hands in front of the belly, muzzle ~40° down.)
+    const qLow = new THREE.Quaternion().setFromEuler(pistol ? new THREE.Euler(-0.7 + this.aimPitch * 0.3, s.yaw - 0.05, 0, 'YXZ') : new THREE.Euler(-0.55 + this.aimPitch * 0.3, s.yaw - 0.28, -0.1, 'YXZ'));
+    const pLow = chest.clone().add((pistol ? new THREE.Vector3(0.06, -0.14, -0.3) : new THREE.Vector3(0.2, -0.16, -0.2)).applyQuaternion(yawQ));
+    // Low port (running): diagonally across the chest, muzzle forward-down to the left, as soldiers run with a rifle;
+    // a pistol is tucked in close, muzzle down.
+    const qPort = new THREE.Quaternion().setFromEuler(pistol ? new THREE.Euler(-1.0, s.yaw, 0, 'YXZ') : new THREE.Euler(-0.5, s.yaw + 0.6, 0.35, 'YXZ'));
+    const pPort = chest.clone().add((pistol ? new THREE.Vector3(0.05, -0.2, -0.2) : new THREE.Vector3(0.12, -0.2, -0.26)).applyQuaternion(yawQ));
     const q = qLow.clone().slerp(qPort, this.kPort).slerp(qAim, this.kAim);
     const pos = pLow.clone().lerp(pPort, this.kPort).lerp(pAim, this.kAim);
     if (cho) { const r = vec(cho.rot, rp, _r3); q.multiply(_q1.setFromEuler(new THREE.Euler(r[0] * 0.8, r[1], r[2], 'YXZ'))); }
     w.quaternion.copy(q); w.position.copy(pos);
+    // Pistol reload: the magazine drops out of the grip and the new one goes in (as in first person).
+    if (this.mag) {
+      this.mag.position.copy(this.magHome); this.mag.visible = true;
+      if (cho && pistol) {
+        const m = vec(cho.magPos, rp, _r3);
+        this.mag.position.add(new THREE.Vector3(m[0], m[1], m[2])).addScaledVector(this.magDir, num(cho.magSlide, rp));
+        this.mag.visible = step(cho.magShow, rp) > 0.5;
+      }
+    }
     w.updateMatrixWorld(true);
     w.getObjectByName('muzzle')?.getWorldPosition(this.muzzle);
     // Hands on the grips, elbows down/out, fingers wrapped.
@@ -582,10 +609,25 @@ export class Rig {
     const b = this.bones, gr = w.getObjectByName('grip_r'), gl = w.getObjectByName('grip_l');
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(yawQ);
     if (b.upperarm_r && b.lowerarm_r && b.hand_r && gr) {
-      armIK(b, 'r', wristTarget(gr.getWorldPosition(new THREE.Vector3()), q, 'r'), b.upperarm_r.getWorldPosition(new THREE.Vector3()).addScaledVector(right, 0.35).add(new THREE.Vector3(0, -0.55, 0)), 0.06);
+      armIK(b, 'r', wristTarget(gr.getWorldPosition(new THREE.Vector3()), q, 'r'), b.upperarm_r.getWorldPosition(new THREE.Vector3()).addScaledVector(right, 0.35).add(new THREE.Vector3(0, -0.55, 0)), pistol ? 0.13 : 0.06);
       wrapHand(b, q, 'r', this.bind);
     }
-    if (b.upperarm_l && b.lowerarm_l && b.hand_l && gl) {
+    if (b.upperarm_l && b.lowerarm_l && b.hand_l && gl && gr && pistol) {
+      // Pistol support hand: wrapped round the firing hand; in a reload it fetches the magazine and pushes it in from
+      // below (palm up), and on an empty one racks the slide overhand (palm down).
+      const gripL = () => w.localToWorld(gr.position.clone().add(new THREE.Vector3(...PISTOL_GRIP_L)));
+      const at = (h: HandAt): THREE.Vector3 => {
+        if (h === 'mag' && this.mag) return w.localToWorld(this.mag.position.clone().addScaledVector(this.magDir, 0.12));
+        if (h === 'away') return chest.clone().add(new THREE.Vector3(-0.1, -0.3, -0.12).applyQuaternion(yawQ));
+        if (h === 'charge') { const c = w.getObjectByName('charge'); return c ? c.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.02, 0).applyQuaternion(q)) : w.localToWorld(eyeP.set(0, 0.07, 0.01)); }
+        return gripL();
+      };
+      const roll = (h: HandAt) => q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), h === 'charge' ? Math.PI : h === 'away' ? -Math.PI / 2 : 0));
+      const [h0, h1, ht] = cho ? handTrack(cho.hand, rp) : ['grip', 'grip', 0] as [HandAt, HandAt, number];
+      const lt = at(h0).lerp(at(h1), ht), lq = roll(h0).slerp(roll(h1), ht), style = (ht < 0.5 ? h0 : h1) === 'grip' ? 'pistol' : 'rifle';
+      armIK(b, 'l', wristTarget(lt, lq, 'l', style), b.upperarm_l.getWorldPosition(new THREE.Vector3()).addScaledVector(right, -0.3).add(new THREE.Vector3(0, -0.6, 0)), 0.13);
+      wrapHand(b, lq, 'l', this.bind, style);
+    } else if (b.upperarm_l && b.lowerarm_l && b.hand_l && gl) {
       let lt = gl.getWorldPosition(new THREE.Vector3());
       if (cho && gr) {
         // Support hand: magazine well (following the magazine's path), the pouch at the left hip, the charging handle.

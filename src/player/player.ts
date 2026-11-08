@@ -45,12 +45,12 @@ export class Player {
   vehicleFor(s: Soldier): { v: Vehicle; seat: number } | null {
     let best: Vehicle | null = null, bd = 1e9;
     for (const v of this.g.vehicles) {
-      if (v.dead || v.team !== s.team) continue;
+      if (v.dead || (v.team !== s.team && !(this.g.sandbox && !v.seats.some((x) => x.who)))) continue;
       const p = v.pos(), d = Math.hypot(p[0] - s.pos[0], p[2] - s.pos[2]) - Math.max(v.def.hull[0], v.def.hull[2]) / 2;
       if (d < 2.5 && d < bd && Math.abs(p[1] - s.pos[1]) < 3) { bd = d; best = v; }
     }
     if (!best) return null;
-    const crew = s.kit.role === 'crew';
+    const crew = s.kit.role === 'crew' || this.g.sandbox;
     const order = ['driver', 'gunner', 'commander', 'loader', 'cargo'];
     for (const role of order) {
       const i = best.seats.findIndex((x) => x.def.role === role && (!x.def.crew || crew) && (!x.who || (!x.who.isPlayer && crew && x.def.crew)));
@@ -75,7 +75,7 @@ export class Player {
       this.vm.group.visible = false; this.g.hud?.prompt(null);
       return;
     }
-    this.vc.setFilter('');
+    this.vc.release();
     if (s.alive && I.locked) {
       // Look: slower when zoomed.
       const sens = I.sens / Math.max(1, this.zoom * 0.85);

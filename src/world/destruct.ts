@@ -19,7 +19,7 @@ const MAT_IDS = Object.keys(MATS) as MatId[];
 interface Style { mi: number; layer: number; chunk: number; bot: V3; top: V3 }
 interface Op { a0: number; a1: number; b0: number; b1: number }
 /** What a blast did (for effects): hole centres with their outward normal and size, and the volume brought down. */
-export interface BlastResult { holes: { p: V3; n: V3; r: number; surf: Surface }[]; volume: number; fell: number; /** Props wrecked or brought down. */ props: number }
+export interface BlastResult { holes: { p: V3; n: V3; r: number; surf: Surface }[]; volume: number; fell: number; /** Props wrecked or brought down. */ props: number; /** Bounds of the pieces removed (bullet holes on them go too). */ gone: [number[], number[]][] }
 
 const DYN_CAP = 6 * 700;
 /** Props a blast never takes away (the cache crates are the insurgency objective: insurgency.ts destroys them). */
@@ -30,7 +30,9 @@ const HUNG = /^(ceiling_fan|bulb_hanging|picture_frame|curtain_|wall_shelf|bedsh
 const CRUSH = /^(tree_|palm_|dead_tree|shrub|bush|reeds|grass|cart_|market_stall|plastic_|table_|trash|tyres|oil_drum|gas_cylinder|crate|pallet|cardboard|street_light|power_pole|sign_shop|kerb_barrier|generator|water_tank)/;
 const FELL = /^(tree_|palm_|dead_tree|street_light|power_pole)/;
 const SOFT = /^(floor_cushions|sofa_old|armchair|rug_|coffee_table|side_table|curtain_|bed_double|mattress_|wardrobe|dresser|clothes_pile|prayer_mat|kitchen_|table_|shoes_rack|wall_shelf|picture_frame|broken_furniture|cardboard|pallet|crate_|cart_|market_stall|plastic_|bedsheet|clothesline|trash)/;
-const MAX_RUBBLE = 2400, MAX_ACTIVE = 110;
+const MAX_RUBBLE = 2400, MAX_ACTIVE = 140;
+/** A fired clay brick (240 × 115 × 71 mm) and the plaster / mortar colours of broken walls. */
+const BRICK: [number, number, number] = [0.24, 0.071, 0.115];
 
 class DynMesh {
   n = 0;
@@ -74,6 +76,41 @@ class DynMesh {
   }
 }
 
+/**
+ * Openings (in a piece's plane) for a ragged breach of radius r centred on (pa, pb). Masonry breaks along its courses,
+ * but unevenly: course heights vary (a brick, a block, two courses together), the left and right edges wander
+ * independently (each a random walk, so neighbouring steps are related but never repeat), notches of a brick or so
+ * are knocked out of the edge, and in a wall the top closes in a rough corbelled point. `seed` is per blast, so
+ * every piece of one wall gets the same outline.
+ */
+function holeOps(pa: number, pb: number, r: number, wall: boolean, seed: number): Op[] {
+  let s0 = (Math.floor(seed * 2147483646) + 1) | 0;
+  const rnd = () => ((s0 = Math.imul(s0 ^ (s0 >>> 15), 0x2c1b3c6d) + 0x9e3779b9 | 0), ((s0 >>> 0) % 100000) / 100000);
+  const ops: Op[] = [], base = Math.max(0.1, Math.min(0.22, r / 5));
+  const bot = -1.0, top = wall ? 1.25 + rnd() * 0.3 : 1.0, mid = 0.2 + rnd() * 0.25;
+  let u = bot, wl = rnd(), wr = rnd(), ol = 0, or = 0;
+  while (u < top) {
+    const h = Math.max(0.09, base * (rnd() < 0.2 ? 1.8 + rnd() * 0.6 : 0.6 + rnd() * 0.8)) / r;
+    const u0 = u, u1 = Math.min(top, u + h), um = (u0 + u1) / 2; u = u1;
+    const prof = !wall || um <= mid ? Math.sqrt(Math.max(0, 1 - um * um)) : Math.sqrt(1 - mid * mid) * Math.max(0, (top - um) / (top - mid));
+    // Random walks for each edge: width factor and a drift.
+    wl = wl * 0.55 + rnd() * 0.45; wr = wr * 0.55 + rnd() * 0.45;
+    ol = Math.max(-0.35, Math.min(0.35, ol * 0.7 + (rnd() - 0.5) * 0.3)); or = Math.max(-0.35, Math.min(0.35, or * 0.7 + (rnd() - 0.5) * 0.3));
+    const hl = prof * (0.55 + 0.75 * wl) + ol, hr = prof * (0.55 + 0.75 * wr) + or;
+    if (hl + hr < 0.15) continue;
+    const a0 = pa - r * hl, a1 = pa + r * hr, b0 = pb + u0 * r, b1 = pb + u1 * r;
+    ops.push({ a0, a1, b0, b1 });
+    // Notches out of either edge: the whole course (a part-height notch left thin slats with gaps between them),
+    // a brick or two long.
+    for (const left of [true, false]) {
+      if (rnd() > 0.4) continue;
+      const L = 0.1 + rnd() * 0.28;
+      ops.push(left ? { a0: a0 - L, a1: a0 + 0.05, b0, b1 } : { a0: a1 - 0.05, a1: a1 + L, b0, b1 });
+    }
+  }
+  return ops;
+}
+
 /** Corner lists of the six faces of a box (−x, +x, −y, +y, −z, +z), as in Sink.box. */
 function facePts(min: number[], max: number[], f: number): number[][] {
   const [x0, y0, z0] = min, [x1, y1, z1] = max;
@@ -90,15 +127,18 @@ const NORMALS: V3[] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1],
 
 export class Destruction {
   private T: PieceTable;
+  /** Pieces below this index are the generator's (whole walls, slabs); the rest are fragments left by cuts. */
+  private n0 = 0;
   private meshes: THREE.Mesh[];
   private dyn = new Map<string, { dm: DynMesh; id: number }>();
   private touched = new Set<THREE.BufferAttribute>();
   private touchedDyn = new Set<DynMesh>();
   private dynOf = new Map<number, DynMesh>();
   // Rubble.
-  private rubble: THREE.InstancedMesh;
-  private rubbleN = 0;
-  private active: { body: RAPIER.RigidBody; i: number; t: number; s: THREE.Vector3 }[] = [];
+  /** Rubble meshes: 0 lumps (plaster, concrete), 1 bricks. */
+  private rubbles: THREE.InstancedMesh[] = [];
+  private rubbleN = [0, 0];
+  private active: { body: RAPIER.RigidBody; k: number; i: number; t: number; s: THREE.Vector3 }[] = [];
   private m4 = new THREE.Matrix4(); private q = new THREE.Quaternion(); private v = new THREE.Vector3();
   private propGone = new Set<number>();
   /** Props falling over (trees pushed down by a tank): their instance slots rotate about the base. */
@@ -110,10 +150,12 @@ export class Destruction {
   g: { audio: { play: (n: string, p: [number, number, number] | null, o?: Record<string, unknown>) => unknown } } | null = null;
   /** Pieces removed so far, and the time (ms) of the last blast's stages: scan, cut, settle, physics, upload. */
   removed = 0;
+  /** Seed of the last blast's outline (multiplayer: sent with the blast). */ lastSeed = 0;
   prof = [0, 0, 0, 0, 0];
 
   constructor(private city: City, private P: Physics, private W: WorldView, scene: THREE.Scene) {
     this.T = city.sink.pieces;
+    this.n0 = this.T.n;
     this.meshes = W.batchMesh.slice();
     // A rough lump: an icosahedron with its corners pulled about, flat shaded (a broken block, not a tidy cube).
     let s0 = 11; const rnd = () => ((s0 = (s0 * 16807) % 2147483647) / 2147483647);
@@ -130,10 +172,13 @@ export class Destruction {
     box.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     // Broken masonry: the damaged-plaster set (brick under render), tinted per chunk with the wall's colour.
     const mat = new THREE.MeshStandardMaterial({ map: tex('assets/tex/damaged_plaster/diff.jpg'), normalMap: tex('assets/tex/damaged_plaster/nor.jpg', false), roughness: 0.95 });
-    this.rubble = new THREE.InstancedMesh(box, mat, MAX_RUBBLE);
-    this.rubble.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_RUBBLE * 3), 3);
-    this.rubble.count = 0; this.rubble.frustumCulled = false; this.rubble.castShadow = true; this.rubble.receiveShadow = true;
-    scene.add(this.rubble);
+    const brick = new THREE.BoxGeometry(1, 1, 1);
+    for (const geo of [box, brick]) {
+      const im = new THREE.InstancedMesh(geo, mat, MAX_RUBBLE);
+      im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_RUBBLE * 3), 3);
+      im.count = 0; im.frustumCulled = false; im.castShadow = true; im.receiveShadow = true;
+      scene.add(im); this.rubbles.push(im);
+    }
   }
 
   // ---------------- faces ----------------
@@ -145,8 +190,15 @@ export class Destruction {
   }
   /** Collapse a drawn face to a point (its six vertices onto the first). */
   private kill(i: number, f: number) {
+    const ex = this.extra.get(i * 6 + f);
+    if (ex) { this.extra.delete(i * 6 + f); for (const [id, v] of ex) this.killQuad(id, v); }
     const id = this.T.face[i * 12 + f * 2]; if (id < 0) return;
-    const v = this.T.face[i * 12 + f * 2 + 1], m = this.meshes[id]; if (!m) return;
+    this.killQuad(id, this.T.face[i * 12 + f * 2 + 1]);
+  }
+  /** Extra quads of a fragment's cut edge drawn in several stretches (see cut). */
+  private extra = new Map<number, [number, number][]>();
+  private killQuad(id: number, v: number) {
+    const m = this.meshes[id]; if (!m) return;
     const a = m.geometry.attributes.position as THREE.BufferAttribute, p = a.array as Float32Array;
     for (let k = 1; k < 6; k++) { p[(v + k) * 3] = p[v * 3]; p[(v + k) * 3 + 1] = p[v * 3 + 1]; p[(v + k) * 3 + 2] = p[v * 3 + 2]; }
     const dm = this.dynOf.get(id);
@@ -166,9 +218,11 @@ export class Destruction {
     }
     return d;
   }
-  private emit(pi: number, f: number, min: number[], max: number[], st: Style, bottomAt: boolean, mi = st.mi, tint?: V3) {
+  /** `yr`: the original face's height range: the fragment keeps that face's baked bottom-to-top shading. */
+  private emit(pi: number, f: number, min: number[], max: number[], st: Style, yr: [number, number] | null, mi = st.mi, tint?: V3) {
     const d = this.dynFor(st.chunk, st.layer);
-    const top = tint ?? st.top, bot = tint ?? (bottomAt ? st.bot : st.top);
+    const at = (y: number): V3 => { const k = yr && yr[1] - yr[0] > 1e-4 ? Math.max(0, Math.min(1, (y - yr[0]) / (yr[1] - yr[0]))) : 1; return [st.bot[0] + (st.top[0] - st.bot[0]) * k, st.bot[1] + (st.top[1] - st.bot[1]) * k, st.bot[2] + (st.top[2] - st.bot[2]) * k]; };
+    const top = tint ?? at(max[1]), bot = tint ?? at(min[1]);
     const v0 = d.dm.quad(facePts(min, max, f), NORMALS[f], st, bot, top, mi);
     this.T.face[pi * 12 + f * 2] = d.id; this.T.face[pi * 12 + f * 2 + 1] = v0;
     this.touchedDyn.add(d.dm);
@@ -184,6 +238,24 @@ export class Destruction {
     if (c >= 0) { const s = this.P.surfOf(c); if (s) return s; }
     for (let f = 0; f < 6; f++) { const st = this.style(i, f); if (st) return MATS[MAT_IDS[st.mi]].surf; }
     return 'masonry';
+  }
+  /** Cut edges of fragments not drawn (or drawn only in part) because a neighbouring fragment covered them. */
+  private seams = new Map<number, [Style, number, V3]>();
+  /** Draw the hidden cut edges whose neighbour has just been removed (pieces in `gone`). */
+  private exposeSeams() {
+    if (!this.gone.length || !this.seams.size) return;
+    const e = 0.02;
+    for (const [key, [st, mi, tint]] of this.seams) {
+      const pi = Math.floor(key / 6), f = key % 6;
+      if (this.T.dead[pi]) { this.seams.delete(key); continue; }
+      const [min, max] = this.bounds(pi), ax = f >> 1, v = f & 1 ? max[ax] : min[ax];
+      const fmin = [...min], fmax = [...max]; fmin[ax] = fmax[ax] = v;
+      const hit = this.gone.some(([g0, g1]) => g0[0] <= fmax[0] + e && g1[0] >= fmin[0] - e && g0[1] <= fmax[1] + e && g1[1] >= fmin[1] - e && g0[2] <= fmax[2] + e && g1[2] >= fmin[2] - e);
+      if (!hit) continue;
+      this.kill(pi, f);
+      this.emit(pi, f, min, max, st, null, mi, tint);
+      this.seams.delete(key);
+    }
   }
   /** Bounds of the pieces removed by the current blast (props above them may have lost their footing). */
   private gone: [number[], number[]][] = [];
@@ -212,26 +284,60 @@ export class Destruction {
     const surf = this.surf(i);
     const coreMi = surf === 'masonry' ? MAT_INDEX.damaged : surf === 'concrete' ? MAT_INDEX.cracked : ext?.mi ?? MAT_INDEX.damaged;
     const coreTint: V3 | null = ext ? [ext.top[0] * 0.92, ext.top[1] * 0.9, ext.top[2] * 0.88] : null;
-    // Column decomposition (as building.ts wall()): cut positions along a, solid runs along b in each column.
-    const cuts = new Set<number>([A0, A1]);
-    for (const o of hit) { cuts.add(Math.max(A0, Math.min(A1, o.a0))); cuts.add(Math.max(A0, Math.min(A1, o.a1))); }
-    const xs = [...cuts].sort((p, q) => p - q), rects: [number, number, number, number][] = [];
+    // Decomposition into solid rectangles round the openings. Walls go row by row (bands across the wall, split only
+    // where the hole is), so the masonry above and below a breach stays one piece and no long seams run up the wall;
+    // floors go column by column. Adjacent runs with the same span are merged.
+    const rowMajor = t !== 1;
+    // Outside the envelope of the openings the piece stays whole: up to four large pieces round it (no long strips
+    // and seams running out from a hole to the edge of a slab or wall). Only the envelope is cut into courses.
+    let ea0 = Infinity, ea1 = -Infinity, eb0 = Infinity, eb1 = -Infinity;
+    for (const o of hit) { ea0 = Math.min(ea0, o.a0); ea1 = Math.max(ea1, o.a1); eb0 = Math.min(eb0, o.b0); eb1 = Math.max(eb1, o.b1); }
+    ea0 = Math.max(A0, ea0); ea1 = Math.min(A1, ea1); eb0 = Math.max(B0, eb0); eb1 = Math.min(B1, eb1);
+    const frame: [number, number, number, number][] = [];
+    if (eb0 - B0 > 0.01) frame.push([A0, A1, B0, eb0]);
+    if (B1 - eb1 > 0.01) frame.push([A0, A1, eb1, B1]);
+    if (ea0 - A0 > 0.01) frame.push([A0, ea0, eb0, eb1]);
+    if (A1 - ea1 > 0.01) frame.push([ea1, A1, eb0, eb1]);
+    const [P0, P1, Q0, Q1] = rowMajor ? [eb0, eb1, ea0, ea1] : [ea0, ea1, eb0, eb1];
+    const hs = hit.map((o) => (rowMajor ? { p0: o.b0, p1: o.b1, q0: o.a0, q1: o.a1 } : { p0: o.a0, p1: o.a1, q0: o.b0, q1: o.b1 }));
+    const cuts = new Set<number>([P0, P1]);
+    for (const o of hs) { cuts.add(Math.max(P0, Math.min(P1, o.p0))); cuts.add(Math.max(P0, Math.min(P1, o.p1))); }
+    // No slice thinner than 6 cm: such a cut is merged into its neighbour (thin slats left standing in a breach
+    // read as shelves; dropped, they opened slits).
+    const xs = [...cuts].sort((p, q) => p - q), runs: [number, number, number, number][] = [];
+    for (let k = 1; k < xs.length - 1;) { if (xs[k] - xs[k - 1] < 0.06 || xs[k + 1] - xs[k] < 0.06) xs.splice(k, 1); else k++; }
     for (let k = 0; k < xs.length - 1; k++) {
       const s0 = xs[k], s1 = xs[k + 1]; if (s1 - s0 < 0.01) continue;
-      const mid = (s0 + s1) / 2, col = hit.filter((o) => o.a0 <= mid && o.a1 >= mid).sort((p, q) => p.b0 - q.b0);
-      let y = B0;
-      for (const o of col) { if (o.b0 > y) rects.push([s0, s1, y, o.b0]); y = Math.max(y, o.b1); }
-      if (B1 > y) rects.push([s0, s1, y, B1]);
+      const mid = (s0 + s1) / 2, col = hs.filter((o) => o.p0 <= mid && o.p1 >= mid).sort((p, q) => p.q0 - q.q0);
+      let y = Q0;
+      // Material between two openings narrower than 6 cm goes with them; against the envelope's edge it stays.
+      for (const o of col) { if (o.q0 > y && (o.q0 - y >= 0.06 || y === Q0)) runs.push([s0, s1, y, o.q0]); y = Math.max(y, o.q1); }
+      if (Q1 > y) runs.push([s0, s1, y, Q1]);
     }
-    // Merge vertically adjacent column runs with the same b span (fewer, larger remnants).
-    rects.sort((p, q) => p[2] - q[2] || p[3] - q[3] || p[0] - q[0]);
-    const merged: [number, number, number, number][] = [];
-    for (const r of rects) { const l = merged[merged.length - 1]; if (l && l[2] === r[2] && l[3] === r[3] && Math.abs(l[1] - r[0]) < 1e-5) l[1] = r[1]; else merged.push([...r]); }
+    runs.sort((p, q) => p[2] - q[2] || p[3] - q[3] || p[0] - q[0]);
+    const mergedPQ: [number, number, number, number][] = [];
+    for (const r of runs) { const l = mergedPQ[mergedPQ.length - 1]; if (l && Math.abs(l[2] - r[2]) < 1e-5 && Math.abs(l[3] - r[3]) < 1e-5 && Math.abs(l[1] - r[0]) < 1e-5) l[1] = r[1]; else mergedPQ.push([...r]); }
+    // Back to (a0, a1, b0, b1).
+    const merged = [...frame, ...mergedPQ.map(([p0, p1, q0, q1]) => (rowMajor ? [q0, q1, p0, p1] : [p0, p1, q0, q1]) as [number, number, number, number])];
     this.remove(i);
     const out: number[] = [];
-    for (const [s0, s1, y0, y1] of merged) {
-      // Small chips go with the rubble; long thin strips stay (dropping them opened slits up the whole wall).
-      if (Math.min(s1 - s0, y1 - y0) < 0.1 && Math.max(s1 - s0, y1 - y0) < 0.6) continue;
+    // Small chips go with the rubble; long thin strips stay (dropping them opened slits up the whole wall).
+    const kept = merged.filter(([s0, s1, y0, y1]) => !(Math.min(s1 - s0, y1 - y0) < 0.1 && Math.max(s1 - s0, y1 - y0) < 0.6));
+    /**
+     * The part of a fragment's cut edge (in-plane axis 0 = a, 1 = b; side 0 low / 1 high) that no other fragment
+     * covers: [] when fully covered (a seam inside the wall: drawing it showed as dashed lines on the wall face),
+     * else the uncovered intervals along the other in-plane axis.
+     */
+    const open = (k: number, ia: number, side: number): [number, number][] => {
+      const R = kept[k], v = R[ia * 2 + side], io = 1 - ia, o0 = R[io * 2], o1 = R[io * 2 + 1];
+      const cov = kept.filter((K, m) => m !== k && Math.abs(K[ia * 2 + 1 - side] - v) < 1e-5 && K[io * 2] < o1 && K[io * 2 + 1] > o0)
+        .map((K) => [Math.max(o0, K[io * 2]), Math.min(o1, K[io * 2 + 1])]).sort((x, y) => x[0] - y[0]);
+      const gaps: [number, number][] = []; let c = o0;
+      for (const [c0, c1] of cov) { if (c0 > c + 1e-4) gaps.push([c, c0]); c = Math.max(c, c1); }
+      if (o1 > c + 1e-4) gaps.push([c, o1]);
+      return gaps;
+    };
+    for (const [k, [s0, s1, y0, y1]] of kept.entries()) {
       const nmin = [...min], nmax = [...max];
       nmin[a] = s0; nmax[a] = s1; nmin[b] = y0; nmax[b] = y1;
       const col = this.T.col[i] >= 0 ? this.P.addBox(nmin, nmax, this.T.col[i]) : -1;
@@ -240,8 +346,24 @@ export class Destruction {
         const ax = f >> 1, side = f & 1;
         const plane = side ? nmax[ax] : nmin[ax], orig = side ? max[ax] : min[ax];
         const st = styles[f];
-        if (ax === t || Math.abs(plane - orig) < 1e-4) { if (st) this.emit(pi, f, nmin, nmax, st, Math.abs(nmin[1] - min[1]) < 1e-4); }
-        else if (ext) this.emit(pi, f, nmin, nmax, ext, false, coreMi, coreTint!);
+        if (ax === t || Math.abs(plane - orig) < 1e-4) { if (st) this.emit(pi, f, nmin, nmax, st, [min[1], max[1]]); continue; }
+        if (!ext) continue;
+        const ia = ax === a ? 0 : 1, gaps = open(k, ia, side);
+        if (gaps.length === 1 && Math.abs(gaps[0][0] - (ia ? s0 : y0)) + Math.abs(gaps[0][1] - (ia ? s1 : y1)) < 1e-4) { this.emit(pi, f, nmin, nmax, ext, null, coreMi, coreTint!); continue; }
+        // Covered (wholly, or but for one stretch): drawn later if the neighbour goes (exposeSeams).
+        this.seams.set(pi * 6 + f, [ext, coreMi, coreTint!]);
+        // The uncovered stretches only (a covered part drawn shows through the wall face as a dashed line). The first
+        // quad is the face's record; any others are kept in `extra` so the face can still be removed whole.
+        const oa = ia ? a : b, F = pi * 12 + f * 2, more: [number, number][] = [];
+        let first: [number, number] | null = null;
+        for (const [g0, g1] of gaps) {
+          const m0 = [...nmin], m1 = [...nmax]; m0[oa] = g0; m1[oa] = g1;
+          this.emit(pi, f, m0, m1, ext, null, coreMi, coreTint!);
+          const ref: [number, number] = [this.T.face[F], this.T.face[F + 1]];
+          if (first) more.push(ref); else first = ref;
+        }
+        if (first) { this.T.face[F] = first[0]; this.T.face[F + 1] = first[1]; }
+        if (more.length) this.extra.set(pi * 6 + f, more);
       }
       out.push(pi);
     }
@@ -252,14 +374,17 @@ export class Destruction {
    * A blast at p. `breach`: hole radius in brick/plaster (concrete ×0.75, earth ×0.6); `light`: radius within which
    * sheet metal, wood and glass are torn out. `power` scales the rubble's throw.
    */
-  blast(p: V3, breach: number, light: number, power: number): BlastResult {
-    const res: BlastResult = { holes: [], volume: 0, fell: 0, props: 0 };
+  /** `seed` (0..1): the ragged outline's random seed — a multiplayer host sends it so every client cuts the same hole. */
+  blast(p: V3, breach: number, light: number, power: number, seedIn?: number): BlastResult {
+    const res: BlastResult = { holes: [], volume: 0, fell: 0, props: 0, gone: [] };
     const reach = Math.max(breach, light, breach * 1.8);
     if (reach <= 0.05) return res;
     const T = this.T, rnd = Math.random, t0 = performance.now();
     this.gone.length = 0;
-    // Jag shape shared by every piece of this blast (coplanar pieces of one wall line up).
-    const j = [rnd(), rnd(), rnd(), rnd()];
+    // One ragged outline per blast (pieces of the same wall line up).
+    const seed = seedIn ?? rnd();
+    this.lastSeed = seed;
+    let cling = 0;
     const cand: number[] = [];
     for (let i = 0; i < T.n; i++) {
       if (T.dead[i]) continue;
@@ -281,15 +406,10 @@ export class Destruction {
       if (d >= R) continue;
       const r = Math.sqrt(R * R - d * d); if (r < 0.12) continue;
       const a = t === 1 ? 0 : t === 0 ? 2 : 0, bb = t === 1 ? 2 : 1, pa = p[a], pb = p[bb];
-      // A ragged hole: three overlapping rectangles (wide, tall and the core) plus a bite out of one edge.
-      const ops: Op[] = [
-        { a0: pa - r * 0.8, a1: pa + r * 0.8, b0: pb - r * 0.75, b1: pb + r * 0.75 },
-        { a0: pa - r * (0.45 + 0.25 * j[0]), a1: pa + r * (0.4 + 0.3 * j[1]), b0: pb - r * 1.02, b1: pb + r * (0.9 + 0.12 * j[2]) },
-        { a0: pa - r * 1.02, a1: pa + r * (0.85 + 0.15 * j[3]), b0: pb - r * (0.25 + 0.3 * j[1]), b1: pb + r * (0.3 + 0.25 * j[0]) },
-        { a0: pa + r * (0.3 * j[2] - 0.2), a1: pa + r * (0.55 + 0.3 * j[3]), b0: pb + r * 0.6, b1: pb + r * (1.0 + 0.15 * j[0]) },
-        { a0: pa - r * (0.95 + 0.2 * j[1]), a1: pa - r * (0.5 - 0.2 * j[2]), b0: pb - r * (0.9 + 0.1 * j[3]), b1: pb - r * 0.4 },
-        { a0: pa + r * 0.6, a1: pa + r * (1.0 + 0.2 * j[0]), b0: pb + r * (0.1 - 0.3 * j[2]), b1: pb + r * (0.5 + 0.2 * j[1]) },
-      ];
+      // The hole is cut course by course (12–24 cm rows, the height of a brick or block course), each row's width
+      // following a ragged circle; in a wall the top closes in a corbelled point (unsupported masonry above a breach
+      // falls in a rough inverted V, as real brickwork does). The stepped edges read as broken bricks.
+      const ops = holeOps(pa, pb, r, t !== 1, seed);
       const vol0 = ext[0] * ext[1] * ext[2];
       const out = this.cut(i, t, ops);
       if (!out) continue;
@@ -299,6 +419,25 @@ export class Destruction {
       const n: V3 = [0, 0, 0]; n[t] = p[t] < (min[t] + max[t]) / 2 ? -1 : 1;
       const hp: V3 = [p[0], p[1], p[2]]; hp[t] = n[t] < 0 ? min[t] : max[t];
       if (res.holes.length < 6) res.holes.push({ p: hp, n, r, surf: s });
+      // Broken pieces left lying on the ledges and sill of a wall breach (half bedded in), at odd angles: breaks up
+      // the stepped outline. They rest on masonry, so they fall when it goes (settled-rubble checks).
+      if (t !== 1 && out.length && s !== 'metal' && s !== 'wood' && s !== 'glass') {
+        const st = this.style(out[0], t * 2) ?? this.style(out[0], t * 2 + 1), th = ext[t];
+        const tint: V3 = st ? [st.top[0] * 0.95, st.top[1] * 0.93, st.top[2] * 0.9] : [0.7, 0.66, 0.6];
+        const solid = (q: V3) => out.some((k) => { const [m0, m1] = this.bounds(k); return q[0] > m0[0] && q[0] < m1[0] && q[1] > m0[1] && q[1] < m1[1] && q[2] > m0[2] && q[2] < m1[2]; });
+        for (const o of ops) {
+          if (cling >= 16 || rnd() > 0.35) continue;
+          const sz = Math.max(0.07, Math.min(0.3, th * (0.6 + rnd() * 0.7)));
+          const q: V3 = [0, 0, 0];
+          q[a] = o.a0 + (o.a1 - o.a0) * rnd(); q[t] = (min[t] + max[t]) / 2 + (rnd() - 0.5) * th * 0.5; q[bb] = o.b0 - 0.04;
+          if (!solid(q)) continue; // nothing under this stretch of the opening
+          q[bb] = o.b0 + sz * 0.22;
+          if (solid(q)) continue; // inside the next course: not a ledge
+          const kv = 0.85 + rnd() * 0.2;
+          this.cling(q, new THREE.Vector3(sz * (0.8 + rnd() * 0.5), sz * (0.55 + rnd() * 0.3), sz * (0.8 + rnd() * 0.5)), [tint[0] * kv, tint[1] * kv, tint[2] * kv]);
+          cling++;
+        }
+      }
       this.throwRubble(min, max, t, p, r, gone, power, out.length ? this.style(out[0], t * 2) ?? this.style(out[0], t * 2 + 1) : null, s);
     }
     const t2 = performance.now();
@@ -309,13 +448,23 @@ export class Destruction {
     this.P.commit();
     const t4 = performance.now();
     this.flush();
+    this.exposeSeams();
+    // Settled rubble that lay on a floor or ledge now gone falls again.
+    this.wakeFrozen(p, reach + 6);
+    res.gone = this.gone.slice();
     this.prof = [t1 - t0, t2 - t1, t3 - t2, t4 - t3, performance.now() - t4].map((x) => Math.round(x * 10) / 10);
     return res;
   }
 
   /**
-   * Bring down whatever no longer connects to the ground: within the box p ± r, pieces that touch the ground or
-   * reach outside the box are anchored; everything joined to an anchor (touching faces) stands; the rest falls.
+   * Bring down whatever is no longer held up. Within the box p ± r, pieces on the ground or reaching outside the box
+   * are anchors. Support then spreads only through solid pieces (visual-only trims, caps and bands carry nothing):
+   *  - the generator's own pieces (whole walls, slabs, lintels) stand if they touch a held piece (their joints are
+   *    the builder's: slabs cast into walls, lintels into piers);
+   *  - fragments left by cuts must be carried: resting on a held piece below them (real bearing, not a corner), or
+   *    bonded at a side face to one (a course running on into sound wall), with a short reach from the nearest
+   *    bearing (about 1.4 m of masonry, more for a slab). Hanging from what is above does not count, so brick ledges,
+   *    strips over a breach and fragments joined by a corner come down.
    */
   private settle(p: V3, r: number, power: number): number {
     const T = this.T, near: number[] = [];
@@ -326,32 +475,59 @@ export class Destruction {
       near.push(i);
     }
     if (near.length > 2500) return 0;
-    const anchored = new Uint8Array(near.length), queue: number[] = [];
-    near.forEach((i, k) => {
-      const [min, max] = this.bounds(i);
-      const out = min[0] < p[0] - r || max[0] > p[0] + r || min[2] < p[2] - r || max[2] > p[2] + r;
-      if (out || min[1] <= groundH((min[0] + max[0]) / 2, (min[2] + max[2]) / 2) + 0.05) { anchored[k] = 1; queue.push(k); }
-    });
+    const REACH = 1.4, held = new Float32Array(near.length).fill(-1), queue: number[] = [];
     const bx = near.map((i) => this.bounds(i)), e = 0.03;
-    const touch = (a: number, b: number) => bx[a][0][0] <= bx[b][1][0] + e && bx[a][1][0] >= bx[b][0][0] - e && bx[a][0][1] <= bx[b][1][1] + e && bx[a][1][1] >= bx[b][0][1] - e && bx[a][0][2] <= bx[b][1][2] + e && bx[a][1][2] >= bx[b][0][2] - e;
-    // 2 m spatial hash (x, y, z) so the flood fill only compares pieces that are close.
+    near.forEach((i, k) => {
+      const [min, max] = bx[k];
+      const out = min[0] < p[0] - r || max[0] > p[0] + r || min[2] < p[2] - r || max[2] > p[2] + r;
+      if (out || min[1] <= groundH((min[0] + max[0]) / 2, (min[2] + max[2]) / 2) + 0.05) { held[k] = REACH; queue.push(k); }
+    });
+    const ov = (a: number, b: number, ax: number) => Math.min(bx[a][1][ax], bx[b][1][ax]) - Math.max(bx[a][0][ax], bx[b][0][ax]);
+    const touch = (a: number, b: number) => ov(a, b, 0) >= -e && ov(a, b, 1) >= -e && ov(a, b, 2) >= -e;
+    // 2 m spatial hash (x, y, z) so the fill only compares pieces that are close.
     const C = 2, cells = new Map<number, number[]>(), ck = (x: number, y: number, z: number) => ((x + 512) * 1024 + (y + 512)) * 1024 + (z + 512);
     const span = (k: number, f: (c: number) => void) => {
       const [mn, mx] = bx[k];
       for (let x = Math.floor((mn[0] - e) / C); x <= Math.floor((mx[0] + e) / C); x++) for (let y = Math.floor((mn[1] - e) / C); y <= Math.floor((mx[1] + e) / C); y++) for (let z = Math.floor((mn[2] - e) / C); z <= Math.floor((mx[2] + e) / C); z++) f(ck(x, y, z));
     };
     near.forEach((_, k) => span(k, (c) => { let l = cells.get(c); if (!l) cells.set(c, l = []); l.push(k); }));
+    /** How much reach fragment m keeps when held by k (−1: k does not hold it). */
+    const carry = (k: number, m: number): number => {
+      const [a0, a1] = bx[k], [b0, b1] = bx[m];
+      if (near[m] < this.n0) return REACH;
+      // Bearing: k's top at m's bottom (or k running up past it), k starting lower, a real footprint overlap.
+      const ox = ov(k, m, 0), oz = ov(k, m, 2);
+      if (a1[1] >= b0[1] - e && a0[1] < b0[1] - 0.02 && ox > -e && oz > -e && Math.max(ox, oz) >= 0.08) return REACH;
+      // Side bond: overlapping most of m's height (a slab fragment: any real edge), face contact of some area.
+      const oy = ov(k, m, 1), hm = b1[1] - b0[1];
+      if (oy < Math.min(0.5 * hm, 0.1) && !(hm < 0.4 && oy > 0.02)) return -1;
+      const ax = ox <= oz ? 0 : 2, other = ax === 0 ? oz : ox;
+      if (other < 0.04 || oy * other < 0.006) return -1;
+      const slab = hm < 0.4 && (b1[0] - b0[0]) > hm * 2 && (b1[2] - b0[2]) > hm * 2;
+      // A thin course of masonry cannot reach out over nothing (a slat bonded only at its end comes down); a deep
+      // one corbels about a brick per course height.
+      if (!slab && hm < 0.09) return -1;
+      const cost = (b1[ax] - b0[ax]) * (slab ? 0.3 : Math.max(1, 0.24 / hm));
+      return Math.min(held[k], REACH) - cost;
+    };
     while (queue.length) {
       const k = queue.pop()!;
-      span(k, (c) => { for (const m of cells.get(c)!) if (!anchored[m] && touch(k, m)) { anchored[m] = 1; queue.push(m); } });
+      if (T.col[near[k]] < 0) continue; // visual-only: holds nothing up
+      span(k, (c) => {
+        for (const m of cells.get(c)!) {
+          if (m === k || held[m] >= REACH || !touch(k, m)) continue;
+          const v = carry(k, m);
+          if (v >= 0 && v > held[m] + 1e-3) { held[m] = v; queue.push(m); }
+        }
+      });
     }
     let fell = 0;
     near.forEach((i, k) => {
-      if (anchored[k]) return;
+      if (held[k] >= 0) return;
       const [min, max] = bx[k], st = this.style(i, 0) ?? this.style(i, 1) ?? this.style(i, 4) ?? this.style(i, 5) ?? this.style(i, 3);
       const vol = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
       this.remove(i); fell++;
-      this.throwRubble(min, max, -1, p, 0, vol, power * 0.2, st, this.surf(i));
+      this.collapse(min, max, p, vol, power, st, this.surf(i));
     });
     return fell;
   }
@@ -417,7 +593,7 @@ export class Destruction {
       const out = this.cutAlong(i, t, ops);
       if (out) { walls++; this.throwRubble(mn, mx, -1, [cx - dir[0] * 3, (mn[1] + mx[1]) / 2, cz - dir[1] * 3], 0, ext[0] * ext[1] * ext[2] * 0.5, 0.5, null, s2); for (const k of out) { const [a, b] = this.bounds(k); this.gridAdd(this.pieceGrid, k, a[0], a[2], b[0], b[2]); } }
     }
-    if (walls) { this.settle([cx, y0, cz], 8, 0.3); this.P.commit(); this.flush(); this.g?.audio.play('debris_fall', [cx, y0 + 1, cz], { range: 150, gain: 0.9 }); }
+    if (walls) { this.settle([cx, y0, cz], 8, 0.3); this.exposeSeams(); this.gone.length = 0; this.P.commit(); this.flush(); this.g?.audio.play('debris_fall', [cx, y0 + 1, cz], { range: 150, gain: 0.9 }); }
     else if (n) this.P.commit();
     return n + walls;
   }
@@ -433,28 +609,103 @@ export class Destruction {
   private props(p: V3, light: number, r: number, power: number): number {
     const P = this.P, list = this.city.props; let n = 0;
     const solid = (x: number, y: number, z: number) => !!P.boxAt(x, y, z);
-    for (let pi = 0; pi < list.length; pi++) {
-      const q = list[pi];
-      if (Math.abs(q.x - p[0]) > r || Math.abs(q.z - p[2]) > r || this.propGone.has(pi) || ROBUST.test(q.id) || !this.W.propSlots.has(pi)) continue;
-      const d = Math.hypot(q.x - p[0], q.y + 0.4 - p[1], q.z - p[2]);
-      let gone = d < light * 0.9;
-      // Footing: only props over (or hung next to) something this blast removed can have lost it.
-      const exposed = !gone && this.gone.some(([a, b]) => q.x > a[0] - 0.6 && q.x < b[0] + 0.6 && q.z > a[2] - 0.6 && q.z < b[2] + 0.6 && q.y > a[1] - 0.5 && q.y < b[1] + 4);
-      if (exposed && !q.ground && q.y > groundH(q.x, q.z) + 0.3) {
-        const y = q.y;
-        const held = HUNG.test(q.id)
-          ? [[0.35, 0], [-0.35, 0], [0, 0.35], [0, -0.35]].some(([dx, dz]) => solid(q.x + dx, y + 0.3, q.z + dz)) || !!P.castRay([q.x, y + 0.1, q.z], [0, 1, 0], 3.5)
-          : [[0, 0], [0.25, 0], [-0.25, 0], [0, 0.25], [0, -0.25]].some(([dx, dz]) => solid(q.x + dx, y - 0.08, q.z + dz));
-        gone = !held;
+    // Several passes: a wardrobe that falls takes away the footing of the boxes stacked on it.
+    for (let pass = 0; pass < 3; pass++) {
+      let moved = 0;
+      for (let pi = 0; pi < list.length; pi++) {
+        const q = list[pi];
+        if (Math.abs(q.x - p[0]) > r || Math.abs(q.z - p[2]) > r || this.propGone.has(pi) || ROBUST.test(q.id) || !this.W.propSlots.has(pi)) continue;
+        const box = this.propBox(pi);
+        const d = Math.hypot(q.x - p[0], q.y + 0.4 - p[1], q.z - p[2]);
+        // Wrecked outright (close to the blast, first pass only).
+        // (A charge under the floor wrecks the floor, not the furniture on it: that falls through the hole instead.)
+        const sameLevel = p[1] > q.y - 0.25;
+        if (pass === 0 && sameLevel && d < light * 0.9) {
+          this.propGone.add(pi); n++; moved++;
+          for (const [im, i] of this.W.propSlots.get(pi)!) { im.setMatrixAt(i, this.zero); im.instanceMatrix.needsUpdate = true; }
+          P.removeProp(pi); this.gone.push([[box.min.x, box.min.y, box.min.z], [box.max.x, box.max.y, box.max.z]]);
+          this.throwRubble([q.x - 0.4, q.y, q.z - 0.4], [q.x + 0.4, q.y + 0.9, q.z + 0.4], -1, p, 0, 0.12, power, null, SOFT.test(q.id) ? 'wood' : 'metal');
+          continue;
+        }
+        // Knocked over / shoved by the blast (and with a line from the blast to it).
+        if (pass === 0 && sameLevel && !HUNG.test(q.id) && d < Math.max(light * 2.2, 2.5) && P.clear(p, [q.x, q.y + 0.4, q.z], G_WORLD)) {
+          const away: [number, number] = [q.x - p[0], q.z - p[2]], al = Math.hypot(away[0], away[1]) || 1;
+          const push = (1 - d / Math.max(light * 2.2, 2.5)) * 2.2 * Math.min(2, power);
+          const tall = box.max.y - box.min.y > 1.2;
+          this.dropProp(pi, box, [away[0] / al * push, away[1] / al * push], tall ? 1.45 : 0.2 + Math.random() * 0.4, [away[0] / al, away[1] / al]);
+          n++; moved++; continue;
+        }
+        // Footing: only props over (or hung next to) something removed can have lost it.
+        const exposed = this.gone.some(([a, b]) => box.max.x > a[0] - 0.3 && box.min.x < b[0] + 0.3 && box.max.z > a[2] - 0.3 && box.min.z < b[2] + 0.3 && q.y > a[1] - 0.5 && q.y < b[1] + 4);
+        if (!exposed || q.ground || q.y < groundH(q.x, q.z) + 0.3) continue;
+        let held: boolean;
+        if (HUNG.test(q.id)) held = [[0.35, 0], [-0.35, 0], [0, 0.35], [0, -0.35]].some(([dx, dz]) => solid(q.x + dx, q.y + 0.3, q.z + dz)) || !!P.castRay([q.x, q.y + 0.1, q.z], [0, 1, 0], 3.5);
+        else {
+          // Sample the whole footprint (4 × 4): it stays if most of it, and its middle, still rest on something.
+          let ok = 0; const N = 4, y = q.y - 0.08;
+          const sx = (box.max.x - box.min.x) * 0.9, sz = (box.max.z - box.min.z) * 0.9, x0 = (box.min.x + box.max.x) / 2 - sx / 2, z0 = (box.min.z + box.max.z) / 2 - sz / 2;
+          let hx = 0, hz = 0, nh = 0;
+          for (let a = 0; a < N; a++) for (let b = 0; b < N; b++) { const x = x0 + (a + 0.5) * sx / N, z = z0 + (b + 0.5) * sz / N; if (solid(x, y, z)) ok++; else { hx += x; hz += z; nh++; } }
+          if (nh) this.holeAt = [hx / nh, hz / nh];
+          const mid = solid((box.min.x + box.max.x) / 2, y, (box.min.z + box.max.z) / 2);
+          held = ok / (N * N) >= 0.6 || (mid && ok / (N * N) >= 0.4);
+        }
+        if (held) continue;
+        // It falls through the hole to whatever is below (tipping as it goes).
+        // Falls into the hole: slides towards the unsupported side as it goes.
+        const ctr = [(box.min.x + box.max.x) / 2, (box.min.z + box.max.z) / 2], hp = this.holeAt ?? ctr;
+        this.dropProp(pi, box, [(hp[0] - ctr[0]) * 0.8, (hp[1] - ctr[1]) * 0.8], 0.15 + Math.random() * 0.5, null, true);
+        this.holeAt = null;
+        n++; moved++;
       }
-      if (!gone) continue;
-      this.propGone.add(pi); n++;
-      for (const [im, i] of this.W.propSlots.get(pi)!) { im.setMatrixAt(i, this.zero); im.instanceMatrix.needsUpdate = true; }
-      P.removeProp(pi);
-      const soft = SOFT.test(q.id);
-      this.throwRubble([q.x - 0.4, q.y, q.z - 0.4], [q.x + 0.4, q.y + 0.9, q.z + 0.4], -1, p, 0, 0.12, d < light ? power : 0.2, null, soft ? 'wood' : 'metal');
+      if (!moved) break;
     }
     return n;
+  }
+
+  /** World bounds of a placed prop (its instances' geometry through their matrices). */
+  private propBox(pi: number): THREE.Box3 {
+    const out = new THREE.Box3(), b = new THREE.Box3();
+    for (const [im, i] of this.W.propSlots.get(pi) ?? []) {
+      if (!im.geometry.boundingBox) im.geometry.computeBoundingBox();
+      im.getMatrixAt(i, this.m4);
+      b.copy(im.geometry.boundingBox!).applyMatrix4(this.m4);
+      out.union(b);
+    }
+    if (out.isEmpty()) { const q = this.city.props[pi]; out.set(new THREE.Vector3(q.x - 0.4, q.y, q.z - 0.4), new THREE.Vector3(q.x + 0.4, q.y + 0.8, q.z + 0.4)); }
+    return out;
+  }
+
+  /** Props falling to the floor below (through a hole) or knocked over by a blast: animated, then left lying. */
+  private dropping: { slots: [THREE.InstancedMesh, number, THREE.Matrix4][]; base: THREE.Vector3; dy: number; slide: [number, number]; axis: THREE.Vector3; tilt: number; t: number; vy: number; y: number }[] = [];
+  private holeAt: [number, number] | null = null;
+  private dropProp(pi: number, box: THREE.Box3, slide: [number, number], tilt: number, dir: [number, number] | null, through = false) {
+    const q = this.city.props[pi], P = this.P;
+    this.propGone.add(pi); P.removeProp(pi);
+    this.gone.push([[box.min.x, box.min.y, box.min.z], [box.max.x, box.max.y, box.max.z]]);
+    // The floor below (through the hole) or the floor it stands on (knocked over).
+    const cx = (box.min.x + box.max.x) / 2 + slide[0], cz = (box.min.z + box.max.z) / 2 + slide[1];
+    // Through a hole: the floor below (the ray starts under the slab); knocked over: it stays on its own floor.
+    const h = through ? P.castRay([cx, q.y - 0.4, cz], [0, -1, 0], 40, G_WORLD) : null;
+    const dy = h ? Math.max(0, q.y - h.point[1]) : 0;
+    const a = dir ? Math.atan2(dir[1], dir[0]) : Math.random() * Math.PI * 2;
+    const axis = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a)); // tips the top towards `dir` (up × dir)
+    const slots = this.W.propSlots.get(pi)!.map(([im, i]) => { const m = new THREE.Matrix4(); im.getMatrixAt(i, m); return [im, i, m] as [THREE.InstancedMesh, number, THREE.Matrix4]; });
+    this.dropping.push({ slots, base: new THREE.Vector3(q.x, q.y, q.z), dy, slide, axis, tilt: Math.min(1.5, tilt), t: 0, vy: 0, y: 0 });
+    if (dy > 0.5) this.g?.audio.play('body_fall', [q.x, q.y, q.z], { range: 40, gain: 0.7, rate: 0.7 });
+  }
+  private updateDropping(dt: number) {
+    for (let k = this.dropping.length - 1; k >= 0; k--) {
+      const f = this.dropping[k]; f.t += dt;
+      // Falls under gravity to the floor below; slides and tips over in ~0.5 s.
+      f.vy += 9.81 * dt; f.y = Math.min(f.dy, f.y + f.vy * dt);
+      const s = Math.min(1, f.t / 0.5), e = 1 - (1 - s) * (1 - s);
+      const tilt = f.tilt * Math.min(1, f.dy > 0.3 ? f.y / f.dy : e);
+      const M = new THREE.Matrix4().makeTranslation(f.base.x + f.slide[0] * e, f.base.y - f.y, f.base.z + f.slide[1] * e)
+        .multiply(new THREE.Matrix4().makeRotationAxis(f.axis, tilt)).multiply(new THREE.Matrix4().makeTranslation(-f.base.x, -f.base.y, -f.base.z));
+      for (const [im, i, m0] of f.slots) { im.setMatrixAt(i, this.m4.copy(M).multiply(m0)); im.instanceMatrix.needsUpdate = true; }
+      if (f.y >= f.dy && s >= 1) this.dropping.splice(k, 1);
+    }
   }
 
   // ---------------- rubble ----------------
@@ -464,51 +715,96 @@ export class Destruction {
   }
   private throwRubble(min: number[], max: number[], t: number, p: V3, r: number, vol: number, power: number, st: Style | null, surf: Surface) {
     if (vol <= 0.002) return;
-    const n = Math.max(3, Math.min(t < 0 ? 14 : 26, Math.round(vol / 0.012)));
+    // Broken masonry is mostly bricks and fist-sized pieces, with a few larger lumps of bonded brick or plaster.
+    const n = Math.max(4, Math.min(t < 0 ? 18 : 40, Math.round(vol / 0.006)));
     const base: V3 = st ? [Math.min(1, st.top[0] * 1.15), Math.min(1, st.top[1] * 1.15), Math.min(1, st.top[2] * 1.15)] : [0.8, 0.75, 0.66];
     const light = surf === 'metal' || surf === 'wood';
-    const tintOf = (): V3 => { const k = 0.75 + Math.random() * 0.25; return surf === 'wood' ? [0.52 * k, 0.4 * k, 0.27 * k] : light ? [0.45 * k, 0.43 * k, 0.4 * k] : [base[0] * k, base[1] * k, base[2] * k]; };
-    const size = Math.cbrt(vol / n) * 0.95;
+    const size = Math.min(0.22, Math.cbrt(vol / n) * 0.9);
     for (let k = 0; k < n; k++) {
       const c: V3 = [0, 0, 0];
       for (let a = 0; a < 3; a++) {
         const lo = t >= 0 && a !== t ? Math.max(min[a], p[a] - r * 0.8) : min[a], hi = t >= 0 && a !== t ? Math.min(max[a], p[a] + r * 0.8) : max[a];
         c[a] = lo + Math.random() * Math.max(0, hi - lo);
       }
-      // Sizes spread widely (a few big lumps, many fist-sized pieces).
-      const g = Math.pow(Math.random(), 1.6) * 1.5 + 0.35;
-      const s = new THREE.Vector3(size * g * (0.7 + Math.random() * 0.6), size * g * (0.45 + Math.random() * 0.45), size * g * (0.7 + Math.random() * 0.6)).clampScalar(0.05, light ? 0.5 : 0.38);
-      if (light) s.y = Math.min(s.y, 0.03);
+      const kv = 0.75 + Math.random() * 0.25;
+      let kind = 0, s: THREE.Vector3, tint: V3;
+      if (light) {
+        // Splinters and torn sheet: thin flat pieces.
+        const g = 0.5 + Math.random();
+        s = new THREE.Vector3(0.12 + Math.random() * 0.3 * g, 0.02, 0.05 + Math.random() * 0.12);
+        tint = surf === 'wood' ? [0.52 * kv, 0.4 * kv, 0.27 * kv] : [0.45 * kv, 0.43 * kv, 0.4 * kv];
+      } else if (surf === 'masonry' && Math.random() < 0.6) {
+        // A brick (whole, or a half / bat).
+        kind = 1;
+        const half = Math.random() < 0.45 ? 0.5 + Math.random() * 0.25 : 1;
+        s = new THREE.Vector3(BRICK[0] * half, BRICK[1], BRICK[2]);
+        tint = Math.random() < 0.75 ? [0.62 * kv, 0.4 * kv, 0.29 * kv] : [base[0] * kv, base[1] * kv, base[2] * kv];
+      } else {
+        // Plaster / concrete: many small pieces, a few big ones.
+        const g = Math.pow(Math.random(), 2.2) * 2.2 + 0.3;
+        s = new THREE.Vector3(size * g * (0.7 + Math.random() * 0.6), size * g * (0.4 + Math.random() * 0.4), size * g * (0.7 + Math.random() * 0.6)).clampScalar(0.035, 0.4);
+        tint = [base[0] * kv, base[1] * kv, base[2] * kv];
+      }
       const d = [c[0] - p[0], c[1] - p[1], c[2] - p[2]], L = Math.hypot(d[0], d[1], d[2]) || 1;
-      const sp = power * (2 + Math.random() * 6) / Math.max(1, L * 0.7);
-      this.spawn(c, s, tintOf(), [d[0] / L * sp, d[1] / L * sp + 1 + Math.random() * 2.5 * power, d[2] / L * sp]);
+      const sp = power * (2 + Math.random() * 7) / Math.max(1, L * 0.7);
+      this.spawn(kind, c, s, tint, [d[0] / L * sp, d[1] / L * sp + 0.5 + Math.random() * 2.5 * power, d[2] / L * sp]);
     }
   }
 
+  /**
+   * An unsupported piece comes down: broken into a few large blocks (its own thickness, at most ~0.7 m across) that
+   * drop and tumble from where it stood, with the loose bricks and fragments of its broken edges.
+   */
+  private collapse(min: number[], max: number[], p: V3, vol: number, power: number, st: Style | null, surf: Surface) {
+    const ext = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    if (vol > 0.03 && surf !== 'metal' && surf !== 'wood' && surf !== 'glass') {
+      const nd = ext.map((x) => Math.max(1, Math.round(x / 0.7))), tot = nd[0] * nd[1] * nd[2];
+      const keep = Math.min(1, 10 / tot), base: V3 = st ? [Math.min(1, st.top[0] * 1.1), Math.min(1, st.top[1] * 1.1), Math.min(1, st.top[2] * 1.1)] : [0.75, 0.7, 0.62];
+      for (let ix = 0; ix < nd[0]; ix++) for (let iy = 0; iy < nd[1]; iy++) for (let iz = 0; iz < nd[2]; iz++) {
+        if (Math.random() > keep) continue;
+        const sz = new THREE.Vector3(ext[0] / nd[0], ext[1] / nd[1], ext[2] / nd[2]).multiplyScalar(0.8 + Math.random() * 0.15).clampScalar(0.06, 0.8);
+        const c: V3 = [min[0] + (ix + 0.5) * ext[0] / nd[0], min[1] + (iy + 0.5) * ext[1] / nd[1], min[2] + (iz + 0.5) * ext[2] / nd[2]];
+        const d = [c[0] - p[0], c[2] - p[2]], L = Math.hypot(d[0], d[1]) || 1, sp = power * 0.6 * Math.random();
+        const kv = 0.8 + Math.random() * 0.2;
+        this.spawn(1, c, sz, [base[0] * kv, base[1] * kv, base[2] * kv], [d[0] / L * sp, -0.5, d[1] / L * sp]);
+      }
+      this.throwRubble(min, max, -1, p, 0, vol * 0.35, power * 0.1, st, surf);
+    } else this.throwRubble(min, max, -1, p, 0, vol, power * 0.2, st, surf);
+  }
+
   /** Rubble waiting to be created (a few per frame: making 50 bodies at once stalled the blast frame). */
-  private pending: [V3, THREE.Vector3, V3, V3][] = [];
-  private spawn(c: V3, s: THREE.Vector3, tint: V3, vel: V3) { this.pending.push([c, s, tint, vel]); }
-  private make(c: V3, s: THREE.Vector3, tint: V3, vel: V3) {
-    const i = this.rubbleN % MAX_RUBBLE; this.rubbleN++;
-    const prev = this.active.findIndex((a) => a.i === i);
+  private pending: [number, V3, THREE.Vector3, V3, V3][] = [];
+  private spawn(kind: number, c: V3, s: THREE.Vector3, tint: V3, vel: V3) { this.pending.push([kind, c, s, tint, vel]); }
+  private make(k: number, c: V3, s: THREE.Vector3, tint: V3, vel: V3) {
+    const i = this.rubbleN[k] % MAX_RUBBLE; this.rubbleN[k]++;
+    const im = this.rubbles[k];
+    const prev = this.active.findIndex((a) => a.k === k && a.i === i);
     if (prev >= 0) { this.P.world.removeRigidBody(this.active[prev].body); this.active.splice(prev, 1); }
-    if (this.active.length >= MAX_ACTIVE) { const o = this.active.shift()!; this.P.world.removeRigidBody(o.body); }
+    this.frozen.delete(k * MAX_RUBBLE + i);
+    // Over the limit: the oldest piece that has come to rest is frozen; if none has, the oldest is laid on whatever
+    // is under it (never left hanging where it was).
+    if (this.active.length >= MAX_ACTIVE) {
+      let o = this.active.findIndex((a) => { const v = a.body.linvel(); return a.t > 0.5 && v.x * v.x + v.y * v.y + v.z * v.z < 0.25; });
+      if (o < 0) o = 0;
+      this.freeze(o);
+    }
     const R = RAPIER, w = this.P.world;
     const body = w.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(c[0], c[1], c[2]).setLinvel(vel[0], vel[1], vel[2])
-      .setAngvel({ x: (Math.random() - 0.5) * 12, y: (Math.random() - 0.5) * 12, z: (Math.random() - 0.5) * 12 }).setLinearDamping(0.05).setAngularDamping(0.4).setCcdEnabled(true));
-    w.createCollider(R.ColliderDesc.cuboid(s.x * 0.45, s.y * 0.45, s.z * 0.45).setDensity(1900).setFriction(0.9).setRestitution(0.1).setCollisionGroups(groups(G_DEBRIS, G_WORLD | G_VEH | G_DEBRIS)), body);
-    this.active.push({ body, i, t: 0, s });
-    this.rubble.setColorAt(i, new THREE.Color(tint[0], tint[1], tint[2]));
-    this.rubble.count = Math.min(MAX_RUBBLE, this.rubbleN);
-    this.place(i, c, { x: 0, y: 0, z: 0, w: 1 }, s);
-    this.rubble.instanceColor!.needsUpdate = true;
+      .setAngvel({ x: (Math.random() - 0.5) * 14, y: (Math.random() - 0.5) * 14, z: (Math.random() - 0.5) * 14 }).setLinearDamping(0.05).setAngularDamping(0.5).setCcdEnabled(true));
+    const f = k === 1 ? 0.5 : 0.45;
+    w.createCollider(R.ColliderDesc.cuboid(s.x * f, s.y * f, s.z * f).setDensity(k === 1 ? 1800 : 1900).setFriction(0.9).setRestitution(0.08).setCollisionGroups(groups(G_DEBRIS, G_WORLD | G_VEH | G_DEBRIS)), body);
+    this.active.push({ body, k, i, t: 0, s });
+    im.setColorAt(i, new THREE.Color(tint[0], tint[1], tint[2]));
+    im.count = Math.min(MAX_RUBBLE, this.rubbleN[k]);
+    this.place(k, i, c, { x: 0, y: 0, z: 0, w: 1 }, s);
+    im.instanceColor!.needsUpdate = true;
   }
-  private place(i: number, p: { x: number; y: number; z: number } | V3, r: { x: number; y: number; z: number; w: number }, s: THREE.Vector3) {
+  private place(k: number, i: number, p: { x: number; y: number; z: number } | V3, r: { x: number; y: number; z: number; w: number }, s: THREE.Vector3) {
     if (Array.isArray(p)) this.v.set(p[0], p[1], p[2]); else this.v.set(p.x, p.y, p.z);
     this.q.set(r.x, r.y, r.z, r.w);
     this.m4.compose(this.v, this.q, s);
-    this.rubble.setMatrixAt(i, this.m4);
-    this.rubble.instanceMatrix.needsUpdate = true;
+    this.rubbles[k].setMatrixAt(i, this.m4);
+    this.rubbles[k].instanceMatrix.needsUpdate = true;
   }
 
   private flush() {
@@ -527,12 +823,78 @@ export class Destruction {
       for (const [im, i, m0] of f.slots) { im.setMatrixAt(i, this.m4.copy(R).multiply(m0)); im.instanceMatrix.needsUpdate = true; }
       if (ang >= 1.53) this.falling.splice(k, 1);
     }
-    for (let k = 0; k < 14 && this.pending.length; k++) this.make(...this.pending.shift()!);
+    for (let k = 0; k < 18 && this.pending.length; k++) this.make(...this.pending.shift()!);
+    this.scanFrozen(24);
+    this.updateDropping(dt);
     for (let k = this.active.length - 1; k >= 0; k--) {
       const a = this.active[k]; a.t += dt;
       const tr = a.body.translation();
-      this.place(a.i, tr, a.body.rotation(), a.s);
-      if ((a.t > 1 && a.body.isSleeping()) || a.t > 8 || tr.y < -50) { this.P.world.removeRigidBody(a.body); this.active.splice(k, 1); }
+      this.place(a.k, a.i, tr, a.body.rotation(), a.s);
+      if (tr.y < -50) { this.P.world.removeRigidBody(a.body); this.active.splice(k, 1); continue; }
+      const v = a.body.linvel(), slow = v.x * v.x + v.y * v.y + v.z * v.z < 0.04;
+      if ((a.t > 1 && a.body.isSleeping()) || (a.t > 8 && slow) || a.t > 20) this.freeze(k);
     }
   }
+
+  /** Settled rubble (no body): instance, where it lies, its size. A blast that takes the floor away wakes it. */
+  private frozen = new Map<number, { k: number; i: number; p: V3; q: [number, number, number, number]; s: THREE.Vector3 }>();
+  /**
+   * Stop simulating active piece `ai` and leave it as settled rubble. If it is not resting on anything (still
+   * falling, or lying on a vehicle), it is first laid on the ground or floor below it.
+   */
+  private freeze(ai: number) {
+    const a = this.active[ai], tr = a.body.translation(), rot = a.body.rotation();
+    let p: V3 = [tr.x, tr.y, tr.z], q: [number, number, number, number] = [rot.x, rot.y, rot.z, rot.w];
+    const half = Math.max(a.s.x, a.s.y, a.s.z) * 0.5, h = this.P.castRay(p, [0, -1, 0], 200, G_WORLD);
+    if (h && h.dist > half + 0.12) {
+      // Lay it flat on the surface below (keeping its heading).
+      const yaw = Math.atan2(2 * (rot.w * rot.y + rot.x * rot.z), 1 - 2 * (rot.y * rot.y + rot.x * rot.x));
+      p = [tr.x, h.point[1] + a.s.y * 0.5, tr.z]; q = [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)];
+      this.place(a.k, a.i, p, { x: q[0], y: q[1], z: q[2], w: q[3] }, a.s);
+    }
+    this.P.world.removeRigidBody(a.body); this.active.splice(ai, 1);
+    this.frozen.set(a.k * MAX_RUBBLE + a.i, { k: a.k, i: a.i, p, q, s: a.s });
+  }
+  /** Settled rubble round p that has lost what it lay on starts falling again. */
+  private wakeFrozen(p: V3, r: number) {
+    for (const [key, f] of this.frozen) {
+      if (Math.abs(f.p[0] - p[0]) > r || Math.abs(f.p[2] - p[2]) > r) continue;
+      this.checkFrozen(key, f);
+    }
+  }
+  /** A broken chunk left clinging to the edge of a breach: settled rubble (no body) embedded in the edge. */
+  private cling(c: V3, s: THREE.Vector3, tint: V3) {
+    const k = 0, i = this.rubbleN[k] % MAX_RUBBLE; this.rubbleN[k]++;
+    const prev = this.active.findIndex((a) => a.k === k && a.i === i);
+    if (prev >= 0) { this.P.world.removeRigidBody(this.active[prev].body); this.active.splice(prev, 1); }
+    const im = this.rubbles[k], q = new THREE.Quaternion().setFromEuler(new THREE.Euler((Math.random() - 0.5) * 0.7, Math.random() * 6.3, (Math.random() - 0.5) * 0.7));
+    im.setColorAt(i, new THREE.Color(tint[0], tint[1], tint[2])); im.instanceColor!.needsUpdate = true;
+    im.count = Math.min(MAX_RUBBLE, this.rubbleN[k]);
+    this.place(k, i, c, q, s);
+    this.frozen.set(k * MAX_RUBBLE + i, { k, i, p: c, q: [q.x, q.y, q.z, q.w], s });
+  }
+  /** Rolling check of settled rubble (a few pieces a frame): whatever no longer has something under it falls. */
+  private scan: IterableIterator<[number, { k: number; i: number; p: V3; q: [number, number, number, number]; s: THREE.Vector3 }]> | null = null;
+  private scanFrozen(n: number) {
+    for (let c = 0; c < n && this.frozen.size; c++) {
+      if (!this.scan) this.scan = this.frozen.entries();
+      const it = this.scan.next();
+      if (it.done) { this.scan = null; continue; }
+      this.checkFrozen(it.value[0], it.value[1]);
+    }
+  }
+  private checkFrozen(key: number, f: { k: number; i: number; p: V3; q: [number, number, number, number]; s: THREE.Vector3 }) {
+    const R = RAPIER, w = this.P.world;
+    {
+      const half = Math.max(f.s.x, f.s.y, f.s.z) * 0.5, h = this.P.castRay(f.p, [0, -1, 0], half + 0.25, G_WORLD);
+      if (h) return;
+      this.frozen.delete(key);
+      if (this.active.length >= MAX_ACTIVE) { const o = this.active.findIndex((a) => a.t > 1); this.freeze(o >= 0 ? o : 0); }
+      const body = w.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(f.p[0], f.p[1], f.p[2]).setRotation({ x: f.q[0], y: f.q[1], z: f.q[2], w: f.q[3] }).setLinearDamping(0.05).setAngularDamping(0.5).setCcdEnabled(true));
+      const k = f.k === 1 ? 0.5 : 0.45;
+      w.createCollider(R.ColliderDesc.cuboid(f.s.x * k, f.s.y * k, f.s.z * k).setDensity(1900).setFriction(0.9).setRestitution(0.08).setCollisionGroups(groups(G_DEBRIS, G_WORLD | G_VEH | G_DEBRIS)), body);
+      this.active.push({ body, k: f.k, i: f.i, t: 0, s: f.s });
+    }
+  }
+
 }

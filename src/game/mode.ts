@@ -3,7 +3,7 @@ import type { Soldier } from './soldier';
 import type { V3 } from './projectiles';
 
 export interface GameMode {
-  kind: 'insurgency' | 'skirmish';
+  kind: 'insurgency' | 'skirmish' | 'sandbox';
   log: { t: number; text: string; team?: 'us' | 'ins' }[];
   over: null | 'us' | 'ins';
   timeLeft: number;

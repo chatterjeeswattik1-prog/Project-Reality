@@ -20,9 +20,11 @@ const info: Record<string, unknown> = { clips: gltf.animations.map((c) => {
   return `${c.name} ${t0.toFixed(2)}..${t1.toFixed(2)}`;
 }) };
 const clip = gltf.animations.find((c) => c.name === q.get('clip')) ?? gltf.animations[0];
-let t0 = Infinity; for (const t of clip.tracks) t0 = Math.min(t0, t.times[0]);
-const act = mixer.clipAction(clip); act.play();
-mixer.setTime(t0 + Number(q.get('t') ?? 0));
+if (clip) { // (static models have none)
+  let t0 = Infinity; for (const t of clip.tracks) t0 = Math.min(t0, t.times[0]);
+  const act = mixer.clipAction(clip); act.play();
+  mixer.setTime(t0 + Number(q.get('t') ?? 0));
+}
 root.updateMatrixWorld(true);
 const wp = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3()).toArray().map((v) => +v.toFixed(4));
 const dir = (o: THREE.Object3D, v: THREE.Vector3) => v.applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())).toArray().map((x) => +x.toFixed(3));
@@ -41,4 +43,4 @@ if (camNode) {
 }
 info.camera = { pos: camera.position.toArray(), fwd: new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).toArray() };
 renderer.render(scene, camera);
-W.__info = info; W.__ready = true;
+W.__info = info; W.__root = root; W.__THREE = THREE; W.__gltf = gltf; W.__mixer = mixer; W.__ready = true;

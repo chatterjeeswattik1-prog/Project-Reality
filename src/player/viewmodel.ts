@@ -7,7 +7,7 @@ import { glElevation, type Soldier } from '../game/soldier';
 import { damp } from '../core/rng';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { armIK, wrapHand, wristTarget } from '../game/rig';
-import { choreo, hand as handTrack, num, step, styleOf, vec, type Choreo, type HandAt, type Style, type V3 } from './handling';
+import { choreo, hand as handTrack, num, step, styleOf, vec, PISTOL_GRIP_L, type Choreo, type HandAt, type Style, type V3 } from './handling';
 import { FpRig, PACKS, PACK_OF, type ClipName } from './fprig';
 import { gltf } from '../core/assets';
 
@@ -15,11 +15,15 @@ import { gltf } from '../core/assets';
 export const CAM_RECOIL = 0.6;
 /** Vertical field of view the first-person weapon and arms are drawn with (degrees). */
 export const VM_FOV = 55;
+/** First-person pistol eye relief (arms a little bent: the animated arms stay attached at the shoulders). */
+const FP_PISTOL_RELIEF = 0.4;
 const EYE_RELIEF: Record<string, number> = { acog: 0.07, rco: 0.07, scope10: 0.09, pso1: 0.08, pgo7: 0.07, irons: 0.17, none: 0.2 };
 /** Charging handle / slide / bolt travel when the model has no `charge_back` empty (m, rearwards). */
 const TRAVEL: Record<Style, number> = { ak: 0.09, ar: 0.07, belt: 0.08, bolt: 0.1, pistol: 0.035, rpg: 0, none: 0 };
 /** Support-hand frame per target, relative to the weapon (a roll about the bore turns the palm-up handguard grip). */
 const HAND_ROLL: Record<HandAt, number> = { grip: 0, mag: -Math.PI / 2, catch: -Math.PI / 2, away: -Math.PI / 2, charge: Math.PI / 2, cover: Math.PI };
+/** Pistols: palm up under the magazine to push it home, palm down over the slide to rack it. */
+const HAND_ROLL_PISTOL: Record<HandAt, number> = { ...HAND_ROLL, mag: 0, charge: Math.PI };
 const _M = new THREE.Matrix4(), _M2 = new THREE.Matrix4(), _s = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
 const _q3 = new THREE.Quaternion(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3(), _z = new THREE.Vector3(0, 0, 1), _x1 = new THREE.Vector3(1, 0, 0);
 
@@ -159,12 +163,16 @@ export class Viewmodel {
     this.sightPitch = d ? Math.atan2(d.y, -d.z) : 0; this.sightYaw = d ? Math.atan2(d.x, -d.z) : 0;
     // The aim point must lie on the sight line, or the rear and front sights part when the line is turned onto the view:
     // keep the cheek's distance behind the eye but put it on the line.
+    const pistol = s?.weapon.kind === 'pistol';
     if (d && ey) {
-      const u = d.clone().normalize(), back = this.cheekLocal ? Math.max(0.05, ey.position.clone().sub(this.cheekLocal).dot(u)) : 0.13;
+      // A pistol is aimed at arm's length: the rear sight half a metre ahead of the eye.
+      const u = d.clone().normalize(), back = pistol ? FP_PISTOL_RELIEF : this.cheekLocal ? Math.max(0.05, ey.position.clone().sub(this.cheekLocal).dot(u)) : 0.13;
       this.cheekLocal = ey.position.clone().addScaledVector(u, -back);
     }
     this.eject = e('eject', new THREE.Vector3(0.02, 0.05, -0.05));
     this.gripR = e('grip_r', new THREE.Vector3()); this.gripL = e('grip_l', new THREE.Vector3(0, 0.03, -0.3));
+    // Two-handed pistol grip: the support palm on the grip's left, below the firing hand's.
+    if (pistol) this.gripL.copy(this.gripR).add(new THREE.Vector3(...PISTOL_GRIP_L));
     this.style = s ? styleOf(s.weapon) : 'none';
     // Magazine (belt box, rocket): its seat, withdrawal direction and where the hand holds it (mag-local).
     this.mag = node('mag') ?? node('box') ?? node('rocket');
@@ -173,7 +181,9 @@ export class Viewmodel {
       const md = node('mag_dir');
       this.magDir.copy(md ? md.position.clone().sub(this.magHome) : new THREE.Vector3(0, -1, 0.08)).normalize();
       const hm = this.mag.getObjectByName('hand_mag');
-      if (hm) this.handMag.copy(hm.position);
+      // A pistol magazine is pushed home from below (palm under its base).
+      if (pistol) { const b = box(this.mag), c = b.getCenter(new THREE.Vector3()); this.handMag.set(c.x, b.min.y - 0.01, c.z).sub(this.magHome); }
+      else if (hm) this.handMag.copy(hm.position);
       else { const b = box(this.mag), c = b.getCenter(new THREE.Vector3()); this.handMag.set(b.min.x - 0.004, c.y, c.z).sub(this.magHome); }
     }
     // Charging handle / slide / bolt.
@@ -295,16 +305,20 @@ export class Viewmodel {
     // hand by their grip point. Long guns sit a little closer so the support hand reaches their handguard.
     hip.z += Math.max(0, -0.3 - this.gripL.z) * 0.7;
     if (kind === 'launcher') hip.copy(aim).add(new THREE.Vector3(0.11, -0.05, 0.04));
+    // Pistol at the ready: both hands on it, lower right, arms half out, muzzle a little down.
+    else if (kind === 'pistol') hip.set(0.07, -0.145, -0.37);
     else if (kind === 'grenade' || kind === 'charge') hip.set(0.17, -0.17, -0.33).sub(this.gripR);
     const rig = this.rig;
     if (rig && kind !== 'launcher') hip.fromArray(rig.def.hip);
     const pos = hip.lerp(aim, ads);
-    const hr = rig ? rig.def.hipRot : [0, 0.035, -0.04];
+    const hr = rig ? rig.def.hipRot : kind === 'pistol' ? [-0.07, 0.06, -0.04] : [0, 0.035, -0.04];
     let rx = hr[0] * (1 - ads), ry = hr[1] * (1 - ads), rz = hr[2] * (1 - ads);
     // Sprint carry: blended in and out (never snapped) so brief speed changes do not flip the weapon up and down.
     this.sprintK += ((s.sprinting && sp > 0.8 ? 1 : 0) - this.sprintK) * damp(s.sprinting ? 7 : 5, dt);
     const sk = THREE.MathUtils.smoothstep(this.sprintK, 0, 1);
-    pos.add(new THREE.Vector3(0.06 * sk, -0.08 * sk, 0.04 * sk)); rx += -0.5 * sk; ry += 0.6 * sk; rz += 0.25 * sk;
+    // Running: a long gun is carried canted across; a pistol is tucked in low by the chest, muzzle down.
+    if (kind === 'pistol') { pos.add(new THREE.Vector3(-0.03 * sk, -0.1 * sk, 0.13 * sk)); rx += -0.8 * sk; ry += 0.12 * sk; rz += 0.08 * sk; }
+    else { pos.add(new THREE.Vector3(0.06 * sk, -0.08 * sk, 0.04 * sk)); rx += -0.5 * sk; ry += 0.6 * sk; rz += 0.25 * sk; }
 
     // Reload choreography.
     if (s.reloadT > 0 && this.reloadWas <= 0) this.lastP = 0;
@@ -317,12 +331,17 @@ export class Viewmodel {
       vec(cho.rot, p, tmp); rx += tmp[0]; ry += tmp[1]; rz += tmp[2];
       for (const [ct, name, g] of cho.cues) if (ct > this.lastP && ct <= p) this.onCue(name, g ?? 0.7);
       this.lastP = p;
+    } else if (s.reloadT > 0 && rig?.def.reloadTilt && !s.underSel) {
+      // Animated rig whose reload happens below the view: tilt it up about the eye for the reload, ease back at the end.
+      const k = THREE.MathUtils.smoothstep(p, 0, 0.1) * (1 - THREE.MathUtils.smoothstep(p, 0.9, 1)), a = rig.def.reloadTilt * k;
+      pos.applyAxisAngle(_x1, a); rx += a;
     } else if (s.reloadT > 0) {
       // Under-barrel grenade: tip the rifle and load it.
       const k = Math.sin(p * Math.PI); rz -= k * 0.35; rx += k * 0.3; pos.y -= k * 0.03;
     }
     this.switchK += ((s.switchT > 0 ? Math.min(1, s.switchT * 2) : 0) - this.switchK) * damp(12, dt);
-    if (!rig) pos.y -= this.switchK * 0.25;
+    // Switching weapons: lowered out of view (a rig with its own draw clip plays that instead).
+    if (!rig || !rig.duration('draw')) pos.y -= this.switchK * 0.25;
     if (s.bandageT > 0) pos.y -= 0.3;
     // Weapon against a wall: by how much the muzzle would go into it (its reach in front of the eye vs the wall
     // distance), the weapon comes back and is raised to high port, muzzle up and across to the left, so the barrel never pokes
@@ -399,6 +418,11 @@ export class Viewmodel {
       else { const cyc = Math.min(0.06, (60 / s.weapon.rpm) * 0.8); travel = this.cycleT < cyc ? Math.sin(Math.PI * this.cycleT / cyc) : 0; if (s.slot.loaded === 0 && (this.style === 'ar' || this.style === 'pistol')) travel = 1; }
       // On the rig, only a part that is the bolt carrier cycles (an AR's T-handle stays put when firing).
       if (rig && !this.chargeFollows) travel = 0;
+      // Rig reload: the clip moves the slide itself; an empty one stays locked back until the clip racks / releases it.
+      if (rig && s.reloadT > 0 && !s.underSel) {
+        const rel = s.reloadEmpty ? rig.cues('reload_empty').find((c) => c[1] === rig.def.chargeSound)?.[0] ?? 0.9 : 0;
+        travel = s.reloadEmpty && p < rel ? travel : 0;
+      }
     }
     if (this.charge) {
       this.charge.position.lerpVectors(this.chargeHome, this.chargeBack, travel);
@@ -435,7 +459,10 @@ export class Viewmodel {
         default: return this.model!.localToWorld(this.gripL.clone());
       }
     };
-    const frame = (at: HandAt) => wq.clone().multiply(new THREE.Quaternion().setFromAxisAngle(_z, HAND_ROLL[at]));
+    const pistol = kind === 'pistol', rolls = pistol ? HAND_ROLL_PISTOL : HAND_ROLL;
+    const frame = (at: HandAt) => wq.clone().multiply(new THREE.Quaternion().setFromAxisAngle(_z, rolls[at]));
+    // The pistol's two-handed grip has its own hand shape (wrapped round the firing hand), used while it holds the grip.
+    const lStyle = pistol && (ht[2] < 0.5 ? ht[0] : ht[1]) === 'grip' ? 'pistol' : 'rifle';
     const lPos = targetOf(ht[0]).lerp(targetOf(ht[1]), ht[2]), lQ = frame(ht[0]).slerp(frame(ht[1]), ht[2]);
     // Bolt-action: the firing hand leaves the grip to work the bolt.
     const rOff = boltK > 0 && this.charge ? Math.min(1, boltK * 2.5) : 0;
@@ -457,8 +484,8 @@ export class Viewmodel {
       if (B.upperarm_r && B.lowerarm_r && B.hand_r) { armIK(B, 'r', wristTarget(rPos, wq, 'r'), this.group.localToWorld(new THREE.Vector3(0.5, -0.7, 0.1)), 0.06); wrapHand(B, wq, 'r', this.bind); }
       const oneHand = kind === 'grenade' || kind === 'charge';
       // One-handed items: the support arm hangs down out of view.
-      const lt = oneHand ? this.group.localToWorld(new THREE.Vector3(-0.28, -0.75, -0.05)) : wristTarget(lPos, lQ, 'l');
-      if (B.upperarm_l && B.lowerarm_l && B.hand_l) { armIK(B, 'l', lt, this.group.localToWorld(new THREE.Vector3(-0.45, -0.7, -0.15))); if (!oneHand) wrapHand(B, lQ, 'l', this.bind); }
+      const lt = oneHand ? this.group.localToWorld(new THREE.Vector3(-0.28, -0.75, -0.05)) : wristTarget(lPos, lQ, 'l', lStyle);
+      if (B.upperarm_l && B.lowerarm_l && B.hand_l) { armIK(B, 'l', lt, this.group.localToWorld(new THREE.Vector3(-0.45, -0.7, -0.15))); if (!oneHand) wrapHand(B, lQ, 'l', this.bind, lStyle); }
     }
     this.group.visible = s.alive;
   }

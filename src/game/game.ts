@@ -1,5 +1,6 @@
 // The running game: world, physics, soldiers and their bodies, the shared weapon logic (player and bots alike),
 // projectiles, damage, explosions, effects and sound.
+import { groundH } from '../world/terrain';
 import * as THREE from 'three';
 import type { Gfx } from '../core/gfx';
 import { gltf } from '../core/assets';
@@ -32,6 +33,8 @@ import type { RayHit } from '../world/physics';
 export interface GameEvents {
   onDown?: (victim: Soldier, by: Soldier | null, killed: boolean) => void;
   onExplosion?: (p: V3, ammo: Ammo, by: Soldier | null) => void;
+  /** A round hit a soldier (sandbox hit readout). */
+  onHit?: (victim: Soldier, part: HitPart, dmg: number, by: Soldier, p: V3) => void;
   /** A vehicle caught fire / was destroyed. */
   onVehicle?: (v: Vehicle, what: 'burning' | 'destroyed') => void;
 }
@@ -39,7 +42,11 @@ export interface GameEvents {
 interface Charge { p: V3; owner: Soldier; ammo: Ammo; mesh: THREE.Object3D }
 
 /** A weapon lying on the ground (a fallen soldier's, or one swapped away) that anyone can pick up, with its ammunition. */
-export interface Pickup { slot: Slot; obj: THREE.Object3D }
+export interface Pickup { id: number; slot: Slot; obj: THREE.Object3D }
+/** A weapon slot as sent over the network (the weapon by id). */
+export interface SlotMsg { w: string; mags: number[]; loaded: number; mode: string; gl?: number; glLoaded?: number }
+export const slotMsg = (s: Slot): SlotMsg => ({ w: s.def.id, mags: [...s.mags], loaded: s.loaded, mode: s.mode, gl: s.gl, glLoaded: s.glLoaded });
+export const slotOf = (m: SlotMsg): Slot | null => { const def = WEAPONS[m.w as keyof typeof WEAPONS]; return def ? { def, mags: [...m.mags], loaded: m.loaded, mode: m.mode as Slot['mode'], gl: m.gl, glLoaded: m.glLoaded } : null; };
 const FIREARM = new Set(['rifle', 'lmg', 'gpmg', 'sniper', 'pistol', 'launcher']);
 
 /** Ragdolls simulated at once, normally (a settled body costs nothing; see the freezing rule in update). */
@@ -64,6 +71,8 @@ export class Game {
   claims = new Map<number, number>();
   cover: CoverIndex | null = null;
   doors: Doors | null = null;
+  /** Sandbox: free play on the whole map (any seat in any vehicle, either side). */
+  sandbox = false;
   /** Breakable walls, slabs and shutters (world/destruct.ts). */
   destruct: Destruction | null = null;
   /** Armoured vehicles, and their colliders → vehicle (ray hits on a hull). */
@@ -83,8 +92,20 @@ export class Game {
   private zeros = new Map<string, number>();
   rng = mulberry(4242);
   prof: Record<string, number> = {};
+  /**
+   * Multiplayer role: 'host' runs the match (damage, destruction, bots) and reports what happens through `netEmit`;
+   * 'client' only shows effects — hits, blasts and wall cuts come from the host (net/client.ts).
+   */
+  netRole: 'solo' | 'host' | 'client' = 'solo';
+  netEmit: ((ev: Record<string, unknown>) => void) | null = null;
+  /**
+   * Multiplayer client: what the player does with a vehicle (a puppet of the host's) goes to the host — getting in or
+   * out, firing, choosing a round, lasing, smoke. Returns true when the action was sent there (net/client.ts).
+   */
+  netVehicle: ((op: 'enter' | 'exit' | 'fire' | 'ammo' | 'lase' | 'smoke', v: Vehicle, a: Record<string, number>, s?: Soldier) => boolean) | null = null;
   /** Weapons on the ground that can be picked up (F). */
   pickups: Pickup[] = [];
+  private pickupN = 0;
   private dropped = new Set<number>();
   /** Footsteps, body falls, the player's breathing and heartbeat. */
   foley = new Foley(this);
@@ -93,6 +114,7 @@ export class Game {
     this.fx = new FX(gfx.scene);
     this.destruct = new Destruction(city, P, world, gfx.scene);
     this.destruct.g = { audio: { play: (n, p, o) => this.audio.play(n, p, o as never) } };
+    this.fx.terrainAt = (x, z) => groundH(x, z);
     this.fx.floorAt = (p) => { const h = P.castRay([p[0], p[1], p[2]], [0, -1, 0], 80, G_WORLD); return h ? h.point[1] : null; };
     this.fx.sweep = (a, d, len) => { const h = P.castRay(a, d, len, G_WORLD); return h ? { dist: h.dist, normal: h.normal } : null; };
     this.fx.onCaseLand = (p) => { if (Math.random() < 0.6) this.audio.play('casing_drop', p, { range: 12, gain: 0.35, rate: 0.9 + Math.random() * 0.25 }); };
@@ -111,10 +133,22 @@ export class Game {
       hit: (s, p, part, a, by) => this.hitSoldier(s, p, part, a, by),
       crack: (s, p, a, by) => this.crack(s, p, a, by),
       explode: (p, a, by, n) => this.explode(p, a, by, n),
+      punch: (p, n, r) => this.punch(p, n, r),
+      // A commander on a pintle gun is out of his hatch from the chest up: head and shoulders can be hit.
+      exposed: (s) => {
+        const v = s.vehicle; if (!v) return null;
+        const mt = v.mountsOf(v.seatOf(s))[0], st = mt?.def.station; if (!st || st.remote) return null;
+        const e = v.nodePos(st.eye);
+        return [
+          { a: [e[0], e[1] - 0.03, e[2]], b: [e[0], e[1] + 0.08, e[2]], r: 0.11, part: 'head' },
+          { a: [e[0], e[1] - 0.48, e[2]], b: [e[0], e[1] - 0.24, e[2]], r: 0.2, part: 'chest' },
+        ];
+      },
       tracer: (a, b, ammo) => this.fx.tracer(a, b, ammo.id === '762x54' || ammo.id === '127x108' ? [0.4, 1.0, 0.35] : [1.0, 0.42, 0.18]),
       body: (id, kind, p, v) => this.fx.body(id, kind, p, v),
       smoke: (p) => { this.fx.smokeGrenade(p); this.smokes.push({ p, t0: this.time }); this.audio.play('grenade_pin', p, { range: 30 }); },
       armour: (wh, d, sp, a, by) => this.armourHit(wh, d, sp, a, by),
+      ownVehicle: (h, by) => !!by.vehicle && this.vehicleOf.get(h) === by.vehicle,
     });
     // Road grid.
     const C = 4; this.roadX0 = -1100; this.roadZ0 = -1100; this.roadN = Math.ceil(2200 / C);
@@ -137,7 +171,8 @@ export class Game {
   /** A round hits a vehicle's hull: the armour decides; HEAT and HE burst on the plate. Feedback for the shooter. */
   private armourHit(wh: RayHit, d: V3, sp: number, a: Ammo, by: Soldier): boolean {
     const v = this.vehicleOf.get(wh.collider.handle); if (!v) return false;
-    const r = v.dead ? null : strike(v, wh.point, d, a, sp, by);
+    // (A multiplayer client only shows the strike: the host's armour model decides what it did.)
+    const r = v.dead || this.netRole === 'client' ? null : strike(v, wh.point, d, a, sp, by);
     const big = (a.ap ?? 0) >= 100 || (a.ce ?? 0) >= 200;
     if (a.explosive) this.explode([wh.point[0] + wh.normal[0] * 0.15, wh.point[1] + wh.normal[1] * 0.15, wh.point[2] + wh.normal[2] * 0.15], a, by, wh.normal, v);
     else {
@@ -153,11 +188,12 @@ export class Game {
   }
 
   // ---------------- soldiers ----------------
-  spawn(kit: Kit, team: Faction, pos: V3, name: string, yaw = 0): Soldier {
+  /** `modelIdx`: which of the kit's character models (multiplayer clients match the host's choice). */
+  spawn(kit: Kit, team: Faction, pos: V3, name: string, yaw = 0, modelIdx?: number): Soldier {
     const s = new Soldier(this.P, kit, team, pos, name);
     s.yaw = yaw;
     this.soldiers.push(s);
-    const model = kit.model[s.id % kit.model.length];
+    const model = kit.model[(modelIdx ?? s.id) % kit.model.length];
     const rig = new Rig(this.assets, model, team === 'us' ? 0x8a8466 : 0x6a5a48);
     this.gfx.scene.add(rig.root);
     this.rigs.set(s.id, rig);
@@ -218,9 +254,7 @@ export class Game {
       if (slot.loaded <= 0) { if (mine.length) this.detonate(s); return; }
       const e = s.eye, d = s.aimDir(), h = this.P.castRay(e, d, 2.2);
       const p: V3 = h ? [h.point[0] + h.normal[0] * 0.05, h.point[1] + h.normal[1] * 0.05, h.point[2] + h.normal[2] * 0.05] : [s.pos[0] + d[0] * 0.6, s.pos[1] + 0.05, s.pos[2] + d[2] * 0.6];
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.07, 0.18), new THREE.MeshStandardMaterial({ color: def.ammo === 'ied' ? 0x4a5030 : 0xb8b08a, roughness: 0.8 }));
-      mesh.position.set(p[0], p[1], p[2]); this.gfx.scene.add(mesh);
-      this.charges.push({ p, owner: s, ammo: AMMO[def.ammo], mesh });
+      this.placeCharge(s, p, def.ammo);
       slot.loaded = slot.mags.length ? (slot.mags.pop(), 1) : 0;
       this.audio.play('grenade_pin', s.isPlayer ? null : p, { range: 15 });
       s.cool = 1.0;
@@ -264,7 +298,33 @@ export class Game {
     const up = def.recoil[0] * sup * (0.85 + Math.random() * 0.3), side = (Math.random() - 0.45) * 2 * def.recoil[1] * sup;
     s.recoil(up, side);
     if (s.isPlayer && this.player) this.player.onShot(up, side);
-    // Muzzle flash and sound.
+    this.shotFx(s, def, o, d);
+    if (def.kind === 'launcher' || def.kind === 'gl') {
+      // Back-blast: a dust cloud behind and injury to anyone in the danger zone (and to the firer near a wall).
+      if (def.backblast) {
+        const bd: V3 = [-d[0], -d[1], -d[2]];
+        for (let i = 0; i < 25; i++) this.fx.smoke.spawn([o[0] + bd[0], o[1], o[2] + bd[2]], [bd[0] * (6 + Math.random() * 8) + (Math.random() - 0.5) * 3, Math.random() * 2, bd[2] * (6 + Math.random() * 8) + (Math.random() - 0.5) * 3], 0.8, 2.2, 2.5, 0.6, [0.72, 0.66, 0.56], 2, -0.1);
+        if (this.netRole !== 'client') {
+          const wall = this.P.castRay(e, bd, 2.0);
+          if (wall) s.damage(45, 'chest', [wall.point[0], wall.point[1], wall.point[2]], s, this.time, true);
+          for (const t of this.soldiers) {
+            if (t === s || !t.alive) continue;
+            const dx = t.pos[0] - e[0], dz = t.pos[2] - e[2], along = dx * bd[0] + dz * bd[2], lat = Math.abs(dx * bd[2] - dz * bd[0]);
+            if (along > 0 && along < def.backblast * 0.6 && lat < 2.5) t.damage(70 * (1 - along / def.backblast), 'chest', e, s, this.time, true);
+          }
+        }
+      }
+      if (def.disposable) { setTimeout(() => { const i = s.slots.indexOf(slot); if (i >= 0 && slot.loaded <= 0) { s.slots.splice(i, 1); s.cur = 0; s.switchT = 0.8; } }, 900); }
+    }
+    for (const t of this.soldiers) if (t !== s && t.alive && t.team !== s.team && !t.isPlayer) { const dx = t.pos[0] - e[0], dz = t.pos[2] - e[2]; if (dx * dx + dz * dz < 250 * 250) t.heard = { p: [e[0], e[1], e[2]], t: this.time }; }
+  }
+
+  /**
+   * What a shot looks and sounds like where it is fired: muzzle flash, brass, the close thump and the report. Used for
+   * the local soldiers' shots, and on a multiplayer client for the shots the host reports (net/client.ts).
+   */
+  shotFx(s: Soldier, def: WeaponDef, o: V3, d: V3) {
+    const a = AMMO[def.ammo];
     const rig = this.rigs.get(s.id);
     const mz = s.isPlayer && this.player && !this.player.third ? this.player.vm.muzzleWorld(new THREE.Vector3()) : rig?.muzzle ?? new THREE.Vector3(...o);
     const big = a.pen >= 3 ? 2 : def.kind === 'launcher' ? 2.5 : def.kind === 'pistol' ? 0.6 : 1;
@@ -285,25 +345,41 @@ export class Game {
     else { const cp = this.gfx.camera.position, dd = Math.hypot(cp.x - mz.x, cp.y - mz.y, cp.z - mz.z); if (dd < 25) this.audio.punch(pk, (1 - dd / 25) * 0.6); }
     const snd = s.underSel ? 'm203_launch' : def.sound;
     this.audio.play(snd, s.isPlayer ? null : [mz.x, mz.y, mz.z], { range: a.pen >= 3 || def.kind === 'launcher' ? 2500 : 1600, far: def.farSound, nearDist: 90, gain: s.isPlayer ? 0.9 : 1, variant: 0 });
-    if (def.kind === 'launcher' || def.kind === 'gl') {
-      // Back-blast: a dust cloud behind and injury to anyone in the danger zone (and to the firer near a wall).
-      if (def.backblast) {
-        const bd: V3 = [-d[0], -d[1], -d[2]];
-        for (let i = 0; i < 25; i++) this.fx.smoke.spawn([o[0] + bd[0], o[1], o[2] + bd[2]], [bd[0] * (6 + Math.random() * 8) + (Math.random() - 0.5) * 3, Math.random() * 2, bd[2] * (6 + Math.random() * 8) + (Math.random() - 0.5) * 3], 0.8, 2.2, 2.5, 0.6, [0.72, 0.66, 0.56], 2, -0.1);
-        const wall = this.P.castRay(e, bd, 2.0);
-        if (wall) s.damage(45, 'chest', [wall.point[0], wall.point[1], wall.point[2]], s, this.time, true);
-        for (const t of this.soldiers) {
-          if (t === s || !t.alive) continue;
-          const dx = t.pos[0] - e[0], dz = t.pos[2] - e[2], along = dx * bd[0] + dz * bd[2], lat = Math.abs(dx * bd[2] - dz * bd[0]);
-          if (along > 0 && along < def.backblast * 0.6 && lat < 2.5) t.damage(70 * (1 - along / def.backblast), 'chest', e, s, this.time, true);
-        }
-      }
-      if (def.disposable) { setTimeout(() => { const i = s.slots.indexOf(slot); if (i >= 0 && slot.loaded <= 0) { s.slots.splice(i, 1); s.cur = 0; s.switchT = 0.8; } }, 900); }
-    }
-    for (const t of this.soldiers) if (t !== s && t.alive && t.team !== s.team && !t.isPlayer) { const dx = t.pos[0] - e[0], dz = t.pos[2] - e[2]; if (dx * dx + dz * dz < 250 * 250) t.heard = { p: [e[0], e[1], e[2]], t: this.time }; }
   }
 
+  /**
+   * A weapon on the ground: dropped by a body (`s`: whose) or left by someone picking up another (`p`, `ry`). The host
+   * reports it with its id; a joiner adds the host's with that id.
+   */
+  addPickup(slot: Slot, obj: THREE.Object3D, where: { s?: number; p?: V3; ry?: number }, id?: number) {
+    const k: Pickup = { id: id ?? ++this.pickupN, slot, obj };
+    this.pickups.push(k);
+    if (this.pickups.length > 60) { const x = this.pickups.shift()!; x.obj.parent?.remove(x.obj); }
+    if (this.netRole === 'host') { const w = obj.getWorldPosition(new THREE.Vector3()); this.netEmit?.({ t: 'drop', id: k.id, s: where.s, p: where.p ?? [w.x, w.y, w.z], ry: where.ry ?? obj.rotation.y, slot: slotMsg(slot) }); }
+    return k;
+  }
+  removePickup(id: number) {
+    const k = this.pickups.find((x) => x.id === id); if (!k) return;
+    k.obj.parent?.remove(k.obj); this.pickups.splice(this.pickups.indexOf(k), 1);
+    if (this.netRole === 'host') this.netEmit?.({ t: 'take', id });
+  }
+  /** Multiplayer joiner: a weapon the host reports lying at p (left by someone picking up another). */
+  dropAt(id: number, slot: Slot, p: V3, ry: number) {
+    const src = this.assets.tpWeapons.get(slot.def.model) ?? this.assets.weapons.get(slot.def.model); if (!src) return;
+    const o = src.clone(); o.position.set(p[0], p[1], p[2]); o.rotation.set(0, ry, Math.PI / 2, 'YXZ');
+    o.traverse((m) => { if ((m as THREE.Mesh).isMesh) m.castShadow = true; });
+    this.gfx.scene.add(o); this.addPickup(slot, o, {}, id);
+  }
+
+  /** A charge (C4, IED) placed by `s` at p (the host reports it to the players). */
+  placeCharge(s: Soldier, p: V3, ammoId: string) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.07, 0.18), new THREE.MeshStandardMaterial({ color: ammoId === 'ied' ? 0x4a5030 : 0xb8b08a, roughness: 0.8 }));
+    mesh.position.set(p[0], p[1], p[2]); this.gfx.scene.add(mesh);
+    this.charges.push({ p, owner: s, ammo: AMMO[ammoId as keyof typeof AMMO], mesh });
+    if (this.netRole === 'host') this.netEmit?.({ t: 'charge', s: s.id, p, a: ammoId });
+  }
   detonate(owner: Soldier) {
+    if (this.netRole === 'host' && this.charges.some((c) => c.owner === owner)) this.netEmit?.({ t: 'det', s: owner.id });
     for (let i = this.charges.length - 1; i >= 0; i--) {
       const c = this.charges[i]; if (c.owner !== owner) continue;
       this.gfx.scene.remove(c.mesh); this.charges.splice(i, 1);
@@ -325,11 +401,13 @@ export class Game {
     return best;
   }
   /** Swap the weapon in hand (or the first firearm) for the one on the ground; ours is left lying in its place. */
-  pickUp(s: Soldier, k: Pickup) {
+  /** `leave`: our weapon goes down in its place (a multiplayer joiner's comes from the host's report instead). */
+  pickUp(s: Soldier, k: Pickup, leave = true) {
     const i = FIREARM.has(s.weapon.kind) ? s.cur : s.slots.findIndex((x) => FIREARM.has(x.def.kind));
     const at = k.obj.getWorldPosition(new THREE.Vector3());
-    k.obj.parent?.remove(k.obj); this.pickups.splice(this.pickups.indexOf(k), 1);
-    if (i >= 0) {
+    this.removePickup(k.id);
+    if (i >= 0 && !leave) { s.slots[i] = { ...k.slot, mags: [...k.slot.mags] }; s.underSel = false; s.cur = i; s.switchT = 1.0; s.reloadT = 0; }
+    else if (i >= 0) {
       const old = s.slots[i];
       // Ours goes down where the other one lay.
       const src = this.assets.tpWeapons.get(old.def.model) ?? this.assets.weapons.get(old.def.model);
@@ -337,8 +415,7 @@ export class Game {
         const o = src.clone(); o.position.set(at.x, at.y, at.z); o.rotation.set(0, Math.random() * Math.PI * 2, Math.PI / 2, 'YXZ');
         const fl = this.P.castRay([at.x, at.y + 0.5, at.z], [0, -1, 0], 3, G_WORLD); if (fl) o.position.y = fl.point[1] + 0.035;
         o.traverse((m) => { if ((m as THREE.Mesh).isMesh) m.castShadow = true; });
-        this.gfx.scene.add(o); this.pickups.push({ slot: old, obj: o });
-        if (this.pickups.length > 60) { const x = this.pickups.shift()!; x.obj.parent?.remove(x.obj); }
+        this.gfx.scene.add(o); this.addPickup(old, o, { p: [o.position.x, o.position.y, o.position.z], ry: o.rotation.y });
       }
       s.slots[i] = { ...k.slot, mags: [...k.slot.mags] };
       s.underSel = false; s.cur = i; s.switchT = 1.0; s.reloadT = 0;
@@ -350,7 +427,8 @@ export class Game {
   hitSoldier(s: Soldier, p: V3, part: HitPart, a: Ammo, by: Soldier) {
     const wasAlive = s.state === 'alive';
     const from = by.eye;
-    s.damage(a.dmg, part, from, by, this.time);
+    const client = this.netRole === 'client';
+    if (!client) { s.damage(a.dmg, part, from, by, this.time); this.events.onHit?.(s, part, a.dmg, by, p); }
     const d: V3 = [p[0] - from[0], p[1] - from[1], p[2] - from[2]], L = Math.hypot(...d) || 1, dn: V3 = [d[0] / L, d[1] / L, d[2] / L];
     this.fx.blood(p, dn, a.pen >= 2 ? 1.6 : a.pen === 0 ? 0.8 : 1.2);
     // Splatter on whatever is behind the victim (exit spray), and drops on the ground below.
@@ -376,6 +454,7 @@ export class Game {
     // A hit knocks the victim's aim off (and the player's view jolts).
     s.rcP += (0.02 + Math.random() * 0.03) * power; s.rcY += (Math.random() - 0.5) * 0.07 * power;
     if (s.isPlayer) { this.player?.onShot(30 * power, (Math.random() - 0.5) * 20); this.player && (this.player.shake += 0.25 * power); this.hud?.hurt(from); }
+    if (client) return;
     if (wasAlive && s.state !== 'alive') this.events.onDown?.(s, by, s.state === 'dead');
     else if (!wasAlive && s.state === 'dead') this.events.onDown?.(s, by, true);
   }
@@ -386,7 +465,7 @@ export class Game {
    */
   private impactSound(p: V3, n: V3, surf: Surface, a: Ammo, d?: V3) {
     // Heavy kinetic rounds (tank and 25 mm sabot) punch holes through walls as they go.
-    if ((a.ap ?? 0) >= 100 && (surf === 'masonry' || surf === 'concrete' || surf === 'metal' || surf === 'wood')) this.destruct?.blast([p[0] - n[0] * 0.05, p[1] - n[1] * 0.05, p[2] - n[2] * 0.05], (a.ap ?? 0) >= 500 ? 0.35 : 0.14, 0.4, 0.4);
+    if ((a.ap ?? 0) >= 100 && this.netRole !== 'client' && (surf === 'masonry' || surf === 'concrete' || surf === 'metal' || surf === 'wood')) this.netBlast([p[0] - n[0] * 0.05, p[1] - n[1] * 0.05, p[2] - n[2] * 0.05], (a.ap ?? 0) >= 500 ? 0.35 : 0.14, 0.4, 0.4);
     this.fx.impact(p, n, surf, a.pen >= 3 ? 2 : 1);
     const L = this.audio.listener.p, dist = Math.hypot(p[0] - L[0], p[1] - L[1], p[2] - L[2]);
     if (dist < 18 || Math.random() < 0.55) this.audio.play(surf === 'metal' ? 'impact_metal' : surf === 'dirt' || surf === 'sandbag' ? 'impact_dirt' : 'impact_concrete', p, { range: 45, gain: dist < 18 ? 0.85 : 0.6 });
@@ -405,11 +484,69 @@ export class Game {
     }
   }
 
+  /**
+   * A cannon penetrator (25 mm or 120 mm sabot) through a wall: a ragged hole of radius r where it went in (and out:
+   * the cut goes through the wall's thickness), brick dust both sides, chips; no blast.
+   */
+  punch(p: V3, n: V3, r: number) {
+    if (!this.destruct || r < 0.1 || this.netRole === 'client') return;
+    // Centre the cut just inside the wall so the hole goes through it.
+    const c: V3 = [p[0] - n[0] * 0.05, p[1] - n[1] * 0.05, p[2] - n[2] * 0.05];
+    // (`blast` scales the breach by the material, concrete ×0.75: the punch radius is what concrete gets.)
+    const br = this.netBlast(c, r / 0.75, 0, 0.35);
+    for (const h of br.holes) { this.fx.dust(h.p, h.n, h.r * 0.6); this.fx.blastMark(h.p, h.n, h.r * 0.35); }
+    this.fx.clearDecals(br.gone);
+    if (br.holes.length) {
+      this.cover?.invalidate(p[0], p[2], r * 2 + 1);
+      this.audio.play('debris_fall', p, { range: 90, gain: Math.min(0.8, 0.3 + br.volume * 2) });
+    }
+  }
+
+  /**
+   * A wall-cutting blast (warheads, sabot and 25 mm punches): on the host it is reported to the clients with its outline
+   * seed (and whether doors are torn out), so every machine cuts the identical hole.
+   */
+  netBlast(p: V3, breach: number, light: number, power: number, doors = false) {
+    const br = this.destruct!.blast(p, breach, light, power);
+    if (this.netRole === 'host' && (br.holes.length || br.fell || br.props)) this.netEmit?.({ t: 'blast', p, b: breach, l: light, w: power, s: this.destruct!.lastSeed, d: doors ? 1 : 0 });
+    return br;
+  }
+  /** Client: the wall cut ordered by the host (same seed: same hole), with its dust and marks. */
+  applyBlast(p: V3, breach: number, light: number, power: number, seed: number, doors: boolean) {
+    if (!this.destruct) return;
+    const br = this.destruct.blast(p, breach, light, power, seed);
+    for (const h of br.holes) { this.fx.dust(h.p, h.n, h.r); this.fx.impact(h.p, h.n, h.surf, 2, false); this.fx.blastMark(h.p, h.n, h.r); }
+    this.fx.clearDecals(br.gone);
+    if (doors) for (const d of this.doors?.blast(p, light * 1.4) ?? []) this.destruct.debris(d.min, d.max, p, power, d.metal ? 'metal' : 'wood', 0.12);
+    if (br.holes.length) {
+      this.cover?.invalidate(p[0], p[2], breach * 2 + 2);
+      this.audio.play('debris_fall', [p[0], p[1] + 0.5, p[2]], { range: 140, gain: Math.min(1.2, 0.5 + br.volume * 0.8 + br.fell * 0.05) });
+    }
+  }
+  /** Client: an explosion seen and heard (sound, the local player's shock and ears, bodies thrown); no damage. */
+  private explodeShown(p: V3, a: Ammo, power: number) {
+    const ex = a.explosive!;
+    this.audio.play(ex.dmg > 300 ? 'explosion_big' : 'explosion_near', p, { range: 3000, far: 'explosion_far', nearDist: 150, gain: 1 });
+    const throwK = (q: V3) => { const dd = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]); return dd > ex.radius * 0.8 ? 0 : 4.5 * power * (1 - dd / (ex.radius * 0.8)); };
+    for (const r of this.corpses) { const q: V3 = [r.root.position.x, r.root.position.y + 0.3, r.root.position.z], k = throwK(q); if (k > 0 && this.P.clear(p, q, G_WORLD)) r.blast(null, p, k); }
+    const me = this.player?.s;
+    if (me && !me.vehicle) {
+      const c: V3 = [me.pos[0], me.pos[1] + 1, me.pos[2]], dist = Math.hypot(c[0] - p[0], c[1] - p[1], c[2] - p[2]);
+      if (dist < ex.radius * 3) {
+        const k = Math.max(0, 1 - dist / (ex.radius * 2.5));
+        this.player!.shake += Math.max(0, 1.5 - dist / (ex.radius * 2)); this.hud?.blast(k);
+        if (k > 0.25) this.audio.play('tinnitus', null, { gain: 1 + k * 4, verb: 0 });
+      }
+      if (dist < ex.radius * 2.5) me.suppress = Math.min(1, me.suppress + 0.5);
+    }
+  }
+
   /** `hitVeh`: the vehicle a HEAT round burst on (its armour already took the hit). */
   explode(p: V3, a: Ammo, by: Soldier | null, n?: V3, hitVeh?: Vehicle) {
     const ex = a.explosive!;
     const power = Math.min(3, Math.max(0.6, ex.dmg / 180));
     this.fx.explosion(p, power, n);
+    if (this.netRole === 'client') { this.explodeShown(p, a, power); return; }
     // Blast against nearby armour: only heavy charges close by matter (an IED under the belly, C4 on the deck; a
     // grenade on a tank does nothing). The face is the side the blast comes from.
     for (const v of this.vehicles) {
@@ -424,8 +561,9 @@ export class Game {
     }
     // Walls first: a breach lets the blast through to whoever is behind it.
     if (this.destruct) {
-      const br = this.destruct.blast(p, ex.breach ?? 0, ex.light ?? 0, power);
-      for (const h of br.holes) { this.fx.dust(h.p, h.n, h.r); this.fx.impact(h.p, h.n, h.surf, 2); }
+      const br = this.netBlast(p, ex.breach ?? 0, ex.light ?? 0, power, true);
+      for (const h of br.holes) { this.fx.dust(h.p, h.n, h.r); this.fx.impact(h.p, h.n, h.surf, 2, false); this.fx.blastMark(h.p, h.n, h.r); }
+      this.fx.clearDecals(br.gone);
       // Doors torn off by the blast, or left with no wall around them.
       for (const d of this.doors?.blast(p, (ex.light ?? 0) * 1.4) ?? []) this.destruct.debris(d.min, d.max, p, power, d.metal ? 'metal' : 'wood', 0.12);
       if (br.holes.length) {
@@ -521,6 +659,7 @@ export class Game {
         const hgt = s.stance === 'prone' ? 0.25 : s.stance === 'crouch' ? 0.6 : 0.9;
         this.fx.drip([s.pos[0] + (Math.random() - 0.5) * 0.3, s.pos[1] + hgt, s.pos[2] + (Math.random() - 0.5) * 0.3]);
       }
+      if (s.netRemote) continue; // posed by the host's snapshots (net/client.ts)
       const reloaded = s.tick(dt, this.time);
       if (reloaded && (!s.isPlayer || s.underSel)) this.audio.play(s.weapon.belt ? 'belt_box_open_close' : 'mag_in', s.isPlayer ? null : s.eye, { range: 25, gain: 0.7 });
     }
@@ -538,7 +677,7 @@ export class Game {
       const rig = this.rigs.get(s.id); if (!rig) continue;
       const dist = Math.hypot(s.pos[0] - cam.x, s.pos[2] - cam.z);
       const hide = s.isPlayer && this.player && !this.player.third;
-      rig.root.visible = !hide && dist < 1200 && !s.vehicle; rig.visible = rig.root.visible;
+      rig.root.visible = !hide && dist < 1200 && !s.vehicle && !s.netHidden; rig.visible = rig.root.visible;
       rig.setWeapon(s.underSel ? s.weapon.model : s.weapon.model);
       if (rig.root.visible || s.isPlayer || rig.ragged) rig.update(dt, s, dist, this.time);
       else if (rig.weapon) rig.weapon.visible = false;
@@ -549,9 +688,13 @@ export class Game {
       if (s.state !== 'dead' || this.dropped.has(s.id)) continue;
       this.dropped.add(s.id);
       const rig = this.rigs.get(s.id), cur = FIREARM.has(s.weapon.kind) ? s.slot : s.slots.find((x) => FIREARM.has(x.def.kind));
-      if (rig?.weapon && cur && (cur.loaded > 0 || cur.mags.length)) this.pickups.push({ slot: { ...cur, mags: [...cur.mags] }, obj: rig.weapon });
+      if (this.netRole === 'client') continue; // the host reports what each body leaves (net/client.ts)
+      if (rig?.weapon && cur && (cur.loaded > 0 || cur.mags.length)) this.addPickup({ ...cur, mags: [...cur.mags] }, rig.weapon, { s: s.id });
     }
-    if (this.pickups.length) this.pickups = this.pickups.filter((k) => k.obj.parent);
+    // (A multiplayer joiner keeps the host's pick-ups until the host says they are gone: bodies are cleared away at
+    // different times on each machine.)
+    if (this.netRole === 'client') { for (const k of this.pickups) if (!k.obj.parent) this.gfx.scene.add(k.obj); }
+    else if (this.pickups.length) this.pickups = this.pickups.filter((k) => k.obj.parent);
     // Corpses still falling; at most MAX_RAGDOLLS simulate at once (the oldest settle where they are).
     for (const r of this.corpses) if (r.ragActive) r.updateRag(dt);
     const active = [...this.rigs.values(), ...this.corpses].filter((r) => r.ragActive);

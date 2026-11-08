@@ -11,7 +11,8 @@ import { AO, canalX, CANAL_W, groundH, OUTER, WATER_Y } from './terrain';
 export interface WorldView {
   root: THREE.Group;
   /** Per-frame: show interiors only near the camera. */
-  update: (cam: THREE.Vector3) => void;
+  /** Per frame: distance culling and LOD; `zoom` (optics magnification) scales the distances. */
+  update: (cam: THREE.Vector3, zoom?: number) => void;
   /** Register a mesh that is only drawn within `dist` (Chebyshev) of the camera. */
   cull: (mesh: THREE.Object3D, cx: number, cz: number, dist: number, far?: boolean) => void;
   stats: () => { meshes: number; tris: number };
@@ -57,10 +58,11 @@ export async function buildWorld(city: City, quality: 'low' | 'medium' | 'high')
   return {
     root,
     cull: (mesh, cx, cz, dist, far = false) => { culls.push({ mesh, cx, cz, dist, far }); },
-    update: (cam) => {
-      for (const c of culls) c.mesh.visible = (Math.max(Math.abs(cam.x - c.cx), Math.abs(cam.z - c.cz)) < c.dist) !== c.far;
+    update: (cam, zoom = 1) => {
+      const k = 1 / Math.max(1, zoom);
+      for (const c of culls) c.mesh.visible = (Math.max(Math.abs(cam.x - c.cx), Math.abs(cam.z - c.cz)) * k < c.dist) !== c.far;
       for (const it of lods) {
-        const d = Math.max(Math.abs(cam.x - it.cx), Math.abs(cam.z - it.cz)) - CHUNK / 2;
+        const d = (Math.max(Math.abs(cam.x - it.cx), Math.abs(cam.z - it.cz)) - CHUNK / 2) * k;
         it.mesh.visible = it.layer === 1 ? d < intDist : it.layer === 2 ? d < midDist : d >= midDist;
       }
     },

@@ -40,6 +40,10 @@ export class Soldier {
   kit: Kit;
   squad = 0;
   isPlayer = false;
+  /** Multiplayer: moved and posed by the host's snapshots (another player or a bot, seen on a client). */ netRemote = false;
+  /** Multiplayer: this client's own soldier — moves here, but his health and life are the host's (no local bleeding). */ netSlave = false;
+  /** Multiplayer (host): stand-in for a remote player (moved by his updates; health simulated here). */ netProxy = false;
+  /** Multiplayer (client): not drawn (riding inside a vehicle on the host). */ netHidden = false;
   /** Riding in a vehicle (seat index): the vehicle carries him; his own collider is off and he has no hit capsules. */
   vehicle: import('../vehicles/vehicle').Vehicle | null = null; seat = -1;
   /** Moved without walking (out of a vehicle): his bot must find its place on the navmesh again. */
@@ -77,7 +81,7 @@ export class Soldier {
   /** Weapon support: deployed bipod (prone or on a ledge) or resting on a surface. */
   support: 'none' | 'rest' | 'bipod' = 'none'; bipodYaw = 0; bipodPitch = 0; deployT = 0;
   cool = 0; reloadT = 0; reloadDur = 0; /** The reload started on an empty weapon (adds charging). */ reloadEmpty = false; switchT = 0; burst = 0; triggerWas = false;
-  bandages: number;
+  bandages!: number;
   bandageT = 0;
   /** Under-barrel launcher selected (M203). */ underSel = false;
   suppress = 0;
@@ -94,6 +98,19 @@ export class Soldier {
 
   constructor(public P: Physics, kit: Kit, team: Faction, pos: [number, number, number], name: string) {
     this.kit = kit; this.team = team; this.name = name; this.pos = [...pos];
+    this.rearm();
+    const R = P.R;
+    this.body = P.world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(pos[0], pos[1] + CAP_R + CAP_HH.stand, pos[2]));
+    this.collider = P.world.createCollider(R.ColliderDesc.capsule(CAP_HH.stand, CAP_R).setCollisionGroups(groups(G_CHAR, G_WORLD | G_VEH | G_CHAR | G_BOUND)), this.body);
+  }
+
+  /** Sandbox: no damage at all. */
+  god = false;
+
+  /** The kit's full load of weapons, magazines, grenades and dressings (spawn, and the sandbox's refill). */
+  rearm() {
+    const kit = this.kit, keep = this.slots[this.cur]?.def.id;
+    this.slots = [];
     this.bandages = kit.bandages;
     for (const it of kit.items) {
       const def = WEAPONS[it.weapon];
@@ -105,9 +122,7 @@ export class Soldier {
       }
       this.slots.push({ def, mags: single ? Array(Math.max(0, it.count - 1)).fill(1) : Array(it.count).fill(def.mag), loaded: single ? (it.count > 0 ? 1 : 0) : def.mag, mode: def.modes[def.modes.length - 1] === 'auto' && def.kind !== 'rifle' ? 'auto' : def.modes[0] });
     }
-    const R = P.R;
-    this.body = P.world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(pos[0], pos[1] + CAP_R + CAP_HH.stand, pos[2]));
-    this.collider = P.world.createCollider(R.ColliderDesc.capsule(CAP_HH.stand, CAP_R).setCollisionGroups(groups(G_CHAR, G_WORLD | G_VEH | G_CHAR | G_BOUND)), this.body);
+    if (keep) { const i = this.slots.findIndex((s) => s.def.id === keep); if (i >= 0) this.cur = i; }
   }
 
   get slot(): Slot { return this.slots[this.cur]; }
@@ -231,7 +246,7 @@ export class Soldier {
   // ---------------- health ----------------
   /** Apply damage; returns true if it took the soldier down (wounded or dead). */
   damage(dmg: number, part: HitPart, from: [number, number, number] | null, by: Soldier | null, now = 0, explosive = false): boolean {
-    if (this.state === 'dead') return false;
+    if (this.state === 'dead' || this.god) return false;
     const d = dmg * PART_MULT[part];
     this.lastHitT = now; this.lastHitFrom = from;
     if (this.state === 'wounded') { if (d > 30 || part === 'head') this.die(by); return false; }
@@ -352,7 +367,7 @@ export class Soldier {
   /** Per-frame upkeep: aim, sway, recoil recovery, timers, stamina, bleeding. Returns true when a reload completes. */
   tick(dt: number, now: number): boolean {
     let reloaded = false;
-    if (this.state === 'wounded') { this.downT += dt; if (this.downT > 300) this.die(null); return false; }
+    if (this.state === 'wounded') { this.downT += dt; if (this.downT > 300 && !this.netSlave) this.die(null); return false; }
     if (this.state === 'dead') { this.deadT += dt; return false; }
     // Support: a bipod folds when the soldier moves; resting is found automatically while aiming.
     if (this.support === 'bipod') { this.deployT = Math.min(1, this.deployT + dt / 0.5); if (this.moving > 0.4 || this.sprinting || this.reloadT > 0 && !this.weapon.belt) this.support = 'none'; }
@@ -385,7 +400,7 @@ export class Soldier {
     if (this.sprinting && this.moving > 1) this.stamina = Math.max(0, this.stamina - dt * 8.5);
     else this.stamina = Math.min(100, this.stamina + dt * (this.moving > 0.5 ? 5 : 9));
     if (this.stamina <= 0) this.sprinting = false;
-    if (this.bleed > 0) { this.health -= this.bleed * dt; if (this.health <= 0) { this.health = 0; this.state = 'wounded'; this.downT = 0; this.bleed = 0; this.setStance('prone', now); } }
+    if (this.bleed > 0 && !this.netSlave) { this.health -= this.bleed * dt; if (this.health <= 0) { this.health = 0; this.state = 'wounded'; this.downT = 0; this.bleed = 0; this.setStance('prone', now); } }
     this.suppress = Math.max(0, this.suppress - dt * 0.35);
     return reloaded;
   }

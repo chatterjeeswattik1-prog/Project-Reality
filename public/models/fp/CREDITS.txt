@@ -1,0 +1,4 @@
+fp_pistol.glb — first-person arms and clips (idle, walk, fire, reload, empty reload) from
+  "FPS pistol animations" by Cransh, https://sketchfab.com/3d-models/fps-pistol-animations-0d7a343dcb6f401197a73c91aee93f6d
+  Licence: CC BY 4.0 (http://creativecommons.org/licenses/by/4.0/). Changes: the pack's own pistol removed (the game's
+  M9 / Makarov hang on its bones), clips renamed, textures re-encoded (scripts/fprig.mjs).

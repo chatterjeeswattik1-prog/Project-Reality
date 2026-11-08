@@ -1,0 +1,24 @@
+# systemd unit for the always-on multiplayer host (dedicated server). See docs/DEDICATED.md.
+#   sudo cp deploy/pr-host.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now pr-host && journalctl -u pr-host -f
+[Unit]
+Description=Project Realism dedicated match host
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=prhost
+WorkingDirectory=/opt/pr-host
+# GAME_URL, DEDICATED_KEY, SERVER_NAME (and optionally CHROME, STATUS_PORT) live here, readable by root and prhost only.
+EnvironmentFile=/etc/pr-host.env
+ExecStart=/usr/bin/node /opt/pr-host/dedicated.mjs
+Restart=always
+RestartSec=15
+# Chrome runs headless; give it room.
+LimitNOFILE=65536
+MemoryMax=8G
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

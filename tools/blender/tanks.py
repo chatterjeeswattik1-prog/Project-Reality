@@ -210,15 +210,31 @@ def m1a2():
     gun = o['Object_9']; gun.name = gun.data.name = 'gun'
     limit_tris(gun, 1500)
     ring = ring_of(turret); roof = roof_of(turret, 0.7)
+    # Commander's weapon station: the M2HB on its pintle in front of the cupola is cut out of the turret (every loose
+    # part inside its box; the roof box to its left and the cupola behind stay) and made two parts the game moves:
+    # `cws` (the post, traverses about its vertical axis) > `cws_gun` (receiver, barrel, ammo box; elevates about the
+    # trunnion at the top of the post), with `cws_muzzle` and the commander's eye `cws_eye` (head out of the hatch,
+    # behind the receiver, sighting over it). Measured in this model: barrel axis x 0.493, height 2.95; post at y 0.57.
+    inbox = lambda a, b: a.x > 0.33 and b.x < 0.72 and a.y > 0.0 and b.y < 1.95 and a.z > 2.68 and b.z < 3.2
+    post = lambda a, b: 0.5 < a.y and b.y < 0.645 and b.z < 2.99
+    cws_gun = split(turret, lambda a, b: inbox(a, b) and not post(a, b), 'cws_gun')
+    cws = split(turret, lambda a, b: inbox(a, b) and post(a, b), 'cws')
+    # It traverses round the cupola (a ring mount: the gun stays in front of the commander's face whichever way it
+    # points), so `cws` turns about the cupola's centre; the cradle elevates at the top of the post.
+    cws_base, cws_trun = Vector((0.493, -0.04, 2.711)), Vector((0.493, 0.572, 2.95))
     glo, ghi = bounds([gun])
     axis = Vector(((glo.x + ghi.x) / 2, 0, (glo.z + ghi.z) / 2))
     trunnion = Vector((axis.x, glo.y - 0.35, axis.z))  # the barrel enters the mantlet; trunnions ~0.35 m behind
     print('ring', ring, 'roof', roof, 'gun', glo, ghi)
     pivot(turret, ring)
     pivot(gun, trunnion, turret)
+    pivot(cws, cws_base, turret)
+    pivot(cws_gun, cws_trun, cws)
+    emp('cws_muzzle', (0.493, 1.745, 2.95), cws_gun)
+    emp('cws_eye', (0.493, -0.2, 3.25), cws)
     emp('muzzle', (axis.x, ghi.y, axis.z), gun)
     emp('coax', (axis.x + 0.42, trunnion.y + 0.55, axis.z + 0.05), gun)
-    # Crew: gunner right front (primary sight), commander right rear (cupola, CROWS .50), loader left (hatch, M240).
+    # Crew: gunner right front (primary sight), commander right rear (cupola, pintle M2), loader left (hatch, M240).
     emp('seat_gunner', (ring.x + 0.55, ring.y + 1.15, roof + 0.12), turret)
     emp('seat_commander', (ring.x + 0.55, ring.y - 0.15, roof + 0.62), turret)
     emp('seat_loader', (ring.x - 0.62, ring.y - 0.05, roof + 0.55), turret)

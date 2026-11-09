@@ -12,7 +12,7 @@ const env: Env = (globalThis as unknown as { process?: { env: Env } }).process?.
 export interface Store {
   get(key: string): Promise<string | null>;
   /** Set with expiry (s). */ set(key: string, value: string, ttl: number): Promise<void>;
-  /** Append to a list (expiry s); `drain` returns and clears it. */ push(key: string, value: string, ttl: number): Promise<void>;
+  /** Append to a list (expiry s); `drain` returns and clears it (up to 64 entries, one command). */ push(key: string, value: string, ttl: number): Promise<void>;
   drain(key: string): Promise<string[]>;
 }
 
@@ -22,7 +22,7 @@ class MemoryStore implements Store {
   async get(k: string) { const e = this.live(k); return e && typeof e.v === 'string' ? e.v : null; }
   async set(k: string, v: string, ttl: number) { this.m.set(k, { v, exp: Date.now() + ttl * 1000 }); }
   async push(k: string, v: string, ttl: number) { const e = this.live(k); const l = e && Array.isArray(e.v) ? e.v : []; l.push(v); this.m.set(k, { v: l, exp: Date.now() + ttl * 1000 }); }
-  async drain(k: string) { const e = this.live(k); this.m.delete(k); return e && Array.isArray(e.v) ? e.v : []; }
+  async drain(k: string) { const e = this.live(k); if (!e || !Array.isArray(e.v)) return []; const out = e.v.splice(0, 64); if (!e.v.length) this.m.delete(k); return out; }
 }
 
 class UpstashStore implements Store {
@@ -40,7 +40,15 @@ class UpstashStore implements Store {
   async get(k: string) { return (await this.cmd('GET', k)) as string | null; }
   async set(k: string, v: string, ttl: number) { await this.cmd('SET', k, v, 'EX', ttl); }
   async push(k: string, v: string, ttl: number) { await this.pipe([['RPUSH', k, v], ['EXPIRE', k, ttl]]); }
-  async drain(k: string) { const [l] = await this.pipe([['LRANGE', k, 0, -1], ['DEL', k]]); return (l as string[]) ?? []; }
+  // LPOP with a count takes and removes in one command (the free tier counts commands; empty → null).
+  // (Falls back to LRANGE + DEL should a store ever reject the count form.)
+  private lpopCount = true;
+  async drain(k: string) {
+    if (this.lpopCount) {
+      try { return ((await this.cmd('LPOP', k, 64)) as string[] | null) ?? []; } catch { this.lpopCount = false; }
+    }
+    const [l] = await this.pipe([['LRANGE', k, 0, -1], ['DEL', k]]); return (l as string[]) ?? [];
+  }
 }
 
 let store: Store | null = null;

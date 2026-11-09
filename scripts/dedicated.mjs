@@ -66,7 +66,7 @@ async function runOnce() {
     if (stalls >= 6) { log('simulation stalled for a minute: restarting'); break; }
     if (Date.now() - lastLog > 60000) {
       lastLog = Date.now();
-      log(`players ${st.players}/30 · ${st.fps} fps · upload ${st.upKBs} KB/s · lobby ${st.holding ? 'held' : 'NOT HELD'} · ${st.top}${st.over ? ` · round over (${st.over} won)` : ''}`);
+      log(`players ${st.players}/20 · ${st.fps} fps · upload ${st.upKBs} KB/s · lobby ${st.holding ? 'held' : 'NOT HELD'} · ${st.top}${st.over ? ` · round over (${st.over} won)` : ''}`);
       if (st.peers.length) log('  ' + st.peers.map((p) => `${p.name} (${p.side}, ${p.rtt} ms)`).join(', '));
     }
   }

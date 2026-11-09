@@ -3,7 +3,7 @@
 // unreliable and unordered (snapshots and movement: a late one is useless, the next is coming).
 // The handshake (offer / answer, with all ICE candidates gathered first, so one message each way) goes through the
 // Vercel signalling mailbox (net/signal.ts).
-import { pollSignal, sendSignal } from './signal';
+import { pollSignal, sendSignal, type Mail } from './signal';
 
 export interface Link {
   id: string; pc: RTCPeerConnection; r: RTCDataChannel | null; u: RTCDataChannel | null; open: boolean;
@@ -33,27 +33,40 @@ export function send(l: Link, msg: unknown) { if (l.r?.readyState === 'open') l.
 /** Unreliable send; dropped when the channel is backed up (a snapshot later replaces it anyway). */
 export function sendU(l: Link, data: ArrayBuffer) { if (l.u?.readyState === 'open' && l.u.bufferedAmount < 256 * 1024) l.u.send(data); }
 
-/** Host side: admit players whose offers arrive in the host's mailbox; `admit` may refuse (match full). */
+/** Fast mailbox polling lasts this long after the last mail (a joiner's game is loading meanwhile). */
+const WATCH_MS = 240_000, POLL_MS = 2000;
+
+/**
+ * Host side: admit players whose offers arrive in the host's mailbox; `admit` may refuse (match full). The mailbox is
+ * collected with every lobby heartbeat (`deliver`); only after mail arrives (a join knock or an offer) does the host
+ * poll it every 2 s, for a few minutes. An idle host makes no signalling requests (free-tier request budgets).
+ */
 export class HostLinks {
   links = new Map<string, Link>();
-  private stop = false;
+  private stop = false; private watchUntil = 0; private polling = false;
   constructor(private myId: string, private ice: RTCIceServer[], private H: Handlers & { admit: (id: string, hello: Record<string, unknown>) => string | null }) {
-    void this.poll();
     setInterval(() => { for (const l of this.links.values()) send(l, { t: 'ping', s: performance.now() }); }, 2000);
   }
-  private async poll() {
-    while (!this.stop) {
-      try {
-        for (const { from, msg } of await pollSignal(this.myId)) {
-          const m = msg as { type?: string; sdp?: string; hello?: Record<string, unknown> };
-          if (m.type !== 'offer' || !m.sdp) continue;
-          const refuse = this.H.admit(from, m.hello ?? {});
-          if (refuse) { await sendSignal(this.myId, from, { type: 'refused', reason: refuse }); continue; }
-          void this.accept(from, m.sdp);
-        }
-      } catch { /* lobby service hiccup: try again */ }
-      await new Promise((r) => setTimeout(r, 1500));
+  /** Mail from the mailbox (heartbeat or poll): admit offers; any mail starts / extends the fast polling. */
+  deliver(msgs: Mail[]) {
+    if (!msgs.length || this.stop) return;
+    this.watchUntil = Date.now() + WATCH_MS;
+    for (const { from, msg } of msgs) {
+      const m = msg as { type?: string; sdp?: string; hello?: Record<string, unknown> };
+      if (m.type !== 'offer' || !m.sdp) continue; // knocks only wake the polling
+      const refuse = this.H.admit(from, m.hello ?? {});
+      if (refuse) { void sendSignal(this.myId, from, { type: 'refused', reason: refuse }).catch(() => undefined); continue; }
+      void this.accept(from, m.sdp);
     }
+    if (!this.polling) void this.poll();
+  }
+  private async poll() {
+    this.polling = true;
+    while (!this.stop && Date.now() < this.watchUntil) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      try { this.deliver(await pollSignal(this.myId)); } catch { /* lobby service hiccup: try again */ }
+    }
+    this.polling = false;
   }
   private async accept(id: string, sdp: string) {
     this.links.get(id)?.pc.close();
@@ -83,9 +96,10 @@ export async function connectToHost(myId: string, hostId: string, ice: RTCIceSer
   await pc.setLocalDescription(await pc.createOffer());
   await gathered(pc);
   await sendSignal(myId, hostId, { type: 'offer', sdp: pc.localDescription!.sdp, hello });
-  // Wait for the answer (or a refusal) in our mailbox.
+  // Wait for the answer (or a refusal) in our mailbox. An idle host only sees the offer with its next heartbeat (≤25 s),
+  // normally it is already watching thanks to the knock sent when this player chose Multiplayer.
   const t0 = Date.now();
-  while (Date.now() - t0 < 30000) {
+  while (Date.now() - t0 < 45000) {
     for (const { msg } of await pollSignal(myId)) {
       const m = msg as { type?: string; sdp?: string; reason?: string };
       if (m.type === 'refused') { pc.close(); throw new Error(m.reason ?? 'refused'); }
@@ -98,7 +112,7 @@ export async function connectToHost(myId: string, hostId: string, ice: RTCIceSer
         return link;
       }
     }
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, Date.now() - t0 < 6000 ? 700 : 1500));
   }
   pc.close();
   throw new Error('The host did not answer');

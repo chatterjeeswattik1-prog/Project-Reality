@@ -1,11 +1,12 @@
 // Connection handshake mailboxes (Vercel Function): a joining player posts his WebRTC offer to the host's mailbox, the
-// host posts the answer back. Each side polls its own mailbox only while connecting (the host about every 2 s while
-// hosting, to admit new players). Messages expire after a minute.
+// host posts the answer back. A player who chooses Multiplayer first posts a `knock`; the host collects its mailbox
+// with every lobby heartbeat (~25 s) and polls it every 2 s only for a few minutes after mail arrives, so an idle host
+// costs nothing here. The joiner polls his own mailbox only while waiting for the answer. Messages expire after 2 min.
 //   POST /api/signal { from, to, msg }   → { ok }
 //   GET  /api/signal?id=<me>             → { msgs: { from, msg }[] }
 import { getStore, json } from './_store';
 
-const TTL = 60, MAX = 64 * 1024;
+const TTL = 120, MAX = 64 * 1024;
 
 export async function GET(req: Request): Promise<Response> {
   const id = new URL(req.url).searchParams.get('id')?.slice(0, 40);

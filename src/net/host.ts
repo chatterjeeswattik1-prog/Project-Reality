@@ -16,7 +16,7 @@ import { closeLobby, hostBeat } from './signal';
 import { decodeMove, encodeSnapshot, LIFE, STANCES, type SoldierRec, type VehicleRec } from './proto';
 
 type V3 = [number, number, number];
-export const MAX_PLAYERS = 30;
+export const MAX_PLAYERS = 20;
 const SNAP_HZ = 15, NEAR = 900;
 
 interface Peer { link: Link; name: string; side: Faction; proxy: Soldier | null; botTaken: boolean; joined: number; lastLife: string }
@@ -27,7 +27,7 @@ export interface HostDeps {
   spawnPoints: (side: Faction) => SpawnPoint[];
   /** Retire one bot of this side to make room for a player (returns false if none left). */
   takeBot: (side: Faction) => boolean;
-  /** Always-on server: no player of its own (all 30 places are for players); `key` proves it to the lobby. */
+  /** Always-on server: no player of its own (all 20 places are for players); `key` proves it to the lobby. */
   dedicated?: boolean; key?: string;
 }
 
@@ -36,7 +36,7 @@ export class HostSync {
   private links: HostLinks;
   private known = new Set<number>();
   private events: Record<string, unknown>[] = [];
-  private snapT = 0; private mslT = 0; private evT = 0; private modeT = 0; private beatT = 0;
+  private snapT = 0; private mslT = 0; private evT = 0; private modeT = 0; private beatAt = performance.now();
   private logN = 0; private vstT = 0;
   /** Wall cuts and crushing so far (replayed to late joiners), guided missiles in flight. */
   private history: Record<string, unknown>[] = []; private missiles = new Map<number, Bullet>();
@@ -77,11 +77,15 @@ export class HostSync {
   }
 
   get players() { return this.peers.size + (this.D.dedicated ? 0 : 1); }
-  /** Lobby heartbeat (a dedicated server retries until it holds the match). */
+  /** Lobby heartbeat, every 25 s once the match is held (every 5 s until then: a dedicated server retries until it holds
+   *  it). Each beat also brings the mail that waited in this host's mailbox (join knocks, offers). */
   holding = false;
+  private startedAt = Date.now();
   private async beat() {
-    try { await hostBeat(this.D.myId, this.D.myName, this.D.seed, this.players, this.D.key); this.holding = true; }
-    catch (e) { this.holding = false; console.warn('lobby:', (e as Error).message); }
+    try {
+      const { msgs } = await hostBeat(this.D.myId, this.D.myName, this.D.seed, this.players, this.startedAt, this.D.key);
+      this.holding = true; this.links.deliver(msgs);
+    } catch (e) { this.holding = false; console.warn('lobby:', (e as Error).message); }
   }
   peerList() { return [...this.peers.values()].map((p) => ({ name: p.name, side: p.side, rtt: Math.round(p.link.rtt) })); }
 
@@ -240,7 +244,7 @@ export class HostSync {
         sendU(p.link, buf); this.bytes += buf.byteLength;
       }
     }
-    // Mode status and spawn points (once a second); lobby heartbeat (every 5 s).
+    // Mode status and spawn points (once a second); lobby heartbeat (every 25 s, see beat()).
     if ((this.modeT += dt) >= 1) {
       this.modeT = 0;
       const msg = { t: 'mode', top: this.D.mode.hudTop(), over: this.D.mode.over, tl: this.D.mode.timeLeft, spawns: { us: this.D.spawnPoints('us'), ins: this.D.spawnPoints('ins') }, score: g.soldiers.map((s) => [s.id, s.kills, s.deaths]) };
@@ -255,7 +259,10 @@ export class HostSync {
         send(p.link, { t: 'vst', v: g.vehicles.indexOf(v), m: v.mounts.map((mt) => [mt.sel, mt.loaded ? 1 : 0, mt.loadedType, mt.belt, mt.ready, mt.stowed, v.mountsOf(seat).includes(mt) ? v.blocked(mt, seat) : null]), sm: v.smoke, i: Math.round(v.integrity), tr: v.tracked ? 1 : 0, eo: v.engineOut ? 1 : 0 });
       }
     }
-    if ((this.beatT += dt) >= 5) { this.beatT = 0; void this.beat(); }
+    // Real time, not game time: a struggling host's game clock crawls (dt is clamped), and the lobby forgets a host that
+    // has not beaten for 75 s of real time.
+    const wall = performance.now();
+    if (wall - this.beatAt >= (this.holding ? 25000 : 5000)) { this.beatAt = wall; void this.beat(); }
     if ((this.rateT += dt) >= 1) { this.rate = this.bytes / this.rateT; this.bytes = 0; this.rateT = 0; }
   }
 

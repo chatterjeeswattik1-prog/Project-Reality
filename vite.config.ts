@@ -17,6 +17,8 @@ function devApi(): Plugin {
           if (!handler) { res.statusCode = 405; res.end(); return; }
           const body = req.method === 'POST' ? await new Promise<string>((ok) => { let s = ''; req.on('data', (c) => { s += c; }); req.on('end', () => ok(s)); }) : undefined;
           const r = await handler(new Request(`http://localhost${req.url}`, { method: req.method, body, headers: { 'content-type': 'application/json' } }));
+          // API_LOG=1: one line per call (checking the request budget of the lobby / signalling).
+          if (process.env.API_LOG) console.log(`[api] ${new Date().toISOString().slice(11, 19)} ${req.method} ${req.url?.split('?')[0]} ${r.status}`);
           res.statusCode = r.status;
           r.headers.forEach((v, k) => res.setHeader(k, v));
           res.end(await r.text());

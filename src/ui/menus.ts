@@ -17,7 +17,7 @@ export function mainMenu(host: HTMLElement, gpu: string): Promise<MenuChoice> {
     <p class="brief">US Army forces at FOB Hammer must locate and destroy the insurgents' hidden weapons caches in Al Zahran. Intel from engagements reveals cache areas. Only C4 destroys a cache. Every US soldier lost costs a ticket.</p>
     <div class="row"><button data-f="us" class="big">Join US Army</button><button data-f="ins" class="big ins">Join Insurgents</button></div>
     <div class="opts">
-      <label>Mode <select name="mode"><option value="test">Close-quarters test · 3 v 3 · small area (light)</option><option value="insurgency">Insurgency · full map</option><option value="sandbox">Sandbox · full map to yourself: spawn targets and vehicles, either side (testing)</option><option value="multiplayer">Multiplayer · the one online match, up to 30 players (host it if nobody is)</option></select></label>
+      <label>Mode <select name="mode"><option value="test">Close-quarters test · 3 v 3 · small area (light)</option><option value="insurgency">Insurgency · full map</option><option value="sandbox">Sandbox · full map to yourself: spawn targets and vehicles, either side (testing)</option><option value="multiplayer">Multiplayer · the one online match, up to 20 players (host it if nobody is)</option></select></label>
       <label class="mpname">Your name <input name="name" maxlength="20" placeholder="Soldier"></label>
       <label>Graphics <select name="q"><option value="low">Low (integrated GPU)</option><option value="medium">Medium</option><option value="high">High</option></select></label>
       <label>Mouse sensitivity <input name="sens" type="range" min="0.5" max="3" step="0.1"></label>

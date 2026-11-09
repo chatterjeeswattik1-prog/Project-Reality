@@ -29,7 +29,7 @@ import { AMMO, WEAPONS } from './game/data/weapons';
 import type { Soldier } from './game/soldier';
 import { groundH } from './world/terrain';
 import { downloads, expectDownload, mb, trackDownloads } from './core/netprogress';
-import { getLobby, newId, type LobbyInfo } from './net/signal';
+import { getLobby, knock, newId, type LobbyInfo } from './net/signal';
 import { HostSync, MAX_PLAYERS } from './net/host';
 import { ClientMode, ClientSync } from './net/client';
 
@@ -108,6 +108,7 @@ async function boot() {
     if (lobby.lobby && want !== 'host' && !dedicated) {
       if (lobby.lobby.players >= MAX_PLAYERS) { alert(`The match is full (${lobby.lobby.players} / ${MAX_PLAYERS} players). Try again later.`); location.reload(); return; }
       mpRole = 'client';
+      void knock(myId, lobby.lobby.hostId); // the host starts watching its mailbox while this game loads
     } else if (want === 'join') { alert('No match is running yet: choose Multiplayer again to host one.'); location.reload(); return; }
     else mpRole = 'host';
   }
@@ -398,7 +399,7 @@ async function boot() {
     for (const k in T) prof[k] = (prof[k] ?? 0) * 0.95 + T[k] * 0.05;
     W.__prof = Object.entries(prof).map(([k, v]) => `${k}=${v.toFixed(1)}`).join(' ');
     if (mp && frames === 0) {
-      // Multiplayer status: players and the host's upload (the limit for a 30-player match); a joiner's ping.
+      // Multiplayer status: players and the host's upload (the limit for a full 20-player match); a joiner's ping.
       if (hostSync) { const up = hostSync.rate / 1024, fps = String(W.__fps ?? '').split(' ')[0]; status.textContent = `HOSTING · ${hostSync.players} / ${MAX_PLAYERS} players · upload ${up.toFixed(0)} KB/s · ${fps} FPS${Number(fps) && Number(fps) < 30 ? ' · YOUR PC IS STRUGGLING' : ''}`; }
       else if (clientSync) status.textContent = clientSync.connected ? `ONLINE · ping ${Math.round(clientSync.rtt)} ms` : status.textContent;
     }

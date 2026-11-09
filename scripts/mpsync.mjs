@@ -9,10 +9,15 @@ const page = async (url, tag) => {
   const p = await b.newPage({ viewport: { width: 800, height: 450 } });
   p.on('pageerror', (e) => { errs.push(`${tag}: ${e.message}`); console.log(`[${tag} pageerror]`, e.message); });
   p.on('dialog', (d) => { console.log(`[${tag} dialog]`, d.message()); void d.dismiss(); });
-  await p.goto(url);
+  await p.goto(url, { timeout: 180000 }); // a slow machine serving several game pages at once
   return p;
 };
-const ready = (p) => p.waitForFunction(() => window.__ready === true && window.__game?.player && (window.__net?.role === 'host' || window.__net?.client()?.connected), null, { timeout: 400000 });
+const ready = (p) => p.waitForFunction(() => window.__ready === true && window.__game?.player && (window.__net?.role === 'host' || window.__net?.client()?.connected), null, { timeout: 400000 })
+  .catch(async (e) => {
+    // Say where it stuck (still loading? connected without a soldier? no link?).
+    const st = await p.evaluate(() => ({ ready: !!window.__ready, player: !!window.__game?.player, role: window.__net?.role, connected: !!window.__net?.client?.()?.connected, t: window.__game?.time })).catch(() => 'page not answering');
+    console.log('not ready:', p.url().split('?')[1], JSON.stringify(st)); throw e;
+  });
 const H = await page('http://localhost:5173/?mp=host&auto=us&kit=us_rifle&name=Hosty&q=low', 'host'); await ready(H);
 const J1 = await page('http://localhost:5173/?mp=join&auto=us&kit=us_rifle&name=J1&q=low', 'j1');
 const J2 = await page('http://localhost:5173/?mp=join&auto=ins&kit=ins_rifle&name=J2&q=low', 'j2');

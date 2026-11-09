@@ -8,7 +8,7 @@
 // A host that stops sending heartbeats for 75 s is gone: the slot is free for someone else to host.
 // Budget (an always-on server, 24/7): a beat is 2 store commands (SET + LPOP; the server skips the GET) and one
 // function call, ~210k commands and ~105k calls a month, well inside the free tiers (Upstash 500k, Vercel 1M).
-import { env, getStore, hasSharedStore, json } from './_store';
+import { env, getStore, hasSharedStore, json } from './_store.js';
 
 export const CAP = 20;
 const KEY = 'pr:lobby', TTL = 75;

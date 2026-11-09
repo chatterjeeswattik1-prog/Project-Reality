@@ -4,7 +4,7 @@
 // costs nothing here. The joiner polls his own mailbox only while waiting for the answer. Messages expire after 2 min.
 //   POST /api/signal { from, to, msg }   → { ok }
 //   GET  /api/signal?id=<me>             → { msgs: { from, msg }[] }
-import { getStore, json } from './_store';
+import { getStore, json } from './_store.js';
 
 const TTL = 120, MAX = 64 * 1024;
 

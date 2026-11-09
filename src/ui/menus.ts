@@ -9,7 +9,8 @@ import { MAP } from '../world/terrain';
 
 export interface MenuChoice { faction: Faction; quality: 'low' | 'medium' | 'high'; sens: number; fov: number; mode: 'insurgency' | 'test' | 'sandbox' | 'multiplayer'; name?: string }
 
-export function mainMenu(host: HTMLElement, gpu: string): Promise<MenuChoice> {
+/** `admin`: the Close-quarters test and the Sandbox are offered (core/admin.ts). */
+export function mainMenu(host: HTMLElement, gpu: string, admin: boolean): Promise<MenuChoice> {
   const el = document.createElement('div'); el.className = 'menu';
   const saved = (() => { try { return JSON.parse(localStorage.getItem('pr.settings') ?? '{}'); } catch { return {}; } })();
   el.innerHTML = `<div class="menu-box">
@@ -17,19 +18,20 @@ export function mainMenu(host: HTMLElement, gpu: string): Promise<MenuChoice> {
     <p class="brief">US Army forces at FOB Hammer must locate and destroy the insurgents' hidden weapons caches in Al Zahran. Intel from engagements reveals cache areas. Only C4 destroys a cache. Every US soldier lost costs a ticket.</p>
     <div class="row"><button data-f="us" class="big">Join US Army</button><button data-f="ins" class="big ins">Join Insurgents</button></div>
     <div class="opts">
-      <label>Mode <select name="mode"><option value="test">Close-quarters test · 3 v 3 · small area (light)</option><option value="insurgency">Insurgency · full map</option><option value="sandbox">Sandbox · full map to yourself: spawn targets and vehicles, either side (testing)</option><option value="multiplayer">Multiplayer · the one online match, up to 20 players (host it if nobody is)</option></select></label>
+      <label>Mode <select name="mode">${admin ? '<option value="test">Close-quarters test · 3 v 3 · small area (light)</option>' : ''}<option value="insurgency">Insurgency · full map</option>${admin ? '<option value="sandbox">Sandbox · full map to yourself: spawn targets and vehicles, either side (testing)</option>' : ''}<option value="multiplayer">Multiplayer · the one online match, up to 20 players (host it if nobody is)</option></select></label>
       <label class="mpname">Your name <input name="name" maxlength="20" placeholder="Soldier"></label>
       <label>Graphics <select name="q"><option value="low">Low (integrated GPU)</option><option value="medium">Medium</option><option value="high">High</option></select></label>
       <label>Mouse sensitivity <input name="sens" type="range" min="0.5" max="3" step="0.1"></label>
       <label>Field of view <input name="fov" type="range" min="45" max="75" step="1"> <span class="fovv"></span>°</label>
     </div>
-    <div class="keys"><b>Controls</b> WASD move · Shift sprint · Ctrl/C crouch · Z prone · Space jump · RMB aim · LMB fire · R reload · B fire mode · 1–5 weapons (press 1 again for M203; PgUp / PgDn sets its quadrant sight range) · Q / E lean (hold) · Alt freelook (hold) · F doors, else field dressing · T weapon light · G bipod (prone, window sill, wall top) · Shift while aiming hold breath · Y team move there · H team hold / form up · U team suppress there · M map · Tab score · Enter give up when wounded · Esc menu<br><b>Vehicles</b> F get in / out · F1–F9 seats · driver WASD · gunner: mouse aims, LMB fire, 1 sabot · 2 HE · 3 coax · 4 TOW, RMB zoom, R laser range, T thermal, G smoke · Y / H order the AI driver<br><b>Sandbox</b> \` (key left of 1) tools: spawn targets and vehicles where you look, god mode, heal, refill, teleport</div>
+    <div class="keys"><b>Controls</b> WASD move · Shift sprint · Ctrl/C crouch · Z prone · Space jump · RMB aim · LMB fire · R reload · B fire mode · 1–5 weapons (press 1 again for M203; PgUp / PgDn sets its quadrant sight range) · Q / E lean (hold) · Alt freelook (hold) · F doors, else field dressing · T weapon light · G bipod (prone, window sill, wall top) · Shift while aiming hold breath · Y team move there · H team hold / form up · U team suppress there · M map · Tab score · Enter give up when wounded · Esc menu<br><b>Vehicles</b> F get in / out · F1–F9 seats · driver WASD · gunner: mouse aims, LMB fire, 1 sabot · 2 HE · 3 coax · 4 TOW, RMB zoom, R laser range, T thermal, G smoke · Y / H order the AI driver${admin ? '<br><b>Sandbox</b> \` (key left of 1) tools: spawn targets and vehicles where you look, god mode, heal, refill, teleport' : ''}</div>
     <div class="gpu">Rendering on: ${gpu}</div>
     <div class="gpu">Credits: running animation <a href="https://sketchfab.com/3d-models/rida-sidi-ben-ali-running-487e9e949e4a4ea3a8fd59df7e842830" target="_blank" rel="noopener">“Rida sidi ben ali Running”</a> by Rida.Sidi.Ben.Ali and blood shape <a href="https://sketchfab.com/3d-models/cc0-color-spot-2-f0c6c040b86f4b42af3b3b49b9e6a23b" target="_blank" rel="noopener">“Color Spot 2”</a> by plaggy, the M1A2 <a href="https://sketchfab.com/3d-models/abrams-m1a2-0e98541f6f684311ac7a8abe08c9449e" target="_blank" rel="noopener">“abrams m1a2”</a> by coderslava402 and the M2A3 <a href="https://sketchfab.com/3d-models/m2-bradley-ifv-ab022158ab5f4fbfa55d4142db7595ab" target="_blank" rel="noopener">“M2 Bradley IFV”</a> by 42manako, the pistol arms <a href="https://sketchfab.com/3d-models/fps-pistol-animations-0d7a343dcb6f401197a73c91aee93f6d" target="_blank" rel="noopener">“FPS pistol animations”</a> by Cransh, all <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>. Other assets CC0 (Poly Haven, ambientCG, Quaternius, Freesound) — see the CREDITS.txt files.</div>
   </div>`;
   host.appendChild(el);
   const md = el.querySelector('select[name=mode]') as HTMLSelectElement;
-  md.value = saved.mode ?? 'test';
+  md.value = saved.mode ?? (admin ? 'test' : 'insurgency');
+  if (md.selectedIndex < 0) md.value = 'insurgency'; // a saved admin-only mode in a browser that is not unlocked
   const q = el.querySelector('select[name=q]') as HTMLSelectElement, sens = el.querySelector('input[name=sens]') as HTMLInputElement, fov = el.querySelector('input[name=fov]') as HTMLInputElement, fovv = el.querySelector('.fovv') as HTMLElement;
   q.value = saved.quality ?? new URLSearchParams(location.search).get('q') ?? 'low'; sens.value = String(saved.sens ?? 1); fov.value = String(saved.fov ?? 55);
   fovv.textContent = fov.value; fov.oninput = () => { fovv.textContent = fov.value; };

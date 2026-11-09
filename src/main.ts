@@ -15,6 +15,7 @@ import { Insurgency } from './game/insurgency';
 import { Player, setBaseFov, BASE_FOV } from './player/player';
 import { Hud } from './ui/hud';
 import { MapView, renderBaseMap } from './ui/map';
+import { isAdmin } from './core/admin';
 import { endScreen, mainMenu, scoreboard, SpawnScreen, type SpawnPoint } from './ui/menus';
 import { Director } from './ai/director';
 import { SkirmishDirector } from './ai/skirmish';
@@ -95,7 +96,8 @@ async function boot() {
   const gpu = detectGpu();
   console.info('GPU:', gpu);
   const auto = params.get('auto') as Faction | null;
-  const choice = auto || params.has('shot') || params.has('fly') ? { faction: (auto ?? 'us') as Faction, quality: (params.get('q') as Quality) ?? 'low', sens: 1, fov: Number(params.get('fov') ?? 55), mode: (params.has('mp') ? 'multiplayer' : params.get('mode') === 'test' ? 'test' : params.get('mode') === 'sandbox' ? 'sandbox' : 'insurgency') as 'test' | 'insurgency' | 'sandbox' | 'multiplayer', name: params.get('name') ?? 'Soldier' } : await mainMenu(host, gpu);
+  const admin = await isAdmin(); // Close-quarters test and Sandbox are admin-only
+  const choice = auto || params.has('shot') || params.has('fly') ? { faction: (auto ?? 'us') as Faction, quality: (params.get('q') as Quality) ?? 'low', sens: 1, fov: Number(params.get('fov') ?? 55), mode: (params.has('mp') ? 'multiplayer' : admin && params.get('mode') === 'test' ? 'test' : admin && params.get('mode') === 'sandbox' ? 'sandbox' : 'insurgency') as 'test' | 'insurgency' | 'sandbox' | 'multiplayer', name: params.get('name') ?? 'Soldier' } : await mainMenu(host, gpu, admin);
   // Multiplayer: the one online match. Join it if it is running and has room, otherwise host it (in this browser).
   const mp = choice.mode === 'multiplayer';
   /** Always-on server (scripts/dedicated.mjs): hosts the match with no player of its own and draws nothing. */
